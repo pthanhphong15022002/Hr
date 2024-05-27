@@ -1,0 +1,8 @@
+Q
+
+Các tính chất OOP ?
+Phân biệt Interface và Abstract ? Ví dụ
+Local Storage là gì ?
+Kế thừa là gỉ ? Ví dụ => Lớp cha có kế thừa được lớp con không ?
+JWT là gì ? 
+Restful API ?
