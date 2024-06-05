@@ -1,0 +1,39 @@
+0: 
+customName: "Sơ yếu lý lịch"
+entityName: "HR_EmpList"
+formName: "EmpList"
+functionID: "HREM101"
+functionType: "T"
+gridViewName: "grvEmpList"
+isActive: true
+isBookmark: false
+language: "VN"
+largeIcon: "icon-person"
+module: "HR"
+parentID: "HRT101d"
+url: "hr/emplist/HREM101"
+userID: ""
+
+1: 
+{language: 'VN', functionID: 'HREM102', userID: '', functionType: 'T', defaultName: 'Thông tin pháp lý', …}
+2
+: 
+{language: 'VN', functionID: 'HREM103', userID: '', functionType: 'T', defaultName: 'Lương & Phúc lợi', …}
+3
+: 
+{language: 'VN', functionID: 'HREM104', userID: '', functionType: 'T', defaultName: 'Quá trình làm việc', …}
+4
+: 
+{language: 'VN', functionID: 'HREM105', userID: '', functionType: 'T', defaultName: 'Kiến thức', …}
+5
+: 
+{language: 'VN', functionID: 'HREM106', userID: '', functionType: 'T', defaultName: 'Khen thưởng - Kỷ luật', …}
+6
+: 
+{language: 'VN', functionID: 'HREM107', userID: '', functionType: 'T', defaultName: 'Sức khỏe - Hoạt động', …}
+7
+: 
+{language: 'VN', functionID: 'HREM108', userID: '', functionType: 'T', defaultName: 'Thôi việc', …}
+8
+: 
+{language: 'VN', functionID: 'HREM109', userID: '', functionType: 'T', defaultName: 'Theo dõi thay đổi', …}
