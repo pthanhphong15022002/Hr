@@ -1,0 +1,24 @@
+                <codx-gridview-v2 #gridView [entityName]="'HR_Employees'" [service]="'HR'"
+                    [assemblyName]="'ERM.Business.HR'" [className]="'EmployeesBusiness'" [autoFitColumns]="false"
+                    [columnsGrid]="columnsGrid" [service]="'HR'" [hideMoreFunc]="true"
+                    [method]="'GetEmployeeListByOrgUnitIDGridView'" [predicates]="'@0.Contains(OrgUnitID)'"
+                    [dataValues]="this.orgUnitID" class="grid-fixed" [idField]="'employeeID'" 
+                    [editOnClick]="true" [checkboxSelect]="true" [selectionOptions]="selectionOptions" 
+                    (onDatabound)="dataSourceChanged($event)" (onCheckBoxChange)="onCheckBoxChange($event)" 
+                    (onSelected)="onSelectEmployee($event)" [checkboxSelect]="true">
+                </codx-gridview-v2>
+
+
+
+
+  selectionOptions: SelectionSettingsModel = {
+    mode: 'Both',
+    cellSelectionMode: 'BoxWithBorder',
+    type: 'Multiple',
+    checkboxOnly: false,
+    persistSelection: true,
+    checkboxMode: 'Default',
+    enableSimpleMultiRowSelection: true,
+    enableToggle: true,
+    allowColumnSelection: true,
+  };
