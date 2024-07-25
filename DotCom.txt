@@ -1,8 +1,44 @@
-Phễu bán hàng
-Thang giá trị
-Mồi là bước đầu thang giá trị
-Bán hàng bằng câu chuyện
-Định hướng tâm thức
-Lưu lượng truy cập (traffic)
-Bán hàng bằng câu chuyện
+1. Phễu bán hàng => Mỗi sản nên có 1 phễu bán hàng
+2. Thang giá trị => Giá trị tăng dần theo chiều sâu phễu
+3. Mồi là bước đầu thang giá trị
+4. Bán hàng bằng câu chuyện: 
++ Nhân vật thu hút (
+	1. Nhà lãnh đạo 
+	2. Nhà thám hiểm => tò mò => mang người nghe câu trả lời, 
+	3. Người truyền giáo/ phóng viên, 
+	4. Anh hùng bất đắt dĩ..) 
++ Cốt truyện:
+	1. Lấy lại điều đã mất
+	2. Chúng ta và họ => Chính kiến rõ ràng => Phân cực người xem
+	3. Trước và sau: Diễn tả sự biến đổi
+	4. Phát hiện đáng kinh ngạc => Bán khóa học
+	5. Bí mật
+	6. Cảm nhận từ người t3
++ Điểm kịch tính
+5. Chuỗi email ban đầu => Tạo ấn tượng, gắn kết
+	+ Tạo bối cảnh 1 lần / ngày ?
+	+ Mở đầu kịch tính  => Kể kịch tính trước lấp đầy sau => Câu chuyện nền => Hoàn cảnh đọc giả đang rơi vào => Dẵn dắt => Email giải pháp
+	+ Giải pháp => Bán thứ gì đó giải quyết vấn đề
+	+ Lợi ích tiềm ẩn => Chia sẻ lợi ích tiềm ẩn => Gắn kết người đọc
+	+ Khẩn cấp => Thúc đẩy KH, thúc đẩy KH hành động => Khuyến mãi ? ...
+6. Email SeinFeld
+	+ Tạo sự vui vẻ => Dẫn dắt hướng đến sản phẩm
+7. Truy ngược hệ thống phễu thành công
+	+ 5 yếu tố thành công: 
+		- Đặc tính nhân khẩu học (độ tuổi, giới tính, thu nhập ,....) => Thị trường mục tiêu
+		- Lời chào hàng: Bán gì, Giá bao nhiêu => Bán sản phẩm mồi
+		- Trang click ?.... => Tìm trang hoạt động hiệu quả => Áp dụng
+		- Traffic đến từ đâu ? 
+		- Mẫu quảng cáo => Ảnh hưởng đến lượt click quảng cáo
+	+ Đối thủ: Trực tiếp (bán cùng hàng), gián tiếp (bán cùng tệp kh)
+		- Lập danh sách đối thủ => Tìm
+	+ Định hướng tâm thức => Cần tối ưu
+		- Mang giá trị cho người nghe, KH
+	+ 7 giai đoạn phễu
+		- 1. Xác định traffic => Xác định KH tiềm năng
+		- 2. Tạo cầu nối định hướng tâm thức KH => Traffic khác nhau => Định hướng khác nhau
+		- 3. 
+
+
+
 
