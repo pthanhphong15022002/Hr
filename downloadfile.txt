@@ -1,0 +1,673 @@
+import {
+  ChangeDetectorRef,
+  Component,
+  ElementRef,
+  Injector,
+  OnDestroy,
+  TemplateRef,
+  ViewChild,
+} from '@angular/core';
+import {
+  ButtonModel,
+  CallFuncService,
+  CodxGridviewV2Component,
+  CRUDService,
+  DataRequest,
+  DialogModel,
+  FormModel,
+  NotificationsService,
+  SidebarModel,
+  UIComponent,
+  ViewModel,
+  ViewType,
+} from 'codx-core';
+import { FilterPayrollsDowCodeComponent } from 'projects/codx-hr/src/lib/codx-hr-common/components/filter-payroll-down/filter-payroll-down.component';
+import { CodxHrMultiProcessService } from 'projects/codx-hr/src/lib/codx-hr-common/services/codx-hr-multiprocess.service';
+import { CodxHrService } from 'projects/codx-hr/src/public-api';
+import { CodxShareService } from 'projects/codx-share/src/public-api';
+import { PopupUploadTemplateComponent } from '../salary-dictionary-management/pop-up/popup-upload-template/popup-upload-template.component';
+
+@Component({
+  selector: 'lib-salary-quickly-enter-info',
+  templateUrl: './salary-quickly-enter-info.component.html',
+  styleUrls: ['./salary-quickly-enter-info.component.css'],
+})
+export class SalaryQuicklyEnterInfoComponent
+  extends UIComponent
+  implements OnDestroy
+{
+  @ViewChild('panelRight') panelRight?: TemplateRef<any>;
+  @ViewChild('panelLeft') panelLeft!: TemplateRef<any>;
+  @ViewChild('fileInput') fileInput!: ElementRef;
+  @ViewChild('fileInput1') fileInput1!: ElementRef; // nhớ xóa
+  @ViewChild('fileInput2') fileInput2!: ElementRef; // nhớ xóa
+  @ViewChild('grid') grid: CodxGridviewV2Component;
+  views: Array<ViewModel> = [];
+  moreFuncs: Array<ButtonModel> = [];
+  processName = 'UnionDataNhapNhanhThongTinLuong';
+  data: any;
+  constructor(
+    private injector: Injector,
+    private notifiSV: NotificationsService,
+    private df: ChangeDetectorRef,
+    private shareService: CodxShareService,
+    private callfunc: CallFuncService,
+    private hrService: CodxHrService,
+    private _multiProcess: CodxHrMultiProcessService
+  ) {
+    super(injector);
+    this._multiProcess.initMulti(this.processName, () => {
+      this.export();
+    });
+    this._multiProcess.initMulti('test', () => {
+      this.getColGridDetail(this.templateID);
+    });
+    this._multiProcess.initMulti('importdata', () => {});
+
+    this._multiProcess.initMulti('UploadTemplateAndCalculate', () => {
+      this.getColGridDetail(this.templateID);
+    });
+  }
+  ngOnDestroy(): void {
+    this._multiProcess.destroyMultiProcess();
+  }
+
+  //#region Kỳ tính lương
+  crrDate: any = new Date();
+  payrollDowCode = {
+    begDay: '',
+    dowCode: '',
+    endDay: '',
+    year: this.crrDate.getFullYear(),
+  };
+
+  choosePayrollDowCode() {
+    let opt = new DialogModel();
+    let dialog = this.callfc.openForm(
+      FilterPayrollsDowCodeComponent,
+      null,
+      420,
+      600,
+      '',
+      [this.funcID, this.payrollDowCode],
+      '',
+      opt
+    );
+    dialog.closed.subscribe((res) => {
+      if (res?.event?.data) {
+        this.payrollDowCode = {
+          dowCode: res?.event?.data?.dowCode,
+          begDay: res?.event?.data?.begDay,
+          endDay: res?.event?.data?.endDay,
+          year: res?.event?.data?.year,
+        };
+        this.df.detectChanges();
+      } else {
+      }
+    });
+  }
+  templateID: any;
+  fromTime: string;
+  toTime: string;
+  valueChange(event) {
+    switch (event['field']) {
+      case 'FileName':
+        if (event?.data) {
+          this.templateID = event?.data;
+          this.getColGridDetail(this.templateID);
+        }
+        break;
+      case 'FromTime':
+        this.payrollDowCode.begDay = event?.data.toDate;
+        break;
+      case 'ToTime':
+        this.payrollDowCode.endDay = event?.data.toDate;
+        break;
+      case 'GenDate':
+        this.genDate = event?.data.toDate;
+        break;
+      case 'IsCkb':
+        this.isCkb = event?.data;
+        break;
+    }
+  }
+
+  formatDateToISO(date: Date): string {
+    const offset = date.getTimezoneOffset();
+    const localISOTime = new Date(date.getTime() - offset * 60 * 1000)
+      .toISOString()
+      .slice(0, -1);
+    const timezoneOffset = -offset / 60;
+    const timezoneFormatted = `${timezoneOffset >= 0 ? '+' : '-'}${String(
+      Math.abs(timezoneOffset)
+    ).padStart(2, '0')}:00`;
+    return `${localISOTime}${timezoneFormatted}`;
+  }
+  //#endregion
+  genDate: any;
+  onInit() {
+    this.api
+      .execSv<any>('HR', 'HR', 'SysExcelTemplateBusiness', 'GetCurrentDowAsync')
+      .subscribe((res) => {
+        this.payrollDowCode.begDay = res.begDay;
+        this.payrollDowCode.endDay = res.endDay;
+        this.payrollDowCode.dowCode = res.dowCode;
+        this.genDate = this.payrollDowCode.begDay;
+      });
+  }
+
+  ngAfterViewInit(): void {
+    this.views = [
+      {
+        id: '1',
+        type: ViewType.content,
+        sameData: true,
+        active: true,
+        model: {
+          panelLeftRef: this.panelLeft,
+          widthLeft: '250',
+          panelRightRef: this.panelRight,
+          hideMoreFunc: false,
+        },
+      },
+    ];
+    this.detectorRef.detectChanges();
+    this.getFormModel();
+  }
+
+  itemSelected: any;
+  result: boolean;
+  clickMF(e: any, data?: any) {
+    switch (e.functionID) {
+      // Nhập khẩu dữ liệu
+      case 'SYS001':
+        this.openFileDialog();
+        break;
+      // Xuất dữ liệu
+      case 'SYS002':
+        const params = {
+          schemaname: 'dbo',
+          function_id: this.view.funcID,
+          prefixtablename: 'TExcelInputPR',
+          exceltemplateid: this.templateID,
+          Dow_Code: this.payrollDowCode.dowCode,
+          BegDay: this.payrollDowCode.begDay,
+          EndDay: this.payrollDowCode.endDay,
+          toTime: this.payrollDowCode.begDay,
+          fromTime: this.payrollDowCode.endDay,
+        };
+        this.api
+          .execSv<any>(
+            'HR',
+            'HR',
+            'SysExcelTemplateBusiness',
+            'CreateTableByUserIDAsync',
+            [params]
+          )
+          .subscribe((res) => {
+            if (res) {
+              // Gọi hàm
+              this.excelTemplateGetEmployee(params);
+            }
+          });
+        break;
+    }
+  }
+
+  //#region Export
+  excelTemplateGetEmployee(data) {
+    this.api
+      .execSv<any>(
+        'HR',
+        'HR',
+        'SysExcelTemplateBusiness',
+        'ExcelTemplateGetEmployeeAsync',
+        [data]
+      )
+      .subscribe((res) => {
+        if (res) {
+          this.data = data;
+          this.multiProcess(data);
+        } else {
+          // Lỗi chỗ này do bảng HR_SysCategoryExcelTemplateDetail (chuyển từ HCS) có field không khớp với các field trong Codx
+          this.notifiSV.notifyCode('SYS023');
+        }
+      });
+  }
+
+  multiProcess(data) {
+    this.api
+      .execSv<any>(
+        'HR',
+        'HR',
+        'SysExcelTemplateBusiness',
+        'MultiProcessAsync',
+        [data]
+      )
+      .subscribe((res) => {});
+  }
+
+  export() {
+    this.api
+      .execSv<any>('HR', 'HR', 'SysExcelTemplateBusiness', 'ExportExcelAsync', [
+        this.data,
+      ])
+      .subscribe((res) => {
+        if (res != null) {
+          this.downloadFile(res);
+        } else {
+          this.notifiSV.notifyCode('HR085');
+        }
+      });
+  }
+
+  //#endregion
+
+  //#region Download
+  downloadFile(data: any) {
+    var sampleArr = this.base64ToArrayBuffer(data);
+    this.saveByteArray(sampleArr, 'File_Export.xlsx');
+  }
+
+  base64ToArrayBuffer(base64) {
+    var binaryString = window.atob(base64);
+    var binaryLen = binaryString.length;
+    var bytes = new Uint8Array(binaryLen);
+    for (var i = 0; i < binaryLen; i++) {
+      var ascii = binaryString.charCodeAt(i);
+      bytes[i] = ascii;
+    }
+    return bytes;
+  }
+
+  saveByteArray(byte, fileName) {
+    var dataType =
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    var blob = new Blob([byte], {
+      type: dataType,
+    });
+    var link = document.createElement('a');
+    link.href = window.URL.createObjectURL(blob);
+    link.download = fileName;
+    link.click();
+  }
+  //#endregion
+
+  customListMoreFc: any[] = [];
+  changeDataMF(event) {
+    event.forEach((element) => {
+      if (['SYS001', 'SYS002'].includes(element.functionID)) {
+        element.disabled = false;
+        element.isbookmark = true;
+      } else {
+        element.isbookmark = false;
+      }
+      this.customListMoreFc.push(element);
+    });
+  }
+
+  //#region Import File
+  openFileDialog() {
+    this.fileInput.nativeElement.click();
+  }
+
+  onFileChange(event: any) {
+    event.preventDefault();
+    const file = event.target.files[0];
+    if (file) {
+      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        this.readFile(file);
+      } else {
+        alert('Vui lòng chọn file có đuôi .xlsx hoặc .xls');
+      }
+    }
+  }
+
+  readFile(file: File) {
+    let reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result) {
+        var array = new Uint8Array(reader.result as ArrayBuffer);
+        var _arrayBufferToBase64 = function (buffer: any) {
+          var binary = '';
+          var bytes = new Uint8Array(buffer);
+          var len = bytes.byteLength;
+          for (var i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          return window.btoa(binary);
+        };
+        var _binaryData = _arrayBufferToBase64(array);
+        this.importFile(_binaryData);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  importFile(byteArray: any) {
+    this.uploadFileToServer(byteArray);
+  }
+
+  uploadFileToServer(byteArray) {
+    this.api
+      .execSv<any>('HR', 'HR', 'SysExcelTemplateBusiness', 'ImportAsync', [
+        byteArray,
+        this.templateID,
+        this.payrollDowCode.dowCode,
+      ])
+      .subscribe((res) => {
+        //this.getColGridDetail(this.templateID);
+      });
+  }
+
+  // Lưu file user upload
+  saveFile(event) {
+    event.preventDefault();
+    const file = event.target.files[0];
+    if (file) {
+      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        this.api
+          .execSv<any>('HR', 'HR', 'SysExcelTemplateBusiness', 'SaveAsync', [
+            file,
+          ])
+          .subscribe((res) => {});
+      } else {
+        alert('Vui lòng chọn file có đuôi .xlsx hoặc .xls');
+      }
+    }
+  }
+  //#endregion
+
+  //#region GridView
+  detailColumns: any = [];
+  loadedGridDetail: boolean = false;
+  @ViewChild('templateData') templateData: TemplateRef<any>;
+
+  getColGridDetail(data) {
+    console.log('generate grview')
+    this.loadedGridDetail = false;
+    this.detectorRef.detectChanges();
+    this.detailColumns = [];
+    this.generateColumns(data);
+  }
+
+  generateColumns(data) {
+    this.api
+      .execSv(
+        'HR',
+        'HR',
+        'SysExcelTemplateBusiness',
+        'GetDataTypeAndDisplayNameAsync',
+        [data]
+      )
+      .subscribe((res) => {
+        if (!res || res === null || Object.keys(res).length === 0) {
+          // this.notifiSV.notifyCode('HR085');
+        } else {
+          Object.keys(res).forEach((key) => {
+            this.detailColumns.push({
+              headerTemplate: `<div class="w-100 d-flex flex-column justify-content-center text-wrap gap-2">
+              <div>${res[key].displayName}</div>
+            </div>`,
+              template: this.templateData,
+              width: '140',
+              isVisible: true,
+              freeze: res[key].dataType, // Sử dụng dataType cho phần freeze
+              field: key,
+            });
+          });
+        }
+        setTimeout(() => {
+          this.loadedGridDetail = true;
+          this.detectorRef.detectChanges();
+        }, 300);
+      });
+  }
+  //#endregion
+
+  //#region Tự tạo Template và import
+  createTemplateAndImport() {
+    this.openFileDialog1();
+  }
+
+  openFileDialog1() {
+    this.fileInput1.nativeElement.click();
+  }
+
+  fileName: string;
+  fileChange(event: any) {
+    event.preventDefault();
+    const file = event.target.files[0];
+    if (file) {
+      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        this.readFile1(file);
+      } else {
+        alert('Vui lòng chọn file có đuôi .xlsx hoặc .xls');
+      }
+    }
+    this.fileName = file.name;
+  }
+
+  readFile1(file: File) {
+    let reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result) {
+        var array = new Uint8Array(reader.result as ArrayBuffer);
+        var _arrayBufferToBase64 = function (buffer: any) {
+          var binary = '';
+          var bytes = new Uint8Array(buffer);
+          var len = bytes.byteLength;
+          for (var i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          return window.btoa(binary);
+        };
+        var _binaryData = _arrayBufferToBase64(array);
+        this.importFile1(_binaryData);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  importFile1(byteArray: any) {
+    this.uploadFileToServer1(byteArray);
+  }
+
+  uploadFileToServer1(byteArray) {
+    this.api
+      .execSv<any>('HR', 'HR', 'SysExcelTemplateBusiness', 'AutoCreateTemplateAndImportDataAsync', [
+        byteArray, this.payrollDowCode.dowCode, this.fileName
+      ])
+      .subscribe((res) => {
+        if (res) {
+          this.templateID = res;
+        }
+      });
+  }
+  //#endregion
+
+  //#region Import data vào bảng chính
+  isCkb: boolean = false;
+  save() {
+    const params = {
+      schemaname: 'dbo',
+      prefixtablename: 'TExcelInputPR',
+      exceltemplateid: this.templateID,
+      fromTime: this.payrollDowCode.endDay,
+      toTime: this.payrollDowCode.begDay,
+      DowCode: this.payrollDowCode.dowCode,
+      GenDay: this.genDate,
+      IsCbk: this.isCkb,
+    };
+    this.api
+      .execSv<any>(
+        'HR',
+        'HR',
+        'SysExcelTemplateBusiness',
+        'ImportDataToTableAsync',
+        [params]
+      )
+      .subscribe((res) => {});
+  }
+
+  //#endregion
+
+  //#region Upload template và tính lương
+  formModel: FormModel;
+  getFormModel() {
+    this.hrService.getFormModel(this.view.funcID).then((res) => {
+      this.formModel = res;
+    });
+  }
+
+  uploadfile() {
+    this.handleEditInfo('Upload', this.formModel);
+  }
+
+  calculateSalary() {
+    this.openFileDialog2();
+  }
+
+  handleEditInfo(actionHeaderText: string, formModel: FormModel) {
+    var dataService = new CRUDService(this.injector);
+    let request = new DataRequest(
+      formModel?.formName,
+      formModel?.gridViewName,
+      formModel?.entityName
+    );
+    request.funcID = formModel?.funcID;
+    dataService.service = 'HR';
+    dataService.request = request;
+    dataService.addNew().subscribe((res) => {
+      let option = new SidebarModel();
+      option.DataService = dataService;
+      option.FormModel = formModel;
+      option.Width = '550px';
+      let dialogAdd = this.callfunc.openSide(
+        PopupUploadTemplateComponent,
+        {
+          headerText: actionHeaderText + ' Template',
+          data: res,
+          action: 'add',
+        },
+        option
+      );
+      dialogAdd.closed.subscribe((res) => {});
+    });
+  }
+
+  uploadFileToServer2(byteArray) {
+    const params = {
+      Base64string: byteArray,
+      DowCode: this.payrollDowCode.dowCode,
+      FileName: this.fileName,
+      RowMapping: 8,
+      FromTime: this.payrollDowCode.begDay,
+      ToTime: this.payrollDowCode.endDay, 
+    }
+    this.api
+      .execSv<any>(
+        'HR',
+        'HR',
+        'SysExcelTemplateBusiness',
+        'UploadTemplateAndCalculateAsync',
+        [params]
+      )
+      .subscribe((res) => {
+        console.log('res', res);
+        if (res != null) {
+          this.templateID = res;
+        } else 
+        {
+          this.notifiSV.notify('Upload Template thất bại','2')
+        }
+      });
+  }
+
+  openFileDialog2() {
+    this.fileInput2.nativeElement.click();
+  }
+
+  templateUpload: string;
+  fileUpload(event: any) {
+    event.preventDefault();
+    const file = event.target.files[0];
+    if (file) {
+      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        this.readFile2(file);
+      } else {
+        alert('Vui lòng chọn file có đuôi .xlsx hoặc .xls');
+      }
+    }
+    this.fileName = file.name;
+  }
+
+  readFile2(file: File) {
+    let reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result) {
+        var array = new Uint8Array(reader.result as ArrayBuffer);
+        var _arrayBufferToBase64 = function (buffer: any) {
+          var binary = '';
+          var bytes = new Uint8Array(buffer);
+          var len = bytes.byteLength;
+          for (var i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          return window.btoa(binary);
+        };
+        var _binaryData = _arrayBufferToBase64(array);
+        this.importFile2(_binaryData);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  importFile2(byteArray: any) {
+    this.uploadFileToServer2(byteArray);
+  }
+
+  // Nút xóa data dư thừa khi test chức năng
+  delete()
+  {
+    this.api.execSv<any>(
+      'HR',
+      'HR',
+      'SysExcelTemplateBusiness',
+      'DeleteTemplateAsync',
+      [this.templateID]
+    )
+    .subscribe((res) => {
+      if (res) {
+        this.templateID = null;
+      }
+    });
+  }
+
+  calculate()
+  {
+    const params = {
+      SchemaName: 'dbo',
+      PrefixTableName: 'TExcelInputPR',
+      DowCode: this.payrollDowCode.dowCode,
+      ExcelTemplateID: this.templateID,
+      FuncID: this.view.funcID,
+      FromTime: this.payrollDowCode.endDay,
+      ToTime: this.payrollDowCode.begDay,
+    }
+    this.api.execSv<any>(
+      'HR',
+      'HR',
+      'SysExcelTemplateBusiness',
+      'FillSystemDataToSheetAsync',
+      [params]
+    ).subscribe((res) => {
+      console.log('tính lương', res);
+      if (res != null)
+      {
+        this.downloadFile(res);
+      }
+    })
+  }
+  //#endregion
+}
