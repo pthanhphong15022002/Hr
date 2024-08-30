@@ -1,0 +1,2170 @@
+/* LV Business Solutions Center
+ * Copyright (c) 2024 Lac Viet
+ * http://www.lacviet.com.vn
+ *=============================================================
+ * File name            : SysExcelTemplateBusiness.cs          
+ * Created by           : Auto - 07/17/2024 11:24:54            
+ * Last modify          : Auto - 07/17/2024 11:24:54            
+ * Version              : 1.0                                  
+ * ============================================================
+ */
+
+using ERM.Common;
+using ERM.Common.Http;
+using ERM.Common.Services;
+using ERM.Model;
+using LinqToDB;
+using OfficeOpenXml;
+using System.Data;
+using LinqToDB.Data;
+using OfficeOpenXml.Style;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
+using System.Linq;
+using ERM.Model.HR.temp;
+using DocumentFormat.OpenXml.Spreadsheet;
+using OfficeOpenXml.FormulaParsing.Excel.Functions.RefAndLookup;
+using Syncfusion.XlsIO.Parser.Biff_Records;
+using Microsoft.IdentityModel.Tokens;
+
+namespace ERM.Business.HR
+{
+    public class SysExcelTemplateBusiness : BusinessBase
+    {
+        #region Add Template
+        public async Task AddNewExcelTemplateAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            HR_SysExcelTemplate template = requestReader.ReadObject<HR_SysExcelTemplate>();
+            var result = await AddNewExcelTemplateAsyncLogic(template);
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<object> AddNewExcelTemplateAsyncLogic(HR_SysExcelTemplate template)
+        {
+            Repository.Add(template);
+            int kq = await UnitOfWork.SaveChangesAsync();
+            if (kq > 0)
+            {
+                return template;
+            }
+            return null;
+        }
+        #endregion
+
+        #region Update Template
+        public async Task UpdateExcelTemplateAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            HR_SysExcelTemplate template = requestReader.ReadObject<HR_SysExcelTemplate>();
+            var ok = await UpdateExcelTemplateAsyncLogic(template);
+            responseWriter.WriteObject(ok);
+        }
+
+        public async Task<HR_SysExcelTemplate> UpdateExcelTemplateAsyncLogic(HR_SysExcelTemplate template)
+        {
+            HR_SysExcelTemplate updateTemplate = await Repository.GetOneAsync<HR_SysExcelTemplate>(item => item.TemplateID == template.TemplateID);
+            if (updateTemplate != null)
+            {
+                updateTemplate.TemplateName = template.TemplateName;
+                updateTemplate.FieldCount = template.FieldCount;
+                updateTemplate.Description = template.Description;
+                Repository.Update(updateTemplate);
+                await UnitOfWork.SaveChangesAsync();
+                return updateTemplate;
+            }
+            return null;
+
+        }
+        #endregion
+
+        #region Delete
+        public async Task DeleteTemplateAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            var recId = requestReader.ReadGuid();
+            bool ok = await DeleteTemplateAsyncLogic(recId);
+            if (ok)
+                ok = await UnitOfWork.SaveChangesAsync() > 0;
+            responseWriter.Write(ok);
+        }
+
+        public async Task<bool> DeleteTemplateAsyncLogic(Guid recId)
+        {
+            HR_SysExcelTemplate findObj = await Repository.GetOneAsync<HR_SysExcelTemplate>(p => p.TemplateID == recId);
+            if (findObj != null)
+            {
+                bool structure = await DeleteStructureTableAsyncLogic(recId);
+                bool chooseInfo = await DeleteChooseInfoByTemplateIDAsync(recId);
+                bool excelTemplateDetail = await DeleteSysExcelTemplateDetailAsyncLogic(recId);
+                if (structure && chooseInfo && excelTemplateDetail)
+                {
+                    Repository.Delete(findObj);
+                    return true;
+                }
+                return false;
+            }
+            return false;
+        }
+        // Xóa danh sách thông tin detail của template
+        public async Task<bool> DeleteChooseInfoByTemplateIDAsync(Guid templateID)
+        {
+            bool allDeleted = true;
+            List<HR_SysExcelTemplateField> lstChooseInfo = await Repository.GetAsync<HR_SysExcelTemplateField>(p => p.ExcelTemplateID == templateID).ToListAsync();
+            foreach (var field in lstChooseInfo)
+            {
+                HR_SysExcelTemplateField findObj = await Repository.GetOneAsync<HR_SysExcelTemplateField>(p => p.ID == field.ID);
+                if (findObj != null)
+                {
+                    Repository.Delete(findObj);
+                }
+                else
+                {
+                    allDeleted = false;
+                    break;
+                }
+            }
+            return allDeleted;
+        }
+        // Xóa cấu trúc bảng
+        public async Task<bool> DeleteStructureTableAsyncLogic(Guid templateID)
+        {
+            try
+            {
+                var paramTemplate = new object[] { "dbo", "TExcelInputPR", templateID };
+                var result = await Repository.ExecProcAsync("HR_spDropTableIfExists", paramTemplate);
+                if (result == 0)
+                {
+                    return true;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return false;
+            }
+        }
+
+        // Xóa thông tin file upload (HR_SysExcelTemplateDetail)
+        public async Task<bool> DeleteSysExcelTemplateDetailAsyncLogic(Guid templateID)
+        {
+            HR_SysExcelTemplateDetail findObj = await Repository.GetOneAsync<HR_SysExcelTemplateDetail>(p => p.ExcelTemplateID == templateID);
+            try
+            {
+                if (findObj != null)
+                {
+                    Repository.Delete(findObj);
+                    return true;
+                } 
+                else
+                {
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return false;
+            }
+            
+        }
+
+        #endregion
+
+        #region Load Current DowCode
+        public async Task GetCurrentDowAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            var result = await GetCurrentDowAsyncLogic();
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<object> GetCurrentDowAsyncLogic()
+        {
+            // Tìm kỳ lương hiện tại
+            var currentYear = DateTime.Now.Year.ToString();
+            var currentMonth = DateTime.Now.ToString("MM");
+
+            return await Repository.GetAsync<HR_LSPayrollDow>()
+                .Where(x => x.DowCode == $"{currentYear}/{currentMonth}")
+                .Select(item => new { item.DowCode, item.BegDay, item.EndDay })
+                .FirstOrDefaultAsync();
+        }
+        #endregion
+
+        #region Export Template
+        public async Task CreateTableByUserIDAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            Dictionary<string, object> template = requestReader.ReadObject<Dictionary<string, object>>();
+            bool result = await GetFileByTemplateIDAsyncLogic(template);
+            responseWriter.WriteObject(result);
+        }
+        public async Task<bool> GetFileByTemplateIDAsyncLogic(Dictionary<string, object> requestParams)
+        {
+            string SchemaName = requestParams["schemaname"].ToString();
+            string PrefixTableName = requestParams["prefixtablename"].ToString();
+            string ExcelTemplateID = requestParams["exceltemplateid"].ToString();
+            try
+            {
+                var paramTemplate = new object[] { SchemaName, PrefixTableName, ExcelTemplateID, User.UserID };
+                var result = await Repository.ExecProcAsync("HR_spExcelTemplateCleanTable", paramTemplate);
+                if (result == 0)
+                {
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return false;
+            }
+
+        }
+
+        public async Task ExcelTemplateGetEmployeeAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            Dictionary<string, object> template = requestReader.ReadObject<Dictionary<string, object>>();
+            bool result = await ExcelTemplateGetEmployeeAsyncLogic(template);
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<bool> ExcelTemplateGetEmployeeAsyncLogic(Dictionary<string, object> requestParams)
+        {
+            string SchemaName = requestParams["schemaname"].ToString();
+            string PrefixTableName = requestParams["prefixtablename"].ToString();
+            string ExcelTemplateID = requestParams["exceltemplateid"].ToString();
+            string convertExcelTemplateID = Guid.Parse(ExcelTemplateID.ToString()).ToString("N").ToUpper();
+            string toTime = requestParams["toTime"].ToString();
+            string fromTime = requestParams["fromTime"].ToString();
+            try
+            {
+                var paramTemplate = new object[] { SchemaName, PrefixTableName, convertExcelTemplateID, User.UserID, fromTime, toTime };
+                var result = await Repository.ExecProcAsync("HR_spExcelTemplateGetEmployee", paramTemplate);
+                if (result == 0)
+                {
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return false;
+            }
+        }
+
+        public async Task MultiProcessAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            Dictionary<string, object> template = requestReader.ReadObject<Dictionary<string, object>>();
+            await MultiProcessAsyncLogic(template);
+            responseWriter.WriteObject(null);
+        }
+
+        public async Task MultiProcessAsyncLogic(Dictionary<string, object> requestParams)
+        {
+            string SchemaName = requestParams["schemaname"].ToString();
+            string PrefixTableName = requestParams["prefixtablename"].ToString();
+            string ExcelTemplateID = requestParams["exceltemplateid"].ToString();
+            string convertExcelTemplateID = Guid.Parse(ExcelTemplateID.ToString()).ToString("N").ToUpper();
+            string ProcessName = "UnionDataNhapNhanhThongTinLuong";
+
+            var str = "[" + SchemaName + "]." + "[" + PrefixTableName + "_" + convertExcelTemplateID
+                        + "_" + User.UserID + "_CV" + "]";
+
+            string cmd = $"SELECT {"EmployeeID"} FROM {str}";
+            try
+            {
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+                var dt = cnn.Query<dynamic>(cmd).ToList();
+                List<EmployeeItem> listOfEmps = new List<EmployeeItem>();
+
+                foreach (var emp in dt)
+                {
+                    listOfEmps.Add(new EmployeeItem()
+                    {
+                        EmployeeID = emp.ToString(),
+                    });
+                }
+                try
+                {
+                    var modelMulti = new modelMultiProcess()
+                    {
+                        Repository = Repository,
+                        HubContext = HubContext,
+                        ProcessName = ProcessName,
+                        UserID = UserID,
+                        Tenant = RequestContext.RequestSession.Tenant,
+                        IsReturnList = true
+                    };
+                    var multi = new MultiProcess<EmployeeItem>(modelMulti);
+                    
+                    await multi.Excute(listOfEmps, async (objEmps) =>
+                    {
+                        var strEmps = "";
+                        foreach (object emp in objEmps)
+                        {
+                            strEmps += ((EmployeeItem)emp).EmployeeID + ",";
+                        }
+                        strEmps = strEmps.TrimEnd(',');
+                        var paras = new object[] { SchemaName, PrefixTableName, convertExcelTemplateID, User.UserID, strEmps };
+                        await Repository.ExecProcAsync("HR_spExcelTemplateUnionData", paras);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+            }
+        }
+
+        public void ExportExcelAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            Dictionary<string, object> template = requestReader.ReadObject<Dictionary<string, object>>();
+            var result = ExportExcelAsyncLogic(template);
+            responseWriter.WriteObject(result);
+        }
+
+        public byte[] ExportExcelAsyncLogic(Dictionary<string, object> requestParams)
+        {
+            string SchemaName = requestParams["schemaname"].ToString();
+            string function_id = requestParams["function_id"].ToString();
+            string PrefixTableName = requestParams["prefixtablename"].ToString();
+            string ExcelTemplateID = requestParams["exceltemplateid"].ToString();
+            string convertExcelTemplateID = Guid.Parse(ExcelTemplateID.ToString()).ToString("N").ToUpper();
+            string Dow_Code = requestParams["Dow_Code"].ToString();
+            string BegDay = requestParams["BegDay"].ToString();
+            string EndDay = requestParams["EndDay"].ToString();
+            string toTime = requestParams["toTime"].ToString();
+            string fromTime = requestParams["fromTime"].ToString();
+
+            TemplateObject itemTemplate = new TemplateObject();
+
+            itemTemplate = Repository.Get<HR_SysExcelTemplateDetail>()
+                                .Where(p => p.ExcelTemplateID.ToString() == ExcelTemplateID && p.UserID == User.UserID)
+                                .Select(x => new TemplateObject
+                                {
+                                    FileName = x.FileNameTemplate,
+                                    ContentSource = x.TemplateContent,
+                                    WhereExpression = x.WhereExpression
+                                }).FirstOrDefault();
+            if (itemTemplate == null)
+            {
+                itemTemplate = Repository.Get<HR_SysExcelTemplateDetail>()
+                      .Where(p => p.ExcelTemplateID.ToString() == ExcelTemplateID && p.IsApplyForAll)
+                      .Select(x => new TemplateObject()
+                      {
+                          FileName = x.FileNameTemplate,
+                          ContentSource = x.TemplateContent,
+                          WhereExpression = x.WhereExpression
+                      }).FirstOrDefault();
+            }
+
+            if (itemTemplate != null)
+            {
+                string str = "";
+                if (itemTemplate.WhereExpression != null && itemTemplate.WhereExpression != "")
+                {
+                    string expression = itemTemplate.WhereExpression.Split(' ')[0];
+
+                    str = "[" + SchemaName + "]." +
+                        "[" + PrefixTableName + "_" + convertExcelTemplateID + "_" + User.UserID + "]"
+                        + " AS A INNER JOIN HR_Fn_GetEmployeeFilterByUserID('" + User.UserID + "', '" + function_id + "') AS B "
+                        + "ON A.[CV.EmployeeID] = B.EmployeeID"
+                        + " where " + itemTemplate.WhereExpression;
+                    if (expression.Contains('.'))
+                    {
+                        str = str.Replace(expression, "[" + expression + "]");
+                    }
+                }
+                else
+                {
+                    str = "[" + SchemaName + "]." + "[" + PrefixTableName + "_" + convertExcelTemplateID + "_" + User.UserID + "]"
+                            + " AS A INNER JOIN HR_Fn_GetEmployeeFilterByUserID('" + User.UserID + "', '" + function_id + "') AS B "
+                            + "ON A.[CV.EmployeeID] = B.EmployeeID";
+                }
+
+                string cmd = "SELECT * FROM" + str;
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+
+                var tblDetail = cnn.Query<dynamic>(cmd).ToList();
+
+                byte[] ContentSource = itemTemplate.ContentSource.ToArray();
+                var mm = new System.IO.MemoryStream();
+                mm.Write(ContentSource, 0, ContentSource.Length);
+                mm.Position = 0;
+                using (var package = new ExcelPackage(mm))
+                {
+                    var ws = package.Workbook.Worksheets[0];
+                    var exportPackage = new ExcelPackage();
+                    using (MemoryStream memStream = new MemoryStream(ContentSource))
+                    {
+                        exportPackage = new ExcelPackage(memStream);
+                    }
+                    var exportWorksheet = exportPackage.Workbook.Worksheets[0];
+                    int titleIdx = 0;
+                    int begIdx = 2;
+                    int idxEndCol = 0;
+
+                    for (int i = 1; i <= ws.Dimension.Rows; i++)
+                    {
+                        if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@DowCode]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@DowCode]", Dow_Code);
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                        else if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@BegDay]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@BegDay]", BegDay);
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                        else if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@EndDay]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@EndDay]", EndDay);
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                        else if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@fromTime]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@fromTime]", fromTime);
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                        else if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@toTime]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@toTime]", toTime);
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                    }
+
+                    idxEndCol = ws.Dimension.Columns;
+                    begIdx = begIdx + 1;
+                    int iLoopData = 0;
+
+                    foreach (var row in tblDetail)
+                    {
+                        var rowIdx = begIdx + iLoopData + 1;
+                        for (int j = 1; j <= exportWorksheet.Dimension.Columns; j++)
+                        {
+                            object _columnName = exportWorksheet.Cells[begIdx, j].Value;
+                            if (_columnName != null)
+                            {
+                                string columnName = _columnName.ToString().TrimStart('[').TrimEnd(']');
+                                if (((IDictionary<string, object>)row).ContainsKey(columnName))
+                                {
+                                    if (columnName.Contains("IC.ToTime"))
+                                    {
+                                        exportWorksheet.Cells[rowIdx, j].Value = toTime;
+                                        exportWorksheet.Cells[rowIdx, j].Style.Numberformat.Format = "dd/mm/yyyy";
+                                    }
+                                    else if (columnName.Contains("IC.FromTime"))
+                                    {
+                                        exportWorksheet.Cells[rowIdx, j].Value = fromTime;
+                                        exportWorksheet.Cells[rowIdx, j].Style.Numberformat.Format = "dd/mm/yyyy";
+                                    }
+                                    else
+                                    {
+                                        var value = ((IDictionary<string, object>)row)[columnName];
+                                        exportWorksheet.Cells[rowIdx, j].Value = value ?? "";
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                exportWorksheet.Cells[rowIdx, j].Value = "";
+                            }
+                        }
+
+                        iLoopData++;
+                        if (iLoopData < tblDetail.Count)
+                        {
+                            exportWorksheet.InsertRow(rowIdx + 1, 1, rowIdx);
+                        }
+                    }
+                    using (ExcelRange Rng = exportWorksheet.Cells[3, 1, iLoopData + 7 + 1, exportWorksheet.Dimension.Columns])
+                    {
+                        Rng.Style.Border.Top.Style = ExcelBorderStyle.Thin;
+                        Rng.Style.Font.Bold = false;
+                        Rng.Style.Border.Left.Style = ExcelBorderStyle.Thin;
+                        Rng.Style.Border.Right.Style = ExcelBorderStyle.Thin;
+                        Rng.Style.Border.Bottom.Style = ExcelBorderStyle.Thin;
+                    }
+                    if (titleIdx != 0)
+                    {
+                        string strTitle = exportWorksheet.Cells[titleIdx, 1].GetValue<string>();
+                        strTitle = strTitle.Replace("@DowCode", Dow_Code);
+                        strTitle = strTitle.Replace("@BegDay", BegDay);
+                        strTitle = strTitle.Replace("@EndDay", EndDay);
+                        exportWorksheet.Cells[titleIdx, 1].Value = strTitle;
+                    }
+                    exportWorksheet.Row(iLoopData + begIdx).Hidden = true;
+                    exportWorksheet.Row(begIdx).Hidden = true;
+
+                    var ms = new System.IO.MemoryStream();
+                    exportPackage.SaveAs(ms);
+                    var bff = new byte[ms.Length];
+                    ms.Position = 0;
+                    ms.Read(bff, 0, bff.Length);
+                    ms.Close();
+                    return bff;
+
+
+                }
+            }
+            return null;
+        }
+
+        #endregion
+
+        #region Import SalaryInfo
+        public async Task ImportAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            string base64String = requestReader.ReadString();
+            Guid excelTemplateID = requestReader.ReadGuid();
+            string dowCode = requestReader.ReadString();
+            var result = await ImportAsyncLogic(base64String, excelTemplateID, dowCode);
+            responseWriter.WriteObject(result);
+        }
+        public async Task<object> ImportAsyncLogic(string base64String, Guid excelTemplateID, string dowCode)
+        {
+            var cols = new List<SqlColumnInfo>();
+            var templateDetails = await Repository.GetAsync<HR_SysExcelTemplateField>().Where(p => p.ExcelTemplateID == excelTemplateID).ToListAsync();
+            if (templateDetails != null)
+            {
+                foreach (var temp in templateDetails)
+                {
+                    var col = new SqlColumnInfo()
+                    {
+                        ColumnName = temp.TableName + "." + temp.FieldName,
+                        IsKey = true,
+                    };
+                    cols.Add(col);
+                }
+            }
+            byte[] byteArray = Convert.FromBase64String(base64String);
+            var mm = new System.IO.MemoryStream();
+            mm.Write(byteArray, 0, byteArray.Length);
+            mm.Position = 0;
+            using (var package = new ExcelPackage(mm))
+            {
+                var worksheet = package.Workbook.Worksheets[0];
+
+                var paramsExcelTemplate = new object[] { excelTemplateID };
+
+                var tblCol = await Repository.ExecScalarAsync<DataTable>("HR_fnGetExcelTemplateFields", paramsExcelTemplate);
+                System.Data.DataView dvCol = tblCol[0].DefaultView;
+                tblCol[0] = dvCol.ToTable();
+                foreach (System.Data.DataRow row in tblCol[0].Rows)
+                {
+                    var col = new SqlColumnInfo()
+                    {
+                        ColumnName = row["FieldName"].ToString().TrimEnd(']').TrimStart('['),
+                        AllowNull = true,
+                        IsKey = false,
+                        DataTypeName = row["DataType"].ToString(),
+                    };
+                    cols.Add(col);
+                }
+                string tableName = GetTableNameByTemplateIDAsync(excelTemplateID);
+                var result = await HandlerImportExcelTemplate(excelTemplateID, tableName, dowCode, worksheet, cols);
+                return result;
+            }
+        }
+        private string GetTableNameByTemplateIDAsync(Guid templateID)
+        {
+            string templateIDString = templateID.ToString("N");
+            string tableNamePrefix = "TExcelInputPR_";
+            string tableName = tableNamePrefix + templateIDString + "_" + User.UserID.ToString();
+            return tableName;
+        }
+
+        private async Task<object> HandlerImportExcelTemplate(Guid excelTemplateID, string tableName, string dowCode, ExcelWorksheet worksheet, List<SqlColumnInfo> columns)
+        {
+            var keyColumns = columns.Where(p => p.IsKey).ToList();
+            var cols = await GetColumns(excelTemplateID);
+
+            columns = columns.Where(x => cols.Any(y => y.ColumnName == x.ColumnName)).ToList();
+
+            if (dowCode != null)
+            {
+                SqlColumnInfo info = new SqlColumnInfo
+                {
+                    AllowNull = true,
+                    ColumnName = "DowCode",
+                    IsKey = false
+                };
+                columns.Add(info);
+            }
+
+            string qrDel = $"DELETE FROM \"{tableName}\"";
+            await Repository.ExecAsync(qrDel);
+
+            if (dowCode != null)
+            {
+                string query = $"IF NOT EXISTS(SELECT 1 FROM sys.columns WHERE Name = N'DowCode' AND Object_ID = Object_ID(N'" + tableName + "')) " +
+                    "BEGIN " +
+                        "ALTER TABLE " + tableName + " ADD DowCode VARCHAR(7) " +
+                    "END";
+                await Repository.ExecAsync(query);
+            }
+
+            #region Đọc dữ liệu và map data
+            int idxStt = 0;
+            for (int col = 1; col < worksheet.Dimension.Rows; col++)
+            {
+                if (worksheet.Cells[col, 1].Value != null)
+                {
+                    if (worksheet.Cells[col, 1].Value.ToString().ToLower() == "@stt@")
+                    {
+                        idxStt = col + 1;
+                        break;
+                    }
+                }
+            }
+
+            int idxEnd = FindLastRowWithData(worksheet);
+
+            var columnMap = new List<ColumnMapping>();
+            var nameMapping = new List<ColumnMapping>();
+            for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+            {
+                try
+                {
+                    if (worksheet.Cells[idxStt, col].Value != null)
+                    {
+                        string columnName = worksheet.Cells[idxStt, col].Value.ToString().TrimStart('[').TrimEnd(']');
+                        nameMapping.Add(new ColumnMapping()
+                        {
+                            ColumnName = worksheet.Cells[idxStt, col].Value.ToString().TrimStart('[').TrimEnd(']'),
+                            Addess = worksheet.Cells[idxStt, col].FullAddressAbsolute,
+                        });
+                    }
+                } catch (Exception ex) {
+                    Logger.Error(ex);
+                }
+
+            }
+
+            int col_idx = 1;
+            for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+            {
+                if (nameMapping.FirstOrDefault(p => p.Addess == worksheet.Cells[idxStt, col].FullAddressAbsolute) != null)
+                {
+                    columnMap.Add(new ColumnMapping()
+                    {
+                        ColumnName = nameMapping.FirstOrDefault(p => p.Addess == worksheet.Cells[idxStt, col].FullAddressAbsolute).ColumnName,
+                        Index = col,
+                        Caption = worksheet.Cells[idxStt - 2, col].Text
+                    });
+                }
+                col_idx++;
+            }
+
+            if (dowCode != null)
+            {
+                columnMap.Add(new ColumnMapping()
+                {
+                    ColumnName = "DowCode",
+                    Index = col_idx + 1,
+                    Caption = "Kỳ tính lương"
+                });
+            }
+
+            columnMap = columnMap.Join(columns, p => p.ColumnName.ToLower(), q => q.ColumnName.ToLower(), (p, q) => p).ToList();
+
+            #endregion
+
+            #region Lấy dữ liệu và thực hiện import
+            var lstInsertRowSheet = new List<InsertRowSheet>();
+            List<Hashtable> records = new List<Hashtable>();
+            for (int row = idxStt + 1; row <= idxEnd - 1; row++)
+            {
+                #region Mapping data
+
+                var keyValues = new List<ColumnMapping>();
+                var filter = "";
+                var Params = new Hashtable();
+
+                foreach (var col in keyColumns)
+                {
+                    var keyColumnMapping = columnMap.FirstOrDefault(p => p.ColumnName.Equals(col.ColumnName, StringComparison.OrdinalIgnoreCase));
+                    if (keyColumnMapping == null)
+                    {
+                        return new ImportDataResult()
+                        {
+                            StatusName = "Error",
+                            IsError = true,
+                        };
+                    }
+                    var index = keyColumnMapping.Index;
+                    Params[keyColumnMapping.ColumnName] = null;
+
+                    object value = null;
+                    if (worksheet.Cells[row, index].Value != null)
+                    {
+                        if (worksheet.Cells[row, index].StyleName == "date")
+                        {
+                            value = DateTime.FromOADate(double.Parse(worksheet.Cells[row, index].Value.ToString()));
+                        }
+                        else
+                        {
+                            value = worksheet.Cells[row, index].Value;
+                        }
+                        Params[keyColumnMapping.ColumnName] = value;
+                    }
+                    filter += "([" + keyColumnMapping.ColumnName + "]=@" + keyColumnMapping.ColumnName + ")and";
+                    keyValues.Add(new ColumnMapping()
+                    {
+                        ColumnName = keyColumnMapping.ColumnName,
+                        Value = value
+                    });
+                    if (dowCode != null)
+                    {
+                        keyValues.Add(new ColumnMapping()
+                        {
+                            ColumnName = keyColumnMapping.ColumnName,
+                            Value = dowCode
+                        });
+                    }
+                }
+                filter = filter.TrimEnd("and".ToCharArray());
+
+                var Data = new Hashtable();
+                foreach (var mapCol in columnMap)
+                {
+                    Data[mapCol.ColumnName] = null;
+                    if (worksheet.Cells[row, mapCol.Index].Value != null)
+                    {
+                        var col = cols.FirstOrDefault(p => p.ColumnName == mapCol.ColumnName);
+                        var colD = cols.FirstOrDefault(p => p.ColumnName == mapCol.ColumnName && p.DataTypeName == "datetime");
+                        if (colD == null)
+                        {
+                            if (col != null)
+                            {
+                                Data[mapCol.ColumnName] = worksheet.Cells[row, mapCol.Index].Value;
+                            }
+                        }
+                        else
+                        {
+                            double doubleParse;
+                            if (double.TryParse(worksheet.Cells[row, mapCol.Index].Value.ToString(), out doubleParse))
+                            {
+                                Data[mapCol.ColumnName] = DateTime.FromOADate(double.Parse(worksheet.Cells[row, mapCol.Index].Value.ToString()));
+                            }
+                            else
+                            {
+                                var dataDate = worksheet.Cells[row, mapCol.Index].Value.ToString().Split('/');
+                                if (dataDate.Length >= 3)
+                                {
+                                    Data[mapCol.ColumnName] = dataDate[2] + '-' + dataDate[1] + '-' + dataDate[0];
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (dowCode != null && mapCol.ColumnName == "DowCode")
+                        {
+                            Data[mapCol.ColumnName] = dowCode;
+                        }
+                    }
+                }
+                records.Add(Data); 
+                WorkSheetRowItem wsrItem = new WorkSheetRowItem()
+                {
+                    Data = Data,
+                    Filter = filter,
+                    Index = row - 1,
+                    Params = Params
+                };
+                var dataItem = new InsertRowSheet()
+                {
+                    TableName = tableName,
+                    cols = cols,
+                    wsrItem = wsrItem,
+                };
+                lstInsertRowSheet.Add(dataItem);
+                #endregion
+            }
+            var modelMulti = new modelMultiProcess()
+            {
+                Repository = Repository,
+                HubContext = HubContext,
+                ProcessName = "test",
+                UserID = UserID,
+                Tenant = RequestContext.RequestSession.Tenant,
+                IsReturnList = true
+            };
+            var multi = new MultiProcess<InsertRowSheet>(modelMulti);
+            await multi.Excute(lstInsertRowSheet, async (lst) =>
+            {
+                try
+                {
+                    foreach (var item in lst)
+                    {
+                        InsertSalaryTemplate(item.TableName, item.cols, item.wsrItem);
+                    }
+                }
+                catch(Exception ex) {
+                    Logger.Error(ex);
+                    throw;
+                }
+                
+            });
+            
+
+            return new { };
+            #endregion
+        }
+
+        public async Task<List<SqlColumnInfo>> GetColumns(Guid excelTemplateID)
+        {
+            string ExcelTemplateType = "TExcelInputPR";
+            var paras = new object[] { ExcelTemplateType, excelTemplateID };
+
+            // Thực hiện truy vấn để lấy thông tin schema của bảng
+            var dt = await Repository.ExecScalarAsync<DataTable>("HR_FNGetColumnTemplateExcelExtFunction", paras);
+            var check = dt[0].Rows[0]["TableName"];
+            try
+            {
+                var ret = dt[0].Rows.Cast<DataRow>()
+                .GroupBy(p => p["ColumnName"].ToString(), (key, group) => group.First())
+                .Select(p => new SqlColumnInfo()
+                {
+                    ColumnName = p["ColumnName"].ToString(),
+                }).ToList();
+                var dowCode = new SqlColumnInfo()
+                {
+                    ColumnName = "DowCode",
+                };
+                ret.Add(dowCode);
+                return ret;
+
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return null;
+            }
+
+        }
+
+        private void InsertSalaryTemplate(string tableName, List<SqlColumnInfo> cols, WorkSheetRowItem sheetItem)
+        {
+
+            var item = GenarateItem(new LoadDatasourceItemInfo()
+            {
+                Source = tableName,
+                Params = sheetItem.Params,
+            });
+
+            #region insert data
+
+            var info = new InsertItemDatasourceInfo()
+            {
+                Data = sheetItem.Data,
+                UserID = User.UserID,
+                Source = tableName,
+                Language = User.Language,
+                Email = User.Email,
+            };
+
+            var ret = new object();
+            var vDataItems = info.Data.Cast<DictionaryEntry>().ToList();
+            var Keys = vDataItems.Join(cols.Where(p => p.IsKey && !p.IsIdentity && !p.AllowNull), p => p.Key.ToString().ToLower(), q => q.ColumnName.ToLower(), (prop, q) => prop)
+                    .GroupBy(p => p.Key.ToString())
+                    .Select(p => p.FirstOrDefault())
+                    .ToList();
+
+            ret = InsertTemporaryTable(info, cols, Keys, vDataItems);
+        }
+
+        #endregion
+
+        public object InsertTemporaryTable(InsertItemDatasourceInfo info, List<SqlColumnInfo> cols, List<DictionaryEntry> Keys, List<DictionaryEntry> vDataItems)
+        {
+            string cmd = "";
+            var isNullKey = false;
+            var i = 0;
+            while ((!isNullKey) && (i < Keys.Count))
+            {
+                isNullKey = isNullKey || ((Keys[i].Value == null) || (Keys[i].Value.ToString() == ""));
+                i++;
+            }
+
+            // Bắt đầu xây dựng câu truy vấn Insert
+            cmd = "Insert into [" + info.Source + "](";
+            var values = " values(";
+
+            var dataItems = vDataItems
+                .Join(cols.Where(x => !x.IsIdentity), p => p.Key.ToString().ToLower(), q => q.ColumnName.ToLower(),
+                (p, q) => p).ToList();
+
+            // Lỗi trong vòng lặp => values bị trùng 
+            foreach (var dataValue in dataItems)
+            {
+                string columnName = dataValue.Key.ToString();
+                string parameterName = columnName.Replace('.', '_').TrimStart('[').TrimEnd(']');
+
+                // Thêm cột vào câu lệnh SQL
+                cmd += "[" + columnName + "],";
+                // values += "'" + EscapeSqlValue(dataValue.Value) + "',";
+
+                var identityColumn = cols.FirstOrDefault(p => p.ColumnName.Equals(columnName) && p.IsIdentity);
+                if (identityColumn != null)
+                {
+                    if (identityColumn.DataTypeName == "uniqueidentifier")
+                    {
+                        // Đặt giá trị là GUID
+                        values += "'" + Guid.NewGuid().ToString() + "',";
+                    }
+                }
+                else
+                {
+                    // Xử lý các giá trị mặc định như CreatedBy và CreatedOn
+                    if (columnName == "CreatedBy")
+                    {
+                        values += "'" + EscapeSqlValue(info.UserID) + "',";
+                    }
+                    else if (columnName == "CreatedOn")
+                    {
+                        values += "'" + DateTime.Now.ToString("yyyy-MM-ddThh:mm:ss") + "',";
+                    }
+                    else
+                    {
+                        // Thêm giá trị bình thường
+                        values += "N'" + EscapeSqlValue(dataValue.Value) + "',";
+                    }
+                }
+            }
+
+            // Kiểm tra nếu không có cột CreatedBy thì thêm cột này
+            var colCreatedBy = dataItems.Count(p => p.Key.ToString() == "CreatedBy");
+            if (colCreatedBy == 0 && !info.Source.Contains("TExcelInputPR"))
+            {
+                cmd += "[CreatedBy],";
+                values += "'" + EscapeSqlValue(info.UserID) + "',";
+            }
+
+            // Kiểm tra nếu không có cột CreatedOn thì thêm cột này
+            var colCreatedOn = dataItems.Count(p => p.Key.ToString() == "CreatedOn");
+            if (colCreatedOn == 0 && !info.Source.Contains("TExcelInputPR"))
+            {
+                cmd += "[CreatedOn],";
+                values += "'" + DateTime.Now.ToString("yyyy-MM-ddThh:mm:ss") + "',";
+            }
+
+            // Hoàn tất câu truy vấn
+            cmd = cmd.TrimEnd(',') + ")" + values.TrimEnd(',') + ")";
+
+            // Xử lý cột Identity nếu có
+            var idCol = cols.FirstOrDefault(p => p.IsIdentity);
+            if (idCol != null)
+            {
+                cmd += "; set @" + idCol.ColumnName + "=@@IDENTITY;";
+            }
+
+            try
+            {
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+
+                var tbl = cnn.Query<dynamic>(cmd).ToList();
+                if (idCol != null)
+                {
+                    info.Data[idCol.ColumnName] = tbl.FirstOrDefault()[idCol.ColumnName];
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return null;
+            }
+
+            return info.Data;
+        }
+
+        // Hàm để thoát các ký tự đặc biệt trong giá trị SQL
+        private string EscapeSqlValue(object value)
+        {
+            if (value == null)
+            {
+                return "NULL";
+            }
+            if (value is string strValue)
+            {
+                return strValue.Replace("'", "''");
+            }
+            return value.ToString();
+        }
+
+        public object GenarateItem(LoadDatasourceItemInfo info)
+        {
+            if (string.IsNullOrEmpty(info.Source))
+            {
+                return null;
+            }
+
+            string cmd = "";
+            var source = info.Source;
+            var cols = info.Source + ".*";
+
+            if ((!string.IsNullOrEmpty(info.Columns)) && (info.Columns != "*"))
+            {
+                cols = "";
+                foreach (var item in info.Columns.Split(','))
+                {
+                    cols += source + "." + item + ",";
+                }
+                cols = cols.TrimEnd(',');
+            }
+
+            cmd = "SELECT " + cols + " FROM " + info.Source;
+
+            if (!string.IsNullOrEmpty(info.Filter))
+            {
+                cmd += " Where " + info.Filter;
+            }
+            try
+            {
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+
+                var tbl = cnn.Query<dynamic>(cmd).ToList();
+                if (tbl.Count == 0)
+                {
+                    return null;
+                }
+                var ret = new Hashtable();
+                foreach (var col in tbl)
+                {
+                    if (col == DBNull.Value)
+                    {
+                        ret[col.ColumnName] = null;
+                    }
+                    else
+                    {
+                        ret[col.ColumnName] = col;
+                    }
+                }
+                return ret;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return null;
+            }
+        }
+
+       
+        #endregion
+
+        #region Load Data User Import
+        public void GetDataUserImportAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            var models = requestReader.ReadObject<GridModels>();
+            var oReturn = GetDataUserImportAsyncLogic(models);
+            responseWriter.WriteObject(oReturn);
+        }
+
+        public object[] GetDataUserImportAsyncLogic(GridModels models)
+        {
+            string tableName = GetTableNameByTemplateIDAsync(Guid.Parse(models.DataValue));
+            string cmd = $"SELECT * FROM \"{tableName}\"";
+
+            var dbContext = Repository.UnitOfWork.Orm as dynamic;
+            using var cnn = (DataConnection)dbContext.GetDBConnection();
+            int skipCount;
+            try
+            {
+                var allRecords = cnn.Query<object>(cmd).ToList();
+                if (models.Page > 0 && models.PageSize > 0)
+                {
+                    skipCount = (models.Page - 1) * models.PageSize;
+                }
+                else
+                {
+                    models.Page = 1;
+                    models.PageSize = 20;
+                    skipCount = (models.Page - 1) * models.PageSize;
+                }
+
+
+                var pagedRecords = allRecords.Skip(skipCount).Take(models.PageSize).ToList();
+
+                return new object[] { pagedRecords, allRecords.Count };
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return null;
+            }
+            
+            
+        }
+        #endregion
+
+        #region Load DataType
+        public async Task GetDataTypeAndDisplayNameAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            Guid models = requestReader.ReadGuid();
+            var oReturn = await GetDataTypeAndDisplayNameAsyncLogic(models);
+            responseWriter.WriteObject(oReturn);
+        }
+
+        public async Task<object> GetDataTypeAndDisplayNameAsyncLogic(Guid excelTemplateID)
+        {
+            string tableName = GetTableNameByTemplateIDAsync(excelTemplateID);
+            var paras = new object[] { tableName };
+            var paras1 = new object[] { tableName, excelTemplateID };
+
+            // Lấy DataType từ cơ sở dữ liệu
+            var dataTypeResult = await Repository.ExecScalarAsync<object>("FnBA_ViewTableDesc", paras);
+            var dataTypes = ((IEnumerable<dynamic>)dataTypeResult)
+                            .ToDictionary(
+                                item => (string)item.ColumnName,
+                                item => (string)item.DataType
+                            );
+
+            // Lấy DisplayName từ cơ sở dữ liệu
+            var displayNameResult = await Repository.ExecScalarAsync<object>("HR_FNGetDisplayName", paras1);
+            var displayNames = ((IEnumerable<dynamic>)displayNameResult)
+                              .ToDictionary(
+                                  item => (string)item.COLUMN_NAME,
+                                  item => (string)item.DisplayName
+                              );
+
+            // Kết hợp DataType và DisplayName vào một object
+            var combinedResult = new Dictionary<string, object>();
+
+            foreach (var columnName in dataTypes.Keys)
+            {
+                combinedResult[columnName] = new
+                {
+                    DataType = dataTypes[columnName],
+                    DisplayName = displayNames.ContainsKey(columnName) ? displayNames[columnName] : null
+                };
+            }
+
+            return combinedResult;
+        }
+        #endregion
+
+        #region Tự tạo Template và Import Data
+        public async Task AutoCreateTemplateAndImportDataAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            string base64String = requestReader.ReadString();
+            string dowCode = requestReader.ReadString();
+            string fileName = requestReader.ReadString();
+            var result = await AutoCreateTemplateAndImportDataAsyncLogic(base64String, dowCode, fileName);
+            responseWriter.WriteObject(result);
+        }
+        public async Task<object> AutoCreateTemplateAndImportDataAsyncLogic(string base64String, string dowCode, string fileName)
+        {
+            byte[] byteArray = Convert.FromBase64String(base64String);
+            using (var mm = new System.IO.MemoryStream(byteArray))
+            {
+                using (var package = new ExcelPackage(mm))
+                {
+                    var worksheet = package.Workbook.Worksheets[0];
+                    // Xử lý khi tên template trùng nhau
+                    HR_SysExcelTemplate findTemplate = await Repository.GetOneAsync<HR_SysExcelTemplate>(item => item.TemplateName == worksheet.ToString());
+                    if (findTemplate != null)
+                    {
+                        var result = await DeleteTemplateAsyncLogic(findTemplate.TemplateID);
+                        if (result)
+                        {
+                            await UnitOfWork.SaveChangesAsync();
+                        }
+                    }
+
+                    // Tạo Template
+                    HR_SysExcelTemplate template = new HR_SysExcelTemplate
+                    {
+                        TemplateName = worksheet.ToString(),
+                        TemplateType = "TExcelInputPR",
+                        Description = "Template tạo tự động"
+                    };
+                    Repository.Add(template);
+
+                    // Tạo Template Detail
+                    HR_SysExcelTemplateDetail detail = new HR_SysExcelTemplateDetail
+                    {
+                        FileNameTemplate = fileName,
+                        TemplateContent = byteArray,
+                        ExcelTemplateID = template.TemplateID,
+                        UserID = User.UserID,
+                    };
+                    Repository.Add(detail);
+
+                    // Xác định các vị trí và dòng
+                    int idxStt = FindRowContainingStt(worksheet);
+                    int rowEnd = FindLastRowWithData(worksheet);
+
+                    if (idxStt > 0)
+                    {
+                        AddTemplateFields(worksheet, template, idxStt, 1);
+                        return await ProcessTemplateAndImport(template, dowCode, base64String, idxStt, rowEnd);
+                    }
+                    else
+                    {
+                        var mappingPositions = FindMappingPosition(worksheet);
+                        if (mappingPositions.idxStt > 0)
+                        {
+                            AddTemplateFields(worksheet, template, mappingPositions.idxStt - 1, mappingPositions.idxCol);
+                            return await ProcessTemplateAndImport(template, dowCode, base64String, mappingPositions.idxStt, rowEnd);
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        public async Task<object> MappingColumnAsyncLogic(string base64String, Guid excelTemplateID, string dowCode, int rowStart, int rowEnd)
+        {
+            var cols = new List<SqlColumnInfo>();
+            var templateDetails = await Repository.GetAsync<HR_SysExcelTemplateField>().Where(p => p.ExcelTemplateID == excelTemplateID).ToListAsync();
+            if (templateDetails != null)
+            {
+                foreach (var temp in templateDetails)
+                {
+                    var col = new SqlColumnInfo()
+                    {
+                        ColumnName = temp.TableName + "." + temp.FieldName,
+                        IsKey = true
+                    };
+                    cols.Add(col);
+                }
+            }
+
+            byte[] byteArray = Convert.FromBase64String(base64String);
+            var mm = new System.IO.MemoryStream();
+            mm.Write(byteArray, 0, byteArray.Length);
+            mm.Position = 0;
+            using (var package = new ExcelPackage(mm))
+            {
+                var worksheet = package.Workbook.Worksheets[0];
+
+                var paramsExcelTemplate = new object[] { excelTemplateID };
+
+                var tblCol = await Repository.ExecScalarAsync<DataTable>("HR_fnGetExcelTemplateFields", paramsExcelTemplate);
+                System.Data.DataView dvCol = tblCol[0].DefaultView;
+                tblCol[0] = dvCol.ToTable();
+                foreach (System.Data.DataRow row in tblCol[0].Rows)
+                {
+                    var col = new SqlColumnInfo()
+                    {
+                        ColumnName = row["FieldName"].ToString().TrimEnd(']').TrimStart('['),
+                        AllowNull = true,
+                        IsKey = false,
+                        DataTypeName = row["DataType"].ToString(),
+                    };
+                    cols.Add(col);
+                }
+                string tableName = GetTableNameByTemplateIDAsync(excelTemplateID);
+                var result = await HandlerImportExcelAutoCreateTemplate(excelTemplateID, tableName, dowCode, worksheet, cols, rowStart, rowEnd);
+                return result;
+            }
+        }
+
+        private async Task<object> HandlerImportExcelAutoCreateTemplate(Guid excelTemplateID, string tableName, string dowCode, ExcelWorksheet worksheet, List<SqlColumnInfo> columns, int rowStart, int rowEnd)
+        {
+            var keyColumns = columns.Where(p => p.IsKey).ToList();
+            var cols = await GetColumns(excelTemplateID);
+
+            columns = columns.Where(x => cols.Any(y => y.ColumnName == x.ColumnName)).ToList();
+
+            if (dowCode != null)
+            {
+                SqlColumnInfo info = new SqlColumnInfo
+                {
+                    AllowNull = true,
+                    ColumnName = "DowCode",
+                    IsKey = false
+                };
+                columns.Add(info);
+            }
+
+            string qrDel = $"DELETE FROM \"{tableName}\"";
+            await Repository.ExecAsync(qrDel);
+
+            if (dowCode != null)
+            {
+                string query = $"IF NOT EXISTS(SELECT 1 FROM sys.columns WHERE Name = N'DowCode' AND Object_ID = Object_ID(N'" + tableName + "')) " +
+                    "BEGIN " +
+                        "ALTER TABLE " + tableName + " ADD DowCode VARCHAR(7) " +
+                    "END";
+                await Repository.ExecAsync(query);
+            }
+
+            #region Đọc dữ liệu và map data
+            int idxStt;
+            var findStt = FindRowContainingStt(worksheet);
+            if (findStt > 0)
+            {
+                idxStt = rowStart;
+            }
+            else
+            {
+                idxStt = rowStart - 1;
+            }
+            // Tìm row kết thúc của data -> END
+            int idxEnd = rowEnd;
+
+            var columnMap = new List<ColumnMapping>();
+            var nameMapping = new List<ColumnMapping>();
+            for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+            {
+                try
+                {
+                    if (worksheet.Cells[idxStt -1, col].Value != null)
+                    {
+                        string columnName = worksheet.Cells[idxStt - 1, col].Value.ToString().TrimStart('[').TrimEnd(']');
+                        nameMapping.Add(new ColumnMapping()
+                        {
+                            ColumnName = worksheet.Cells[idxStt - 1, col].Value.ToString().TrimStart('[').TrimEnd(']'),
+                            Addess = worksheet.Cells[idxStt - 1, col].FullAddressAbsolute,
+                        });
+                    }
+                    // Thêm vô khúc này cho field trống
+                    else
+                    {
+                        nameMapping.Add(new ColumnMapping()
+                        {
+                            ColumnName = $".Col " + col,
+                            Addess = worksheet.Cells[idxStt - 1, col].FullAddressAbsolute,
+                        }); 
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+
+            }
+
+            int col_idx = 1;
+            for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+            {
+                if (nameMapping.FirstOrDefault(p => p.Addess == worksheet.Cells[idxStt - 1, col].FullAddressAbsolute) != null)
+                {
+                    columnMap.Add(new ColumnMapping()
+                    {
+                        ColumnName = nameMapping.FirstOrDefault(p => p.Addess == worksheet.Cells[idxStt-1, col].FullAddressAbsolute).ColumnName,
+                        Index = col,
+                        Caption = worksheet.Cells[idxStt - 2, col].Text
+                    });
+                }
+                col_idx++;
+            }
+
+            if (dowCode != null)
+            {
+                columnMap.Add(new ColumnMapping()
+                {
+                    ColumnName = "DowCode",
+                    Index = col_idx + 1,
+                    Caption = "Kỳ tính lương"
+                });
+            }
+
+            columnMap = columnMap.Join(columns, p => p.ColumnName.ToLower(), q => q.ColumnName.ToLower(), (p, q) => p).ToList();
+
+            #endregion
+
+            #region Lấy dữ liệu và thực hiện import
+            var lstInsertRowSheet = new List<InsertRowSheet>();
+            List<Hashtable> records = new List<Hashtable>();
+            for (int row = idxStt;  row <= idxEnd; row++)
+            {
+                #region Mapping data
+
+                var keyValues = new List<ColumnMapping>();
+                var filter = "";
+                var Params = new Hashtable();
+
+                foreach (var col in keyColumns)
+                {
+                    var keyColumnMapping = columnMap.FirstOrDefault(p => p.ColumnName.Equals(col.ColumnName, StringComparison.OrdinalIgnoreCase));
+                    if (keyColumnMapping == null)
+                    {
+                        return new ImportDataResult()
+                        {
+                            StatusName = "Error",
+                            IsError = true,
+                        };
+                    }
+                    var index = keyColumnMapping.Index;
+                    Params[keyColumnMapping.ColumnName] = null;
+
+                    object value = null;
+                    if (worksheet.Cells[row, index].Value != null)
+                    {
+                        if (worksheet.Cells[row, index].StyleName == "date")
+                        {
+                            value = DateTime.FromOADate(double.Parse(worksheet.Cells[row, index].Value.ToString()));
+                        }
+                        else
+                        {
+                            value = worksheet.Cells[row, index].Value;
+                        }
+                        Params[keyColumnMapping.ColumnName] = value;
+                    }
+                    filter += "([" + keyColumnMapping.ColumnName + "]=@" + keyColumnMapping.ColumnName + ")and";
+                    keyValues.Add(new ColumnMapping()
+                    {
+                        ColumnName = keyColumnMapping.ColumnName,
+                        Value = value
+                    });
+                    if (dowCode != null)
+                    {
+                        keyValues.Add(new ColumnMapping()
+                        {
+                            ColumnName = keyColumnMapping.ColumnName,
+                            Value = dowCode
+                        });
+                    }
+                }
+                filter = filter.TrimEnd("and".ToCharArray());
+
+                var Data = new Hashtable();
+                foreach (var mapCol in columnMap)
+                {
+                    Data[mapCol.ColumnName] = null;
+                    if (worksheet.Cells[row, mapCol.Index].Value != null)
+                    {
+                        var col = cols.FirstOrDefault(p => p.ColumnName == mapCol.ColumnName);
+                        var colD = cols.FirstOrDefault(p => p.ColumnName == mapCol.ColumnName && p.DataTypeName == "datetime");
+                        if (colD == null)
+                        {
+                            if (col != null)
+                            {
+                                Data[mapCol.ColumnName] = worksheet.Cells[row, mapCol.Index].Value;
+                            }
+                        }
+                        else
+                        {
+                            double doubleParse;
+                            if (double.TryParse(worksheet.Cells[row, mapCol.Index].Value.ToString(), out doubleParse))
+                            {
+                                Data[mapCol.ColumnName] = DateTime.FromOADate(double.Parse(worksheet.Cells[row, mapCol.Index].Value.ToString()));
+                            }
+                            else
+                            {
+                                var dataDate = worksheet.Cells[row, mapCol.Index].Value.ToString().Split('/');
+                                if (dataDate.Length >= 3)
+                                {
+                                    Data[mapCol.ColumnName] = dataDate[2] + '-' + dataDate[1] + '-' + dataDate[0];
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (dowCode != null && mapCol.ColumnName == "DowCode")
+                        {
+                            Data[mapCol.ColumnName] = dowCode;
+                        }
+                    }
+                }
+                records.Add(Data);
+                WorkSheetRowItem wsrItem = new WorkSheetRowItem()
+                {
+                    Data = Data,
+                    Filter = filter,
+                    Index = row - 1,
+                    Params = Params
+                };
+                var dataItem = new InsertRowSheet()
+                {
+                    TableName = tableName,
+                    cols = cols,
+                    wsrItem = wsrItem,
+                };
+                lstInsertRowSheet.Add(dataItem);
+                #endregion
+            }
+            var modelMulti = new modelMultiProcess()
+            {
+                Repository = Repository,
+                HubContext = HubContext,
+                ProcessName = "test",
+                UserID = UserID,
+                Tenant = RequestContext.RequestSession.Tenant,
+                IsReturnList = true
+            };
+            var multi = new MultiProcess<InsertRowSheet>(modelMulti);
+            await multi.Excute(lstInsertRowSheet, async (lst) =>
+            {
+                try
+                {
+                    foreach (var item in lst)
+                    {
+                        InsertSalaryTemplate(item.TableName, item.cols, item.wsrItem);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                    throw;
+                }
+
+            });
+
+
+            return new { };
+            #endregion
+        }
+
+        private int FindRowContainingStt(ExcelWorksheet worksheet)
+        {
+            for (int row = 1; row <= worksheet.Dimension.Rows; row++)
+            {
+                for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+                {
+                    var cellValue = worksheet.Cells[row, col].Value?.ToString();
+                    if (!string.IsNullOrEmpty(cellValue) && cellValue.ToLower() == "@stt@")
+                    {
+                        return row;
+                    }
+                }
+            }
+            return 0;
+        }
+        private int FindLastRowWithData(ExcelWorksheet worksheet)
+        {
+            for (int row = worksheet.Dimension.Rows; row >= 1; row--)
+            {
+                for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+                {
+                    if (!string.IsNullOrEmpty(worksheet.Cells[row, col]?.Value?.ToString()))
+                    {
+                        return row;
+                    }
+                }
+            }
+            return 0;
+        }
+        private (int idxStt, int idxCol) FindMappingPosition(ExcelWorksheet worksheet)
+        {
+            int idxStt = 0, idxCol = 0;
+            for (int row = 1; row <= worksheet.Dimension.Rows; row++)
+            {
+                for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+                {
+                    var cellValue = worksheet.Cells[row, col]?.Value.ToString();
+                    if (!string.IsNullOrEmpty(cellValue) && cellValue.Contains('[') && cellValue.Contains(']'))
+                    {
+                        idxStt = row;
+                        idxCol = col;
+                        break;
+                    }
+                }
+                if (idxStt > 0) break;
+            }
+            return (idxStt, idxCol);
+        }
+        private void AddTemplateFields(ExcelWorksheet worksheet, HR_SysExcelTemplate template, int idxStt, int idxCol)
+        {
+            for (int col = idxCol; col <= worksheet.Dimension.Columns; col++)
+            {
+                int displayNameRow = idxStt - 1 > 0 ? idxStt - 1 : idxStt;
+                int fieldNameRow = idxStt + 1;
+
+                var displayNameCell = worksheet.Cells[displayNameRow, col]?.Value?.ToString();
+                var fieldNameCell = worksheet.Cells[fieldNameRow, col]?.Value?.ToString();
+
+                if (!string.IsNullOrEmpty(displayNameCell))
+                {
+                    HR_SysExcelTemplateField newTemplateField = new HR_SysExcelTemplateField
+                    {
+                        DisplayName = displayNameCell,
+                        Description = displayNameCell,
+                        ExcelTemplateID = template.TemplateID
+                    };
+
+                    if (!string.IsNullOrEmpty(fieldNameCell))
+                    {
+                        string field = fieldNameCell.Trim('[', ']');
+                        string[] parts = field.Split('.');
+
+                        newTemplateField.FieldName = parts.Length == 2 ? parts[1] : field;
+                        newTemplateField.TableName = parts.Length == 2 ? parts[0] : "";
+                    }
+                    else
+                    {
+                        newTemplateField.FieldName = $"Col " + col;
+                        newTemplateField.TableName = "";
+                    }
+
+                    Repository.Add(newTemplateField);
+                }
+            }
+        }
+        private async Task<object> ProcessTemplateAndImport(HR_SysExcelTemplate template, string dowCode, string base64String, int idxStt, int rowEnd)
+        {
+            int result = await UnitOfWork.SaveChangesAsync();
+            if (result > 0)
+            {
+                var parameters = new CreateTableParams
+                {
+                    SchemaName = "dbo",
+                    PrefixTableName = template.TemplateType,
+                    ExcelTemplateID = template.TemplateID,
+                };
+
+                var kq = await CreateStructureTableAsyncLogic(parameters);
+
+                // Tạo bảng chứa UserID
+                string cmd = $"SELECT * INTO {kq}{User.UserID} FROM {kq} WHERE 1=0";
+                await Repository.ExecAsync(cmd);
+                // Import dữ liệu
+                var importResult = await MappingColumnAsyncLogic(base64String, template.TemplateID, dowCode, idxStt + 2, rowEnd);
+                return template.TemplateID;
+            }
+            return null;
+        }
+        #endregion
+
+        #region Import data vào bảng chính
+        public async Task ImportDataToTableAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            RequestParams template = requestReader.ReadObject<RequestParams>();
+            await ImportDataToTableAsyncLogic(template);
+        }
+        public async Task ImportDataToTableAsyncLogic(RequestParams requestParams)
+        {
+            string convertExcelTemplateID = requestParams.ExcelTemplateID.ToString("N").ToUpper();
+
+            var str = "[" + requestParams.SchemaName + "]." + "[" + requestParams.PrefixTableName + "_" + convertExcelTemplateID
+                      + "_" + User.UserID + "]";
+            string cmd = @"SELECT * FROM " + str;
+
+            var dbContext = Repository.UnitOfWork.Orm as dynamic;
+            using var cnn = (DataConnection)dbContext.GetDBConnection();
+            var dt = cnn.Query<dynamic>(cmd).ToList();
+
+            List<ListEmployeeID> listOfEmps = new List<ListEmployeeID>();
+
+            foreach (var emp in dt)
+            {
+                var empDict = (IDictionary<string, object>)emp;
+                listOfEmps.Add(new ListEmployeeID()
+                {
+                    EmployeeID = empDict["CV.EmployeeID"]?.ToString() ?? string.Empty
+                });
+            }
+            HR_SysExcelTemplate template = await Repository.GetOneAsync<HR_SysExcelTemplate>(item => item.TemplateID == requestParams.ExcelTemplateID);
+            var modelMulti = new modelMultiProcess()
+            {
+                Repository = Repository,
+                HubContext = HubContext,
+                ProcessName = "importdata",
+                UserID = UserID,
+                Tenant = RequestContext.RequestSession.Tenant,
+                IsReturnList = true
+            };
+            var multi = new MultiProcess<ListEmployeeID>(modelMulti);
+            await multi.Excute(listOfEmps, async (lst) =>
+            {
+                try
+                {
+                    string strEmps = string.Join(",", lst.Select(emp => emp.EmployeeID));
+                    var parameter = new object[] { requestParams.SchemaName, requestParams.PrefixTableName, requestParams.ExcelTemplateID, requestParams.FromTime.ToString(), requestParams.ToTime.ToString(), requestParams.DowCode, template.CreatedBy, requestParams.GenDay.ToString(), strEmps, requestParams.IsCbk };
+                    var result = await Repository.ExecProcAsync("HR_SpAutoInsertDataPrefixTableSalaryTemplate", parameter);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                    throw;
+                }
+            });
+        }
+        #endregion
+
+        #region Upload Template và Tính lương
+        public async Task UploadTemplateAndCalculateAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            CreateTemplateAndStructureTable item = requestReader.ReadObject<CreateTemplateAndStructureTable>();
+            var result = await UploadTemplateAndCalculateAsyncLogic(item);
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<object> UploadTemplateAndCalculateAsyncLogic(CreateTemplateAndStructureTable item)
+        {
+            byte[] byteArray = Convert.FromBase64String(item.Base64string);
+            using (var mm = new System.IO.MemoryStream(byteArray))
+            {
+                using (var package = new ExcelPackage(mm))
+                {
+                    var worksheet = package.Workbook.Worksheets[0];
+                    // Xử lý khi tên template trùng nhau
+                    HR_SysExcelTemplate findTemplate = await Repository.GetOneAsync<HR_SysExcelTemplate>(item => item.TemplateName == worksheet.ToString());
+                    if (findTemplate != null)
+                    {
+                        var result = await DeleteTemplateAsyncLogic(findTemplate.TemplateID);
+                        if (result)
+                        {
+                            await UnitOfWork.SaveChangesAsync();
+                        }
+                    }
+
+                    // Tạo Template
+                    HR_SysExcelTemplate template = new HR_SysExcelTemplate
+                    {
+                        TemplateName = worksheet.ToString(),
+                        TemplateType = "TExcelInputPR",
+                        Description = "Template tạo tự động"
+                    };
+                    Repository.Add(template);
+
+                    // Tạo Template Detail
+                    HR_SysExcelTemplateDetail detail = new HR_SysExcelTemplateDetail
+                    {
+                        FileNameTemplate = item.FileName,
+                        TemplateContent = byteArray,
+                        ExcelTemplateID = template.TemplateID,
+                        UserID = User.UserID,
+                        ExcelColBegin = item.RowMapping.ToString(),
+                    };
+                    Repository.Add(detail);
+                    
+                    // Lọc ra các field Mapping, công thức, field cố định
+                    List<string> lstMapping = new List<string>();
+                    List<string> lstNumber = new List<string>();
+                    List<string> lstFormula = new List<string>();
+                    for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+                    {
+                        var cellValue = worksheet.Cells[item.RowMapping, col]?.Value.ToString();
+                        if (!string.IsNullOrEmpty(cellValue) && cellValue.Contains("[") && cellValue.Contains("]"))
+                        {
+                            lstMapping.Add(cellValue);
+                        }
+                        else if (!string.IsNullOrEmpty(worksheet.Cells[item.RowMapping, col]?.Formula))
+                        {
+                            lstFormula.Add(worksheet.Cells[item.RowMapping, col]?.Formula.ToString());
+                        }
+                        else
+                        {
+                            lstNumber.Add(cellValue);
+                        }
+                    }
+                    int rowEnd = FindLastRowWithData(worksheet);
+                    AddFields(worksheet, template, item.RowMapping, 1);
+                    try
+                    {
+                        var newTemplate = await CreateTemplateAndStructureTable(template, item.FromTime, item.ToTime);
+                        try
+                        {
+                            await MultiProcessAsyncLogic1(template.TemplateID, template.TemplateType);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error(ex);
+                            return null;
+                        }
+
+                        return newTemplate;
+                    } catch (Exception ex)
+                    {
+                        Logger.Error(ex);
+                        return null;
+                    }
+                }
+            }
+        }
+
+        public async Task MultiProcessAsyncLogic1(Guid excelTemplateID, string templateType)
+        {
+            string SchemaName = "dbo";
+            string ProcessName = "UploadTemplateAndCalculate";
+            string convertExcelTemplateID = excelTemplateID.ToString("N").ToUpper();
+
+            var str = "[" + SchemaName + "]." + "[" + templateType + "_" + convertExcelTemplateID
+                        + "_" + User.UserID + "_CV" + "]";
+
+            string cmd = $"SELECT {"EmployeeID"} FROM {str}";
+            try
+            {
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+                var dt = cnn.Query<dynamic>(cmd).ToList();
+                List<EmployeeItem> listOfEmps = new List<EmployeeItem>();
+
+                foreach (var emp in dt)
+                {
+                    listOfEmps.Add(new EmployeeItem()
+                    {
+                        EmployeeID = emp.ToString(),
+                    });
+                }
+                try
+                {
+                    var modelMulti = new modelMultiProcess()
+                    {
+                        Repository = Repository,
+                        HubContext = HubContext,
+                        ProcessName = ProcessName,
+                        UserID = UserID,
+                        Tenant = RequestContext.RequestSession.Tenant,
+                        IsReturnList = true
+                    };
+                    var multi = new MultiProcess<EmployeeItem>(modelMulti);
+
+                    await multi.Excute(listOfEmps, async (objEmps) =>
+                    {
+                        var strEmps = "";
+                        foreach (object emp in objEmps)
+                        {
+                            strEmps += ((EmployeeItem)emp).EmployeeID + ",";
+                        }
+                        strEmps = strEmps.TrimEnd(',');
+                        var paras = new object[] { SchemaName, templateType, convertExcelTemplateID, User.UserID, strEmps };
+                        try
+                        {
+                            await Repository.ExecProcAsync("HR_spExcelTemplateUnionData", paras);
+                        } catch (Exception ex)
+                        {
+                            Logger.Error(ex);
+                        }
+                        
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+            }
+        }
+
+        private async Task<object> CreateTemplateAndStructureTable(HR_SysExcelTemplate template, DateTime fromTime, DateTime toTime)
+        {
+            int result = await UnitOfWork.SaveChangesAsync();
+            if (result > 0)
+            {
+                var parameters = new CreateTableParams
+                {
+                    SchemaName = "dbo",
+                    PrefixTableName = template.TemplateType,
+                    ExcelTemplateID = template.TemplateID,
+                };
+
+                var kq = await CreateStructureTableAsyncLogic(parameters);
+
+                // Tạo bảng chứa UserID
+                string cmd = $"SELECT * INTO {kq}{User.UserID} FROM {kq} WHERE 1=0";
+                await Repository.ExecAsync(cmd);
+
+                // Tạo các bảng phụ
+                string convertExcelTemplateID = parameters.ExcelTemplateID.ToString("N").ToUpper();
+                try
+                {
+                    var paramTemplate = new object[] { parameters.SchemaName, parameters.PrefixTableName, convertExcelTemplateID, User.UserID, fromTime, toTime };
+                    var ok = await Repository.ExecProcAsync("HR_spExcelTemplateGetEmployee", paramTemplate);
+                    if (ok == 0)
+                    {
+                        return template.TemplateID;
+                    }
+                    else
+                    {
+                        return null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        private void AddFields(ExcelWorksheet worksheet, HR_SysExcelTemplate template, int idxStt, int idxCol)
+        {
+            for (int col = idxCol; col <= worksheet.Dimension.Columns; col++)
+            {
+                int displayNameRow = idxStt - 2;
+                int fieldNameRow = idxStt;
+                string displayNameCell;
+                if (!string.IsNullOrEmpty(worksheet.Cells[displayNameRow, col]?.Value?.ToString()))
+                {
+                    displayNameCell = (worksheet.Cells[displayNameRow, col]?.Value?.ToString());
+                }
+                else
+                {
+                    displayNameCell = (worksheet.Cells[displayNameRow - 1, col]?.Value?.ToString());
+                }
+                
+                var fieldNameCell = worksheet.Cells[fieldNameRow, col]?.Value?.ToString();
+
+                if (!string.IsNullOrEmpty(displayNameCell))
+                {
+                    HR_SysExcelTemplateField newTemplateField = new HR_SysExcelTemplateField
+                    {
+                        DisplayName = displayNameCell,
+                        Description = displayNameCell,
+                        ExcelTemplateID = template.TemplateID
+                    };
+
+                    if (!string.IsNullOrEmpty(fieldNameCell) && fieldNameCell.Contains("[") && fieldNameCell.Contains("]"))
+                    {
+                        string field = fieldNameCell.Trim('[', ']');
+                        string[] parts = field.Split('.');
+
+                        newTemplateField.FieldName = parts.Length == 2 ? parts[1] : field;
+                        newTemplateField.TableName = parts.Length == 2 ? parts[0] : "";
+                    }
+                    else
+                    {
+                        newTemplateField.FieldName = $"Col " + col;
+                        newTemplateField.TableName = "";
+                    }
+
+                    Repository.Add(newTemplateField);
+                }
+            }
+        }
+
+        public async Task FillSystemDataToSheetAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            FillData item = requestReader.ReadObject<FillData>();
+            var result = await FillSystemDataToSheetAsyncLogic(item);
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<object> FillSystemDataToSheetAsyncLogic(FillData item)
+        {
+            string convertExcelTemplateID = item.ExcelTemplateID.ToString("N").ToUpper();
+
+            TemplateObject itemTemplate = new TemplateObject();
+
+            itemTemplate = Repository.Get<HR_SysExcelTemplateDetail>()
+                                .Where(p => p.ExcelTemplateID == item.ExcelTemplateID && p.UserID == User.UserID)
+                                .Select(x => new TemplateObject
+                                {
+                                    FileName = x.FileNameTemplate,
+                                    ContentSource = x.TemplateContent,
+                                    WhereExpression = x.WhereExpression,
+                                    ExcelColBegin = x.ExcelColBegin
+                                }).FirstOrDefault();
+            if (itemTemplate == null)
+            {
+                itemTemplate = Repository.Get<HR_SysExcelTemplateDetail>()
+                      .Where(p => p.ExcelTemplateID == item.ExcelTemplateID && p.IsApplyForAll)
+                      .Select(x => new TemplateObject()
+                      {
+                          FileName = x.FileNameTemplate,
+                          ContentSource = x.TemplateContent,
+                          WhereExpression = x.WhereExpression,
+                          ExcelColBegin = x.ExcelColBegin
+                      }).FirstOrDefault();
+            }
+
+            if (itemTemplate != null)
+            {
+                string str = "";
+                if (itemTemplate.WhereExpression != null && itemTemplate.WhereExpression != "")
+                {
+                    string expression = itemTemplate.WhereExpression.Split(' ')[0];
+
+                    str = "[" + item.SchemaName + "]." +
+                        "[" + item.PrefixTableName + "_" + convertExcelTemplateID + "_" + User.UserID + "]"
+                        + " AS A INNER JOIN HR_Fn_GetEmployeeFilterByUserID('" + User.UserID + "', '" + item.FuncID + "') AS B "
+                        + "ON A.[CV.EmployeeID] = B.EmployeeID"
+                        + " where " + itemTemplate.WhereExpression;
+                    if (expression.Contains('.'))
+                    {
+                        str = str.Replace(expression, "[" + expression + "]");
+                    }
+                }
+                else
+                {
+                    str = "[" + item.SchemaName + "]." + "[" + item.PrefixTableName + "_" + convertExcelTemplateID + "_" + User.UserID + "]"
+                            + " AS A INNER JOIN HR_Fn_GetEmployeeFilterByUserID('" + User.UserID + "', '" + item.FuncID + "') AS B "
+                            + "ON A.[CV.EmployeeID] = B.EmployeeID";
+                }
+
+                string cmd = "SELECT * FROM " + str;
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+
+                var tblDetail = cnn.Query<dynamic>(cmd).ToList();
+
+                byte[] ContentSource = itemTemplate.ContentSource.ToArray();
+                var mm = new System.IO.MemoryStream();
+                mm.Write(ContentSource, 0, ContentSource.Length);
+                mm.Position = 0;
+                using (var package = new ExcelPackage(mm))
+                {
+                    var ws = package.Workbook.Worksheets[0];
+                    var exportPackage = new ExcelPackage();
+                    using (MemoryStream memStream = new MemoryStream(ContentSource))
+                    {
+                        exportPackage = new ExcelPackage(memStream);
+                    }
+                    var exportWorksheet = exportPackage.Workbook.Worksheets[0];
+                    int titleIdx = 0;
+                    int idxEndCol = 0;
+
+                    for (int i = 1; i <= ws.Dimension.Rows; i++)
+                    {
+                        if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@DowCode]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@DowCode]", item.DowCode);
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                        else if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@fromTime]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@fromTime]", item.FromTime.ToString());
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                        else if (ws.Cells[i, 1].Value != null
+                            && ws.Cells[i, 1].Value.ToString().Contains("[@toTime]"))
+                        {
+                            string strTitle = ws.Cells[i, 1].GetValue<string>();
+                            strTitle = strTitle.Replace("[@toTime]", item.ToTime.ToString());
+                            exportWorksheet.Cells[i, 1].Value = strTitle;
+                        }
+                    }
+
+                    idxEndCol = ws.Dimension.Columns;
+                    int iLoopData = 0;
+
+                    foreach (var row in tblDetail)
+                    {
+                        var rowIdx = int.Parse(itemTemplate.ExcelColBegin) + iLoopData + 1;
+                        for (int j = 1; j <= exportWorksheet.Dimension.Columns; j++)
+                        {
+                            object _columnName = exportWorksheet.Cells[int.Parse(itemTemplate.ExcelColBegin), j].Value;
+                            string _formula = exportWorksheet.Cells[int.Parse(itemTemplate.ExcelColBegin), j].Formula;
+                            if (_columnName != null)
+                            {
+                                string columnName = _columnName.ToString().TrimStart('[').TrimEnd(']');
+                                if (((IDictionary<string, object>)row).ContainsKey(columnName))
+                                {
+                                    if (columnName.Contains("IC.ToTime"))
+                                    {
+                                        exportWorksheet.Cells[rowIdx, j].Value = item.ToTime;
+                                        exportWorksheet.Cells[rowIdx, j].Style.Numberformat.Format = "dd/mm/yyyy";
+                                    }
+                                    else if (columnName.Contains("IC.FromTime"))
+                                    {
+                                        exportWorksheet.Cells[rowIdx, j].Value = item.FromTime;
+                                        exportWorksheet.Cells[rowIdx, j].Style.Numberformat.Format = "dd/mm/yyyy";
+                                    }
+                                    else
+                                    {
+                                        var value = ((IDictionary<string, object>)row)[columnName];
+                                        exportWorksheet.Cells[rowIdx, j].Formula = exportWorksheet.Cells[rowIdx - 1, j].Formula;
+                                        exportWorksheet.Cells[rowIdx, j].Value = value ?? "";
+                                    }
+                                }
+                                else
+                                {
+                                    exportWorksheet.Cells[rowIdx, j].Formula = exportWorksheet.Cells[rowIdx - 1, j].Formula;
+                                }
+                            }
+                            else
+                            {
+                                exportWorksheet.Cells[rowIdx, j].Value = "";
+                            }
+                        }
+
+                        iLoopData++;
+                        if (iLoopData < tblDetail.Count)
+                        {
+                            exportWorksheet.InsertRow(rowIdx + 1, 1, rowIdx);
+                        }
+                    }
+                    using (ExcelRange Rng = exportWorksheet.Cells[3, 1, iLoopData + 7 + 1, exportWorksheet.Dimension.Columns])
+                    {
+                        Rng.Style.Border.Top.Style = ExcelBorderStyle.Thin;
+                        Rng.Style.Font.Bold = false;
+                        Rng.Style.Border.Left.Style = ExcelBorderStyle.Thin;
+                        Rng.Style.Border.Right.Style = ExcelBorderStyle.Thin;
+                        Rng.Style.Border.Bottom.Style = ExcelBorderStyle.Thin;
+                    }
+                    if (titleIdx != 0)
+                    {
+                        string strTitle = exportWorksheet.Cells[titleIdx, 1].GetValue<string>();
+                        strTitle = strTitle.Replace("@DowCode", item.DowCode);
+                        exportWorksheet.Cells[titleIdx, 1].Value = strTitle;
+                    }
+                    exportWorksheet.Row(iLoopData + int.Parse(itemTemplate.ExcelColBegin)).Hidden = true;
+                    exportWorksheet.Row(int.Parse(itemTemplate.ExcelColBegin)).Hidden = true;
+
+                    package.Workbook.Worksheets[0].Calculate();
+
+                    var ms = new System.IO.MemoryStream();
+                    exportPackage.SaveAs(ms);
+                    var bff = new byte[ms.Length];
+                    ms.Position = 0;
+                    ms.Read(bff, 0, bff.Length);
+                    ms.Close();
+                    return bff;
+                }
+            }
+            return null;
+        }
+        #endregion
+
+        #region Create Structure Table
+        public async Task CreateStructureTableAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            var parameters = requestReader.ReadObject<CreateTableParams>();
+            var result = await CreateStructureTableAsyncLogic(parameters);
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<object> CreateStructureTableAsyncLogic(CreateTableParams parameters)
+        {
+            try
+            {
+                var procParams = new object[] { parameters.SchemaName, parameters.PrefixTableName, parameters.ExcelTemplateID };
+                var result = await Repository.ExecProcAsync("HR_spExcelTemplateCreateTable", procParams);
+                string tableNames = null;
+                if (result == 0)
+                {
+                    string guidWithoutHyphens = parameters.ExcelTemplateID.ToString("N").ToUpper();
+                    tableNames = parameters.SchemaName + "." + parameters.PrefixTableName + "_" + guidWithoutHyphens + "_";
+                }
+                return tableNames;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+                return null;
+            }
+        }
+        
+        #endregion
+    }
+}
