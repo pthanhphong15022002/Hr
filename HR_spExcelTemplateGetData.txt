@@ -1,0 +1,354 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateGetData]    Script Date: 9/6/2024 3:21:34 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateGetData]
+(
+	@SchemaName NVARCHAR(100), 
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier,
+	@UserID NVARCHAR(20),
+	@strEmps NVARCHAR(MAX),
+	@FromTime DATETIME,
+	@ToTime DATETIME 
+)
+AS
+BEGIN
+	DECLARE @query nvarchar(max), @TableName VARCHAR(200), @FieldNames VARCHAR(MAX), @Object VARCHAR(200), @ExportEmpWMultiRows BIT, @TemplateType VARCHAR(20)
+	DECLARE @IsPayThroughBank BIT,@ExcelTemplateIDReplace varchar(50)
+	set @ExcelTemplateIDReplace = CAST(Replace(@ExcelTemplateID,'-','') AS VARCHAR(50))
+	SET @ExportEmpWMultiRows = 0
+	SELECT TOP(1) @ExportEmpWMultiRows = ExportEmpWMultiRows, @TemplateType = TemplateType, @IsPayThroughBank = IsPayThroughBank FROM HR_SYSExcelTemplate WITH (NOLOCK) WHERE TemplateID = @ExcelTemplateID
+	-- Lấy danh sách nhan vien
+	SELECT ce.* INTO #TMP_EMP FROM (SELECT [data] AS EmployeeID FROM HR_FNSplitString(@strEmps, ',')) AS ce
+
+	-- danh sach kỳ công
+	SELECT ce.* INTO #HR_LSPayrollDow FROM (
+		SELECT DowCode FROM HR_LSPayrollDow WITH (NOLOCK) WHERE @FromTime <= EndDay AND BegDay <= @ToTime
+	) AS ce
+
+	create table #HR_Employee (
+		EmployeeID NVARCHAR(20),
+		FromTime DATETIME,
+		ToTime DATETIME
+	)
+	
+	INSERT INTO #HR_Employee(EmployeeID, FromTime, ToTime)
+	SELECT EmployeeID, @FromTime, @ToTime FROM #TMP_EMP
+   
+
+	SELECT ce.* INTO #HR_SYSExcelTemplateField FROM (
+		SELECT FieldName, ID, TableName
+		FROM HR_SYSExcelTemplateField AS T WITH (NOLOCK)
+		WHERE ExcelTemplateID = @ExcelTemplateID
+	) AS ce
+
+	DECLARE cursor_1 CURSOR FOR  
+		SELECT TableName FROM HR_SYSExcelTemplateField WITH (NOLOCK) 
+		WHERE ExcelTemplateID = @ExcelTemplateID AND TableName NOT IN ('CV', 'VEL', 'FN')
+		GROUP BY TableName
+	OPEN cursor_1
+	WHILE 1 = 1  
+	BEGIN   
+		FETCH NEXT FROM cursor_1 INTO @Object
+		IF @@FETCH_STATUS != 0
+			BREAK;
+  
+		-- ToTable
+		SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_' + @Object + ']'
+		SET @FieldNames = NULL
+		SET @query = NULL
+
+		-- Tạo bảng mới
+		SELECT @FieldNames = STUFF((
+			SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+			FROM (
+				SELECT '[' + T.FieldName + ']' AS FieldName, ID
+				FROM #HR_SYSExcelTemplateField AS T
+				WHERE T.TableName = @Object
+			) AS D ORDER BY ID
+			FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+
+		IF @Object = 'AAG'
+		BEGIN
+			-- 1. Lấy số tiền phụ cấp sau khi tính lương (TAllowances). Sum all đưa về quyết định đầu
+			SELECT ce.* INTO #Data_AAG FROM (
+				SELECT T.EmployeeID, T.AlloGradeCode AS Code, @FromTime AS FromTime, @ToTime AS ToTime, 
+					SUM(T.Amount) AS Amount
+				FROM HR_PayAllowance AS T WITH (NOLOCK) 
+					INNER JOIN #TMP_EMP AS T1 ON T.EmployeeID = T1.EmployeeID
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.AlloGradeCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.AlloGradeCode
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_AAG) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+
+        end
+		ELSE IF @Object = 'AKW'
+		BEGIN
+			-- 1. Lấy tiền lương theo công (TSalaries)
+			SELECT ce.* INTO #Data_AKW FROM (
+				SELECT T.EmployeeID, T.KowCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.Amount) AS Amount
+				FROM HR_PaySalary AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.FromTime <= T1.ToTime AND T1.FromTime <= T.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.KowCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.KowCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_AKW) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'ATE'
+		BEGIN
+			-- 1. Lấy số tiền từ TExcepts
+			SELECT ce.* INTO #Data_ATE FROM (
+				SELECT T.EmployeeID, T.ExceptCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.Amount) AS Amount
+				FROM HR_PayTExcept AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.GenDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.ExceptCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.ExceptCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_ATE) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+		ELSE IF @Object = 'ATA'
+		BEGIN
+			-- 1. Lấy số tiền từ TExcepts
+			SELECT ce.* INTO #Data_ATA FROM (
+				SELECT T.EmployeeID, T.ExceptCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.AmountTax) AS AmountTax
+				FROM HR_PayTExcept AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.GenDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.ExceptCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.ExceptCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_ATA) AS S PIVOT ('
+				+ '		SUM(AmountTax) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'DKW'
+		BEGIN
+			-- 1. Lấy số công làm việc từ bảng KowDs
+			SELECT ce.* INTO #Data_DKW FROM (
+				SELECT T.EmployeeID, T.KowCode AS Code, @FromTime AS FromTime, @ToTime AS ToTime, 
+					SUM(T.DayNum) AS Amount
+				FROM HR_TSKowDs AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.WorkDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.KowCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.KowCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_DKW) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'DSC'
+		BEGIN
+			-- 1. Lấy thông tin hệ số lương thưởng
+			SELECT ce.* INTO #Data_DSC FROM (
+				SELECT T.EmployeeID, T.CoeffCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.Coefficient) AS Amount
+				FROM HR_PRSalCoeffEmp AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.WorkDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.CoeffCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.CoeffCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_DSC) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'EA'
+		BEGIN
+			-- 1. Lấy thông tin phụ cấp (mới nhất <= @ToTime) nằm bên HSNV (những giá trị constant)
+			DECLARE @PRIsMinSalByInsList BIT, @MinSalary money
+			SELECT TOP(1) @PRIsMinSalByInsList = case when PRIsSalGradeSISal = 1 and PRIsMinSalByInsList = 1 then 1 else 0 END FROM HR_ConfigPR WITH (NOLOCK)	
+			SELECT top(1) @MinSalary = MinSalary from HRSI_fnGetInsuranceTypeByTime(@ToTime) WHERE InsType = 1
+
+			SELECT ce.* INTO #HR_LSAlloGrade FROM (
+				SELECT T.AlloGradeCode, T.IsFixAmount, T.SalaryType
+				FROM HR_LSAlloGrade AS T WITH (NOLOCK) 
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 
+						ON T.AlloGradeCode = T3.FieldName
+			) AS ce
+
+			SELECT EmployeeID, Code, Amount, @FromTime AS FromTime, @ToTime AS ToTime INTO #Data_EA FROM (
+				-- PC theo số tiền cố định
+				SELECT EmployeeID, AlloGradeCode AS Code, Amount
+				FROM (
+					SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, EAllo.FixAmount as Amount,
+						ROW_NUMBER() OVER(PARTITION BY EAllo.EmployeeID, EAllo.AlloGradeCode ORDER BY EAllo.EffectDate desc) as RowID
+					FROM HR_EmpAllowance as EAllo with (nolock)
+						INNER JOIN #HR_Employee as F on EAllo.EmployeeID = F.EmployeeID
+						inner join #HR_LSAlloGrade as AG ON EAllo.AlloGradeCode = AG.AlloGradeCode				
+					WHERE (AG.IsFixAmount = 1) AND (EffectDate <= @ToTime and (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime)) 
+				) AS R WHERE RowID = 1
+				-- PC theo % được hưởng
+				UNION ALL
+				SELECT EmployeeID, AlloGradeCode AS Code,
+					case SalaryType 
+						when 1 then case when @PRIsMinSalByInsList = 1 then @MinSalary else Amount end
+						when 2 then case when @PRIsMinSalByInsList = 1 then @MinSalary * Amount else Amount end
+						when 3 then case when @PRIsMinSalByInsList = 1 then @MinSalary else Amount end
+						when 4 then case when @PRIsMinSalByInsList = 1 then @MinSalary * Amount else Amount end
+						when 5 then Amount
+						when 6 then Amount
+						when 7 then Amount 
+						when 8 then Amount
+					END * EA_SalaryRate / 100.0 as Amount
+				FROM (
+					SELECT EmployeeID, AlloGradeCode, SalaryRate as EA_SalaryRate, SalaryType, 
+						dbo.HRSI_fnGetSalaryByLevel(EmployeeID, @ToTime, 
+							CASE WHEN SalaryType = 2 AND @PRIsMinSalByInsList = 1 THEN -2
+								WHEN SalaryType = 4 AND @PRIsMinSalByInsList = 1 THEN -4
+								ELSE SalaryType end) AS Amount
+					FROM (
+						SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, EAllo.SalaryRate, AG.SalaryType, 
+							ROW_NUMBER() OVER(PARTITION BY EAllo.EmployeeID, EAllo.AlloGradeCode ORDER BY EAllo.EffectDate desc) as RowID
+						FROM HR_EmpAllowance as EAllo with (nolock)
+							INNER JOIN #HR_Employee as F on EAllo.EmployeeID = F.EmployeeID
+							inner join #HR_LSAlloGrade as AG ON EAllo.AlloGradeCode = AG.AlloGradeCode 
+						WHERE  (AG.IsFixAmount = 0) AND (EffectDate <= @ToTime and (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime))
+					) AS RR WHERE RowID = 1
+				) AS Result
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_EA) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'IC'
+		BEGIN
+			-- 1. Lấy thông tin từ table Income
+			select ce.* into #HR_PayIncome from (
+				select I.EmployeeID, I.DowCode, DowNum, ExRate, I.FromTime, I.ToTime, ExRateSI, OrgUnitID, EmpTypeCode, 
+					PositionID, JobLevel, GroupSalCode, BasicSalaryMin, BasicSalary, CoeffBasicSal, UnitOT, MainSal, 
+					JobWSalary, JobWSalaryMin, CoeffJobWSal, PieceWage, InsSalary,
+					ROW_NUMBER() OVER(PARTITION BY I.EmployeeID ORDER BY I.FromTime desc) as RowID,					 				  
+					HIAmountE, SIAmountE, HIAmountC, SIAmountC, TUnionAmountC, UIAmountE, UIAmountC, 
+					TotalAllowance, LawSal, TotalKowSal, TotalOTSal, AddToSal, SubToSal, AdvanceSal, RiceAllowance, 
+					GrossSal, GrossSalVND, TaxableIncome, TaxIncome, TaxAmount, NetSal, NetSalVND, UnitSal, GrossOfNetSal, 
+					ProductSal, TUnionAmountE, PartyAmount, YUnionAmount, ServiceAmount, TaxService, OTSalTax, OTSalNonTax, 
+					TotalIncome, AddToSalVND, AdvanceSalVND, SubToSalVND, CompanyPay, SocialPay, CompanyPayVND, SocialPayVND,
+					CurrDayOff, FamilyTaxFree, FamilyTaxFreeUnit, FamilyTaxFreeOwn, TotalCoeff, MainSalary, OutTaxIncome, 
+					OutTaxAmount, TaxableIncomeYTD, TaxIncomeYTD, TaxAmountYTD, NumMonthYTD, TaxPayableYTD, FamilyTaxYTD, SocialInsPayableYTD
+				from HR_PayIncome as I with (nolock) 
+					INNER JOIN #HR_Employee as E on I.EmployeeID = E.EmployeeID
+					INNER JOIN #HR_LSPayrollDow AS T2 ON I.DowCode = T2.DowCode
+			) as ce
+
+			SELECT ce.* INTO #Data_IC FROM (
+				SELECT T.EmployeeID, DowCode, DowNum, ExRate, T.FromTime, T.ToTime, ExRateSI, OrgUnitID, EmpTypeCode, 
+						PositionID, JobLevel, GroupSalCode, BasicSalaryMin, BasicSalary, CoeffBasicSal, UnitOT, MainSal, 
+						JobWSalary, JobWSalaryMin, CoeffJobWSal, PieceWage, InsSalary,
+						-- 					 				  
+						HIAmountE, SIAmountE, HIAmountC, SIAmountC, TUnionAmountC, UIAmountE, UIAmountC, 
+						TotalAllowance, LawSal, TotalKowSal, TotalOTSal, AddToSal, SubToSal, AdvanceSal, RiceAllowance, 
+						GrossSal, GrossSalVND, TaxableIncome, TaxIncome, TaxAmount, NetSal, NetSalVND, UnitSal, GrossOfNetSal, 
+						ProductSal, TUnionAmountE, PartyAmount, YUnionAmount, ServiceAmount, TaxService, OTSalTax, OTSalNonTax, 
+						TotalIncome, AddToSalVND, AdvanceSalVND, SubToSalVND, CompanyPay, SocialPay, CompanyPayVND, SocialPayVND,
+						CurrDayOff, FamilyTaxFree, FamilyTaxFreeUnit, FamilyTaxFreeOwn, TotalCoeff, MainSalary, OutTaxIncome, 
+						OutTaxAmount, TaxableIncomeYTD, TaxIncomeYTD, TaxAmountYTD, NumMonthYTD, TaxPayableYTD, FamilyTaxYTD, SocialInsPayableYTD
+				FROM (
+					SELECT EmployeeID, DowCode, DowNum, ExRate, FromTime, ToTime, ExRateSI, OrgUnitID, EmpTypeCode, 
+						PositionID, JobLevel, GroupSalCode, BasicSalaryMin, BasicSalary, CoeffBasicSal, UnitOT, MainSal, 
+						JobWSalary, JobWSalaryMin, CoeffJobWSal, PieceWage, InsSalary
+					FROM #HR_PayIncome WHERE RowID = 1
+				) AS T INNER JOIN (
+					SELECT EmployeeID, Sum(HIAmountE) AS HIAmountE, Sum(SIAmountE) AS SIAmountE, Sum(HIAmountC) AS HIAmountC, Sum(SIAmountC) AS SIAmountC, Sum(TUnionAmountC) AS TUnionAmountC, 
+						SUM(UIAmountE) AS UIAmountE, Sum(UIAmountC) AS UIAmountC, Sum(TotalAllowance) AS TotalAllowance, Sum(LawSal) AS LawSal, Sum(TotalKowSal) AS TotalKowSal, Sum(TotalOTSal) AS TotalOTSal, 
+						SUM(AddToSal) AS AddToSal, Sum(SubToSal) AS SubToSal, Sum(AdvanceSal) AS AdvanceSal, Sum(RiceAllowance) AS RiceAllowance, Sum(GrossSal) AS GrossSal, Sum(GrossSalVND) AS GrossSalVND, 
+						SUM(TaxableIncome) AS TaxableIncome, Sum(TaxIncome) AS TaxIncome, Sum(TaxAmount) AS TaxAmount, Sum(NetSal) AS NetSal, Sum(NetSalVND) AS NetSalVND, Sum(UnitSal) AS UnitSal, Sum(GrossOfNetSal) AS GrossOfNetSal, 
+						SUM(ProductSal) AS ProductSal, Sum(TUnionAmountE) AS TUnionAmountE, Sum(PartyAmount) AS PartyAmount, Sum(YUnionAmount) AS YUnionAmount, Sum(ServiceAmount) AS ServiceAmount, Sum(TaxService) AS TaxService, 
+						SUM(OTSalTax) AS OTSalTax, Sum(OTSalNonTax) AS OTSalNonTax, Sum(TotalIncome) AS TotalIncome, Sum(AddToSalVND) AS AddToSalVND, Sum(AdvanceSalVND) AS AdvanceSalVND, Sum(SubToSalVND) AS SubToSalVND, 
+						SUM(CompanyPay) AS CompanyPay, Sum(SocialPay) AS SocialPay, Sum(CompanyPayVND) AS CompanyPayVND, Sum(SocialPayVND) AS SocialPayVND, SUM(CurrDayOff) AS CurrDayOff, Sum(FamilyTaxFree) AS FamilyTaxFree, 
+						SUM(FamilyTaxFreeUnit) AS FamilyTaxFreeUnit, SUM(FamilyTaxFreeOwn) AS FamilyTaxFreeOwn, Sum(TotalCoeff) AS TotalCoeff, Sum(MainSalary) AS MainSalary, Sum(OutTaxIncome) AS OutTaxIncome, Sum(OutTaxAmount) AS OutTaxAmount, 
+						SUM(TaxableIncomeYTD) AS TaxableIncomeYTD, Sum(TaxIncomeYTD) AS TaxIncomeYTD, Sum(TaxAmountYTD) AS TaxAmountYTD,
+						SUM(NumMonthYTD) AS NumMonthYTD, SUM(TaxPayableYTD) AS TaxPayableYTD, SUM(FamilyTaxYTD) AS FamilyTaxYTD, SUM(SocialInsPayableYTD) AS SocialInsPayableYTD
+					FROM #HR_PayIncome
+					GROUP BY EmployeeID
+				) AS T1 ON T.EmployeeID = T1.EmployeeID
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM #Data_IC AS P'
+        END
+		ELSE IF @Object = 'BK'
+		BEGIN
+
+			SELECT A.*, ROW_NUMBER() OVER (PARTITION BY A.EmployeeID ORDER BY A.EmployeeID, Ordinal) AS Row_ID into #CTE
+			FROM HR_EmpBank AS A WITH (NOLOCK)
+
+			SELECT Banks.EmployeeID, Banks.AccountNo, Banks.Amount, Banks.PercentSal, 
+				Banks.MinAmount, Banks.AccountName, Banks.IsPaymentCurr, Banks.BankCode, 
+				HCSLS_Bank.BankName, 
+				Banks.Ordinal, Banks.Note, Banks.CurrencyForPay into #HCSEM_VWEmpBanksTop1
+			FROM (
+				SELECT * FROM #CTE WHERE Row_ID = 1
+			) AS Banks INNER JOIN BS_Banks HCSLS_Bank WITH (NOLOCK) ON Banks.BankCode = HCSLS_Bank.BankID
+
+			-- 1. Lấy thông tin hệ số lương thưởng
+			IF @IsPayThroughBank = 0
+			begin
+				SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+					+ ' SELECT EmployeeID, ' + CONVERT(VARCHAR(10), @FromTime, 111) + ' AS FromTime, '
+					+ CONVERT(VARCHAR(10), @ToTime, 111) + ' AS ToTime, ' + @FieldNames
+					+ ' FROM (SELECT T.* FROM #HCSEM_VWEmpBanksTop1 AS T INNER JOIN #HR_Employee AS E ON T.EmployeeID = E.EmployeeID) AS P'
+			END
+            ELSE 
+			BEGIN
+				SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+					+ ' SELECT EmployeeID, ' + CONVERT(VARCHAR(10), @FromTime, 111) + ' AS FromTime, '
+					+ CONVERT(VARCHAR(10), @ToTime, 111) + ' AS ToTime, ' + @FieldNames
+					+ ' FROM (SELECT T.* FROM #HCSEM_VWEmpBanksTop1 AS T INNER JOIN #HR_Employee AS E ON T.EmployeeID = E.EmployeeID) AS P'
+			END
+        END
+		IF @query IS NOT NULL
+			EXEC(@query)
+	END
+	CLOSE cursor_1   
+	DEALLOCATE cursor_1
+	IF @TemplateType = 'TimeSheetTemplate'
+	BEGIN
+		EXEC HR_spExcelTemplateGetTSKowDs @SchemaName, @PrefixTableName, @ExcelTemplateID, @UserID, @strEmps, @FromTime, @ToTime
+    END
+    
+	IF @TemplateType = 'AssignShiftTemplate'
+	BEGIN
+		EXEC HR_spExcelTemplateGetAssignShift @SchemaName, @PrefixTableName, @ExcelTemplateID, @UserID, @strEmps, @FromTime, @ToTime
+    end
+	
+END
