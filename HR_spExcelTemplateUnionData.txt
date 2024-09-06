@@ -1,0 +1,170 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateUnionData]    Script Date: 9/6/2024 5:26:15 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+	ALTER PROCEDURE [dbo].[HR_spExcelTemplateUnionData]
+	(
+		@SchemaName NVARCHAR(100),
+		@PrefixTableName VARCHAR(200),
+		@ExcelTemplateID uniqueidentifier,
+		@UserID NVARCHAR(20),
+		@strEmps NVARCHAR(MAX)
+	)
+	AS
+	BEGIN
+		SET NOCOUNT ON;
+		DECLARE @query nvarchar(max), @TableName VARCHAR(200), @FieldNames VARCHAR(MAX), @Object VARCHAR(200)
+		DECLARE @FromTable NVARCHAR(MAX), @SelectField NVARCHAR(MAX), @InsertField NVARCHAR(MAX), @MainTable NVARCHAR(MAX)
+		DECLARE @VEL_SelectFields NVARCHAR(MAX), @VEL_InsertFields NVARCHAR(MAX) -- xử ly các field thuoc DepartmentLevel
+		DECLARE @WhereExpression NVARCHAR(MAX),@ExcelTemplateIDReplace varchar(50)
+		set @FromTable = ''
+		set @ExcelTemplateIDReplace = CAST(Replace(@ExcelTemplateID,'-','') AS VARCHAR(50))
+		SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + ']'
+
+		-- Lấy danh sách nhan vien
+		SELECT ce.* INTO #TMP_EMP FROM (SELECT [data] AS EmployeeID FROM HR_FNSplitString(@strEmps, ',')) AS ce
+		SET @FromTable = ' FROM #TMP_EMP as T '
+
+
+		SELECT ce.* INTO #HCSSYS_ExcelTemplateField FROM (
+			SELECT FieldName, ID, TableName
+			FROM HR_SysExcelTemplateField AS T WITH (NOLOCK)
+			WHERE ExcelTemplateID = @ExcelTemplateID and LTRIM(RTRIM(TableName)) <> ''
+		) AS ce
+
+		DECLARE cursor_1 CURSOR FOR  
+			SELECT TableName FROM HR_SysExcelTemplateField WITH (NOLOCK) 
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName NOT IN ('FN') AND LTRIM(RTRIM(TableName)) <> ''
+			GROUP BY TableName
+		OPEN cursor_1
+		WHILE 1 = 1  
+		BEGIN   
+			FETCH NEXT FROM cursor_1 INTO @Object
+			IF @@FETCH_STATUS != 0
+				BREAK;
+		
+			-- ToTable. Note: Xử lý @Object = CV --> Emp
+			SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_' + @Object + ']'
+			IF @Object <> 'VEL'
+			begin
+				-- select field
+				SELECT @FieldNames = STUFF((
+					SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+					FROM (
+						SELECT '[' + @Object + '].[' + T.FieldName + ']' AS FieldName, ID
+						FROM #HCSSYS_ExcelTemplateField AS T
+						WHERE T.TableName = @Object
+						-- Chỉ chọn các FieldName có trong HR_SysCategoryExcelTemplateDetail
+						AND EXISTS (
+							SELECT 1 
+							FROM HR_SysCategoryExcelTemplateDetail AS C
+							WHERE C.FactorCode = T.FieldName
+						)
+					) AS D ORDER BY ID
+					FOR XML PATH (''), TYPE
+				).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+				SET @FromTable = @FromTable + ' left join ' + @TableName + ' as ' + @Object + ' on T.EmployeeID = ' + @Object + '.EmployeeID '
+				--SET @SelectField = ISNULL(@SelectField + ',' + @FieldNames,ISNULL(@FieldNames,@InsertField))
+				SET @SelectField = COALESCE(@SelectField, '') 
+				+ CASE 
+					WHEN LEN(LTRIM(RTRIM(@FieldNames))) > 0 THEN 
+						CASE 
+							WHEN LEN(LTRIM(RTRIM(@SelectField))) > 0 THEN ',' 
+							ELSE '' 
+						END + @FieldNames
+					ELSE ''
+				  END
+
+				-- insert field
+				SELECT @FieldNames = STUFF((
+					SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+					FROM (
+						SELECT '[' + @Object + '.' + T.FieldName + ']' AS FieldName, ID
+						FROM #HCSSYS_ExcelTemplateField AS T
+						WHERE T.TableName = @Object
+						-- Chỉ chọn các FieldName có trong HR_SysCategoryExcelTemplateDetail
+						AND EXISTS (
+							SELECT 1 
+							FROM HR_SysCategoryExcelTemplateDetail AS C
+							WHERE C.FactorCode = T.FieldName
+						)
+					) AS D ORDER BY ID
+					FOR XML PATH (''), TYPE
+				).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+
+
+				--SET @InsertField = ISNULL(@InsertField + ',' + @FieldNames,ISNULL(@FieldNames,@InsertField))
+				SET @InsertField = COALESCE(@InsertField, '') 
+				+ CASE 
+					WHEN LEN(LTRIM(RTRIM(@FieldNames))) > 0 THEN 
+						CASE 
+							WHEN LEN(LTRIM(RTRIM(@InsertField))) > 0 THEN ',' 
+							ELSE '' 
+						END + @FieldNames
+					ELSE ''
+				  END
+
+			END
+			ELSE
+			BEGIN
+				-- select field
+				SET @VEL_SelectFields = NULL
+				SELECT @VEL_SelectFields = STUFF((
+					SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+					FROM (
+						SELECT '[CV].[' + T.FieldName + ']' AS FieldName, ID
+						FROM #HCSSYS_ExcelTemplateField AS T
+						WHERE T.TableName = @Object
+						-- Chỉ chọn các FieldName có trong HR_SysCategoryExcelTemplateDetail
+						AND EXISTS (
+							SELECT 1 
+							FROM HR_SysCategoryExcelTemplateDetail AS C
+							WHERE C.FactorCode = T.FieldName
+						)
+					) AS D ORDER BY ID
+					FOR XML PATH (''), TYPE
+				).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+
+				-- insert field
+				SET @VEL_InsertFields = NULL
+				SELECT @VEL_InsertFields = STUFF((
+					SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+					FROM (
+						SELECT '[CV.' + T.FieldName + ']' AS FieldName, ID
+						FROM #HCSSYS_ExcelTemplateField AS T
+						WHERE T.TableName = @Object
+						-- Chỉ chọn các FieldName có trong HR_SysCategoryExcelTemplateDetail
+						AND EXISTS (
+							SELECT 1 
+							FROM HR_SysCategoryExcelTemplateDetail AS C
+							WHERE C.FactorCode = T.FieldName
+						)
+					) AS D ORDER BY ID
+					FOR XML PATH (''), TYPE
+				).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+			end
+
+		END
+		CLOSE cursor_1   
+		DEALLOCATE cursor_1
+
+		-- Lấy điều kiện where
+		SELECT TOP(1) @WhereExpression = WhereExpression FROM HR_SysExcelTemplateDetail WITH (NOLOCK) WHERE UserID = @UserID and ExcelTemplateID = @ExcelTemplateID
+		SET @WhereExpression = REPLACE(@WhereExpression, 'VEL.CAP', 'CV.CAP')
+		IF LEN(LTRIM(RTRIM(@WhereExpression))) = 0
+			SET @WhereExpression = NULL
+
+
+		SET @query = 'INSERT INTO ' + @MainTable + '(' + @InsertField + ISNULL(',' + REPLACE(@VEL_InsertFields, '[CV.', '[VEL.'), '') + ')'
+			+ ' SELECT ' + @SelectField + ISNULL(',' + @VEL_SelectFields, '') + @FromTable + ISNULL(' Where ' + @WhereExpression, '')
+		EXEC(@query)
+
+
+		RETURN
+	END
