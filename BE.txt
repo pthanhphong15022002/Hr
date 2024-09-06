@@ -25,10 +25,9 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Linq;
 using ERM.Model.HR.temp;
-using DocumentFormat.OpenXml.Spreadsheet;
-using OfficeOpenXml.FormulaParsing.Excel.Functions.RefAndLookup;
-using Syncfusion.XlsIO.Parser.Biff_Records;
-using Microsoft.IdentityModel.Tokens;
+using System.Text;
+using StackExchange.Redis;
+using Org.BouncyCastle.Utilities.IO;
 
 namespace ERM.Business.HR
 {
@@ -952,8 +951,15 @@ namespace ERM.Business.HR
                     }
                     else
                     {
-                        // Thêm giá trị bình thường
-                        values += "N'" + EscapeSqlValue(dataValue.Value) + "',";
+                        if (columnName == "CV.EmployeeName")
+                        {
+                            values += "N'" + EscapeSqlValue(dataValue.Value) + "',";
+                        }
+                        else
+                        {
+                            // Thêm giá trị bình thường
+                            values += "'" + EscapeSqlValue(dataValue.Value) + "',";
+                        }
                     }
                 }
             }
@@ -1009,7 +1015,7 @@ namespace ERM.Business.HR
         {
             if (value == null)
             {
-                return "NULL";
+                return "";
             }
             if (value is string strValue)
             {
@@ -1748,41 +1754,32 @@ namespace ERM.Business.HR
                         ExcelColBegin = item.RowMapping.ToString(),
                     };
                     Repository.Add(detail);
-                    
-                    // Lọc ra các field Mapping, công thức, field cố định
-                    List<string> lstMapping = new List<string>();
-                    List<string> lstNumber = new List<string>();
-                    List<string> lstFormula = new List<string>();
-                    for (int col = 1; col <= worksheet.Dimension.Columns; col++)
-                    {
-                        var cellValue = worksheet.Cells[item.RowMapping, col]?.Value.ToString();
-                        if (!string.IsNullOrEmpty(cellValue) && cellValue.Contains("[") && cellValue.Contains("]"))
-                        {
-                            lstMapping.Add(cellValue);
-                        }
-                        else if (!string.IsNullOrEmpty(worksheet.Cells[item.RowMapping, col]?.Formula))
-                        {
-                            lstFormula.Add(worksheet.Cells[item.RowMapping, col]?.Formula.ToString());
-                        }
-                        else
-                        {
-                            lstNumber.Add(cellValue);
-                        }
-                    }
                     int rowEnd = FindLastRowWithData(worksheet);
                     AddFields(worksheet, template, item.RowMapping, 1);
                     try
                     {
                         var newTemplate = await CreateTemplateAndStructureTable(template, item.FromTime, item.ToTime);
+                        // Lấy data hệ thống
                         try
                         {
+                            await MultiProcessGetDataAsyncLogic(template.TemplateID, template.TemplateType, item.FromTime, item.ToTime);
                             await MultiProcessAsyncLogic1(template.TemplateID, template.TemplateType);
-                        }
-                        catch (Exception ex)
+
+                        } catch (Exception ex)
                         {
                             Logger.Error(ex);
-                            return null;
                         }
+
+
+                        //try
+                        //{
+                        //    await MultiProcessAsyncLogic1(template.TemplateID, template.TemplateType);
+                        //}
+                        //catch (Exception ex)
+                        //{
+                        //    Logger.Error(ex);
+                        //    return null;
+                        //}
 
                         return newTemplate;
                     } catch (Exception ex)
@@ -1818,6 +1815,7 @@ namespace ERM.Business.HR
                         EmployeeID = emp.ToString(),
                     });
                 }
+
                 try
                 {
                     var modelMulti = new modelMultiProcess()
@@ -1839,6 +1837,7 @@ namespace ERM.Business.HR
                             strEmps += ((EmployeeItem)emp).EmployeeID + ",";
                         }
                         strEmps = strEmps.TrimEnd(',');
+
                         var paras = new object[] { SchemaName, templateType, convertExcelTemplateID, User.UserID, strEmps };
                         try
                         {
@@ -1848,6 +1847,76 @@ namespace ERM.Business.HR
                             Logger.Error(ex);
                         }
                         
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+            }
+        }
+
+        public async Task MultiProcessGetDataAsyncLogic(Guid excelTemplateID, string templateType, DateTime FromTime, DateTime ToTime)
+        {
+            string SchemaName = "dbo";
+            string ProcessName = "getData";
+            string convertExcelTemplateID = excelTemplateID.ToString("N").ToUpper();
+
+            var str = "[" + SchemaName + "]." + "[" + templateType + "_" + convertExcelTemplateID
+                        + "_" + User.UserID + "_CV" + "]";
+
+            string cmd = $"SELECT {"EmployeeID"} FROM {str}";
+            try
+            {
+                var dbContext = Repository.UnitOfWork.Orm as dynamic;
+                using var cnn = (DataConnection)dbContext.GetDBConnection();
+                var dt = cnn.Query<dynamic>(cmd).ToList();
+                List<EmployeeItem> listOfEmps = new List<EmployeeItem>();
+
+                foreach (var emp in dt)
+                {
+                    listOfEmps.Add(new EmployeeItem()
+                    {
+                        EmployeeID = emp.ToString(),
+                    });
+                }
+
+                try
+                {
+                    var modelMulti = new modelMultiProcess()
+                    {
+                        Repository = Repository,
+                        HubContext = HubContext,
+                        ProcessName = ProcessName,
+                        UserID = UserID,
+                        Tenant = RequestContext.RequestSession.Tenant,
+                        IsReturnList = true
+                    };
+                    var multi = new MultiProcess<EmployeeItem>(modelMulti);
+
+                    await multi.Excute(listOfEmps, async (objEmps) =>
+                    {
+                        var strEmps = "";
+                        foreach (object emp in objEmps)
+                        {
+                            strEmps += ((EmployeeItem)emp).EmployeeID + ",";
+                        }
+                        strEmps = strEmps.TrimEnd(',');
+
+                        var paras = new object[] { SchemaName, templateType, excelTemplateID, User.UserID, strEmps, FromTime, ToTime };
+                        try
+                        {
+                            await Repository.ExecProcAsync("HR_spExcelTemplateGetData", paras);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error(ex);
+                        }
+
                     });
                 }
                 catch (Exception ex)
@@ -1949,14 +2018,14 @@ namespace ERM.Business.HR
             }
         }
 
-        public async Task FillSystemDataToSheetAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        public void FillSystemDataToSheetAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
         {
             FillData item = requestReader.ReadObject<FillData>();
-            var result = await FillSystemDataToSheetAsyncLogic(item);
+            var result = FillSystemDataToSheetAsyncLogic(item);
             responseWriter.WriteObject(result);
         }
 
-        public async Task<object> FillSystemDataToSheetAsyncLogic(FillData item)
+        public object FillSystemDataToSheetAsyncLogic(FillData item)
         {
             string convertExcelTemplateID = item.ExcelTemplateID.ToString("N").ToUpper();
 
@@ -2008,7 +2077,8 @@ namespace ERM.Business.HR
                             + "ON A.[CV.EmployeeID] = B.EmployeeID";
                 }
 
-                string cmd = "SELECT * FROM " + str;
+                //string cmd = "SELECT * FROM " + str;
+                string cmd = "SELECT TOP 500 * FROM " + str;
                 var dbContext = Repository.UnitOfWork.Orm as dynamic;
                 using var cnn = (DataConnection)dbContext.GetDBConnection();
 
@@ -2020,6 +2090,7 @@ namespace ERM.Business.HR
                 mm.Position = 0;
                 using (var package = new ExcelPackage(mm))
                 {
+                    int lastRow = 0;
                     var ws = package.Workbook.Worksheets[0];
                     var exportPackage = new ExcelPackage();
                     using (MemoryStream memStream = new MemoryStream(ContentSource))
@@ -2057,6 +2128,23 @@ namespace ERM.Business.HR
 
                     idxEndCol = ws.Dimension.Columns;
                     int iLoopData = 0;
+                    int stt = 1;
+                    
+                    // Lấy danh sách ô và công thức của ô đó 
+                    Dictionary<string, string> ListFormula = new Dictionary<string, string>();
+
+                    for (int j = 1; j <= exportWorksheet.Dimension.Columns; j++)
+                    {
+                        var cell = exportWorksheet.Cells[int.Parse(itemTemplate.ExcelColBegin), j];
+                        var cellAddress = cell.Address;  
+                        var cellFormula = cell.Formula; 
+
+                        if (!string.IsNullOrEmpty(cellFormula))
+                        {
+                            // Lưu địa chỉ ô và công thức vào Dictionary
+                            ListFormula[cellAddress] = cellFormula;
+                        }
+                    }
 
                     foreach (var row in tblDetail)
                     {
@@ -2064,8 +2152,7 @@ namespace ERM.Business.HR
                         for (int j = 1; j <= exportWorksheet.Dimension.Columns; j++)
                         {
                             object _columnName = exportWorksheet.Cells[int.Parse(itemTemplate.ExcelColBegin), j].Value;
-                            string _formula = exportWorksheet.Cells[int.Parse(itemTemplate.ExcelColBegin), j].Formula;
-                            if (_columnName != null)
+                            if (_columnName != null && _columnName.ToString() != "@STT@")
                             {
                                 string columnName = _columnName.ToString().TrimStart('[').TrimEnd(']');
                                 if (((IDictionary<string, object>)row).ContainsKey(columnName))
@@ -2080,17 +2167,42 @@ namespace ERM.Business.HR
                                         exportWorksheet.Cells[rowIdx, j].Value = item.FromTime;
                                         exportWorksheet.Cells[rowIdx, j].Style.Numberformat.Format = "dd/mm/yyyy";
                                     }
+                                    else if (columnName.Contains("CV.JoinedOn"))
+                                    {
+                                        var value = ((IDictionary<string, object>)row)[columnName];
+                                        exportWorksheet.Cells[rowIdx, j].Value = value ?? "";
+                                        exportWorksheet.Cells[rowIdx, j].Style.Numberformat.Format = "dd/mm/yyyy";
+                                        exportWorksheet.Column(j).AutoFit();
+                                    }
+                                    // Đặt default test calculate
+                                    //else if (columnName.Contains("IC.BasicSalary"))
+                                    //{
+                                    //    var value = ((IDictionary<string, object>)row)[columnName];
+                                    //    exportWorksheet.Cells[rowIdx, j].Value = 10000000;
+                                    //}
+                                    //else if (columnName.Contains("IC.DowNum"))
+                                    //{
+                                    //    var value = ((IDictionary<string, object>)row)[columnName];
+                                    //    exportWorksheet.Cells[rowIdx, j].Value = 25;
+                                    //}
+                                    //else if (columnName.Contains("DKW.W"))
+                                    //{
+                                    //    var value = ((IDictionary<string, object>)row)[columnName];
+                                    //    exportWorksheet.Cells[rowIdx, j].Value = 25;
+                                    //}
+                                    // End Default
                                     else
                                     {
                                         var value = ((IDictionary<string, object>)row)[columnName];
-                                        exportWorksheet.Cells[rowIdx, j].Formula = exportWorksheet.Cells[rowIdx - 1, j].Formula;
                                         exportWorksheet.Cells[rowIdx, j].Value = value ?? "";
+                                        exportWorksheet.Column(j).AutoFit();
                                     }
                                 }
-                                else
-                                {
-                                    exportWorksheet.Cells[rowIdx, j].Formula = exportWorksheet.Cells[rowIdx - 1, j].Formula;
-                                }
+                            }
+                            else if (_columnName.ToString().Contains("@STT@"))
+                            {
+                                exportWorksheet.Cells[rowIdx, j].Value = stt++;
+                                exportWorksheet.Cells[rowIdx, j].Style.HorizontalAlignment = OfficeOpenXml.Style.ExcelHorizontalAlignment.Center;
                             }
                             else
                             {
@@ -2112,12 +2224,35 @@ namespace ERM.Business.HR
                         Rng.Style.Border.Right.Style = ExcelBorderStyle.Thin;
                         Rng.Style.Border.Bottom.Style = ExcelBorderStyle.Thin;
                     }
+
+                    // Điền công thức vào cột tương ứng
+                    foreach (var formulaEntry in ListFormula)
+                    {
+                        var cellAddress = formulaEntry.Key;
+                        var cellFormula = formulaEntry.Value;
+
+                        // Tách địa chỉ hàng và cột từ địa chỉ ô
+                        var (column, startRow) = GetColumnRowFromAddress(cellAddress);
+                        lastRow = startRow + tblDetail.Count() - 1;  // Tính hàng cuối cùng dựa trên số lượng dòng
+                        var range = exportWorksheet.Cells[$"{ExcelCellBase.GetAddress(startRow, column)}:{ExcelCellBase.GetAddress(lastRow, column)}"];
+                        range.Formula = cellFormula;
+                    }
+
+                    // Xóa nội dung dư thừa
+                    for (int row = lastRow + 1; row <= exportWorksheet.Dimension.End.Row; row++)
+                    {
+                        exportWorksheet.Cells[row, 1, row, exportWorksheet.Dimension.End.Column].Clear();
+                    }
+
+                    // Thay thế DowCode
                     if (titleIdx != 0)
                     {
                         string strTitle = exportWorksheet.Cells[titleIdx, 1].GetValue<string>();
                         strTitle = strTitle.Replace("@DowCode", item.DowCode);
                         exportWorksheet.Cells[titleIdx, 1].Value = strTitle;
                     }
+
+                    // Ẩn RowMapping
                     exportWorksheet.Row(iLoopData + int.Parse(itemTemplate.ExcelColBegin)).Hidden = true;
                     exportWorksheet.Row(int.Parse(itemTemplate.ExcelColBegin)).Hidden = true;
 
@@ -2129,11 +2264,349 @@ namespace ERM.Business.HR
                     ms.Position = 0;
                     ms.Read(bff, 0, bff.Length);
                     ms.Close();
-                    return bff;
+                    return new object[] { bff, lastRow };
                 }
             }
             return null;
         }
+
+
+        private int ColumnLetterToNumber(string columnLetter)
+        {
+            int number = 0;
+            foreach (char c in columnLetter.ToUpper())
+            {
+                number = (number * 26) + (c - 'A' + 1);
+            }
+            return number;
+        }
+
+        private (int column, int row) GetColumnRowFromAddress(string address)
+        {
+            var columnLetter = new StringBuilder();
+            var rowNumber = new StringBuilder();
+
+            foreach (var ch in address)
+            {
+                if (Char.IsLetter(ch))
+                {
+                    columnLetter.Append(ch);
+                }
+                else if (Char.IsDigit(ch))
+                {
+                    rowNumber.Append(ch);
+                }
+            }
+
+            int column = ColumnLetterToNumber(columnLetter.ToString());
+            int row = int.Parse(rowNumber.ToString());
+
+            return (column, row);
+        }
+
+        public class LoadGridView
+        {
+            public Guid ExcelTemplateID { get; set; }
+            public byte[] ContentSource {  get; set; }
+            public string DowCode {  get; set; }
+            public int LastRow {  get; set; }
+        }
+
+        public async Task ReloadGridViewAsync(LVStreamReader requestReader, LVStreamWriter responseWriter)
+        {
+            LoadGridView grv = requestReader.ReadObject<LoadGridView>();
+            var result = await ReloadGridViewAsyncLogic(grv);
+            responseWriter.WriteObject(result);
+        }
+
+        public async Task<object> ReloadGridViewAsyncLogic(LoadGridView grv)
+        {
+            var cols = new List<SqlColumnInfo>();
+            var templateDetails = await Repository.GetAsync<HR_SysExcelTemplateField>().Where(p => p.ExcelTemplateID == grv.ExcelTemplateID).ToListAsync();
+            if (templateDetails != null)
+            {
+                foreach (var temp in templateDetails)
+                {
+                    var col = new SqlColumnInfo()
+                    {
+                        ColumnName = temp.TableName + "." + temp.FieldName,
+                        IsKey = true,
+                    };
+                    cols.Add(col);
+                }
+            }
+            var mm = new System.IO.MemoryStream();
+            mm.Write(grv.ContentSource, 0, grv.ContentSource.Length);
+            mm.Position = 0;
+            using (var package = new ExcelPackage(mm))
+            {
+                var worksheet = package.Workbook.Worksheets[0];
+
+                var paramsExcelTemplate = new object[] { grv.ExcelTemplateID };
+
+                var tblCol = await Repository.ExecScalarAsync<DataTable>("HR_fnGetExcelTemplateFields", paramsExcelTemplate);
+                System.Data.DataView dvCol = tblCol[0].DefaultView;
+                tblCol[0] = dvCol.ToTable();
+                foreach (System.Data.DataRow row in tblCol[0].Rows)
+                {
+                    var col = new SqlColumnInfo()
+                    {
+                        ColumnName = row["FieldName"].ToString().TrimEnd(']').TrimStart('['),
+                        AllowNull = true,
+                        IsKey = false,
+                        DataTypeName = row["DataType"].ToString(),
+                    };
+                    cols.Add(col);
+                }
+                string tableName = GetTableNameByTemplateIDAsync(grv.ExcelTemplateID);
+                var result = await HandlerImportExcelTemplate1(grv.ExcelTemplateID, tableName, grv.DowCode, worksheet, cols, grv.LastRow);
+                return result;
+            }
+        }
+
+        private async Task<object> HandlerImportExcelTemplate1(Guid excelTemplateID, string tableName, string dowCode, ExcelWorksheet worksheet, List<SqlColumnInfo> columns, int lastRow)
+        {
+            HR_SysExcelTemplateDetail details = await Repository.GetOneAsync<HR_SysExcelTemplateDetail>(item => item.ExcelTemplateID == excelTemplateID);
+            var keyColumns = columns.Where(p => p.IsKey).ToList();
+            var cols = await GetColumns(excelTemplateID);
+
+            columns = columns.Where(x => cols.Any(y => y.ColumnName == x.ColumnName)).ToList();
+
+            if (dowCode != null)
+            {
+                SqlColumnInfo info = new SqlColumnInfo
+                {
+                    AllowNull = true,
+                    ColumnName = "DowCode",
+                    IsKey = false
+                };
+                columns.Add(info);
+            }
+
+            string qrDel = $"DELETE FROM \"{tableName}\"";
+            await Repository.ExecAsync(qrDel);
+
+            if (dowCode != null)
+            {
+                string query = $"IF NOT EXISTS(SELECT 1 FROM sys.columns WHERE Name = N'DowCode' AND Object_ID = Object_ID(N'" + tableName + "')) " +
+                    "BEGIN " +
+                        "ALTER TABLE " + tableName + " ADD DowCode VARCHAR(7) " +
+                    "END";
+                await Repository.ExecAsync(query);
+            }
+
+            #region Đọc dữ liệu và map data
+            int idxStt = int.Parse(details.ExcelColBegin);
+
+            int idxEnd = lastRow;
+
+            var columnMap = new List<ColumnMapping>();
+            var nameMapping = new List<ColumnMapping>();
+            for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+            {
+                try
+                {
+                    var cellValue = worksheet.Cells[idxStt, col].Value?.ToString();
+
+                    if (cellValue != null && cellValue != "@STT@")
+                    {
+                        string columnName = cellValue.TrimStart('[').TrimEnd(']');
+                        nameMapping.Add(new ColumnMapping()
+                        {
+                            ColumnName = columnName,
+                            Addess = worksheet.Cells[idxStt, col].FullAddressAbsolute,
+                        });
+                    }
+                    else
+                    {
+                        nameMapping.Add(new ColumnMapping()
+                        {
+                            ColumnName = $".Col {col}",
+                            Addess = worksheet.Cells[idxStt, col].FullAddressAbsolute,
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+
+            }
+
+            int col_idx = 1;
+            for (int col = 1; col <= worksheet.Dimension.Columns; col++)
+            {
+                if (nameMapping.FirstOrDefault(p => p.Addess == worksheet.Cells[idxStt, col].FullAddressAbsolute) != null)
+                {
+                    columnMap.Add(new ColumnMapping()
+                    {
+                        ColumnName = nameMapping.FirstOrDefault(p => p.Addess == worksheet.Cells[idxStt, col].FullAddressAbsolute).ColumnName,
+                        Index = col,
+                        Caption = !string.IsNullOrEmpty(worksheet.Cells[idxStt - 2, col].Text)
+                                                        ? worksheet.Cells[idxStt - 2, col].Text
+                                                        : worksheet.Cells[idxStt - 3, col].Text
+                    });
+                }
+                col_idx++;
+            }
+
+            if (dowCode != null)
+            {
+                columnMap.Add(new ColumnMapping()
+                {
+                    ColumnName = "DowCode",
+                    Index = col_idx + 1,
+                    Caption = "Kỳ tính lương"
+                });
+            }
+
+            columnMap = columnMap.Join(columns, p => p.ColumnName.ToLower(), q => q.ColumnName.ToLower(), (p, q) => p).ToList();
+
+            #endregion
+
+            #region Lấy dữ liệu và thực hiện import
+            var lstInsertRowSheet = new List<InsertRowSheet>();
+            List<Hashtable> records = new List<Hashtable>();
+            for (int row = idxStt + 1; row <= idxEnd; row++)
+            {
+                #region Mapping data
+
+                var keyValues = new List<ColumnMapping>();
+                var filter = "";
+                var Params = new Hashtable();
+
+                foreach (var col in keyColumns)
+                {
+                    var keyColumnMapping = columnMap.FirstOrDefault(p => p.ColumnName.Equals(col.ColumnName, StringComparison.OrdinalIgnoreCase));
+                    if (keyColumnMapping == null)
+                    {
+                        return new ImportDataResult()
+                        {
+                            StatusName = "Error",
+                            IsError = true,
+                        };
+                    }
+                    var index = keyColumnMapping.Index;
+                    Params[keyColumnMapping.ColumnName] = null;
+
+                    object value = null;
+                    if (worksheet.Cells[row, index].Value != null)
+                    {
+                        if (worksheet.Cells[row, index].StyleName == "date" || worksheet.Cells[row, index].Value.ToString() == "[CV.JoinedOn]")
+                        {
+                            value = DateTime.FromOADate(double.Parse(worksheet.Cells[row, index].Value.ToString()));
+                        }
+                        else
+                        {
+                            value = worksheet.Cells[row, index].Value;
+                        }
+                        Params[keyColumnMapping.ColumnName] = value;
+                    }
+                    filter += "([" + keyColumnMapping.ColumnName + "]=@" + keyColumnMapping.ColumnName + ")and";
+                    keyValues.Add(new ColumnMapping()
+                    {
+                        ColumnName = keyColumnMapping.ColumnName,
+                        Value = value
+                    });
+                    if (dowCode != null)
+                    {
+                        keyValues.Add(new ColumnMapping()
+                        {
+                            ColumnName = keyColumnMapping.ColumnName,
+                            Value = dowCode
+                        });
+                    }
+                }
+                filter = filter.TrimEnd("and".ToCharArray());
+
+                var Data = new Hashtable();
+                foreach (var mapCol in columnMap)
+                {
+                    Data[mapCol.ColumnName] = null;
+                    if (worksheet.Cells[row, mapCol.Index].Value != null)
+                    {
+                        var col = cols.FirstOrDefault(p => p.ColumnName == mapCol.ColumnName);
+                        var colD = cols.FirstOrDefault(p => p.ColumnName == mapCol.ColumnName && p.DataTypeName == "datetime");
+                        if (colD == null && col.ColumnName != "CV.JoinedOn")
+                        {
+                            if (col != null)
+                            {
+                                Data[mapCol.ColumnName] = worksheet.Cells[row, mapCol.Index].Value;
+                            }
+                        }
+                        else
+                        {
+                            double doubleParse;
+                            if (double.TryParse(worksheet.Cells[row, mapCol.Index].Value.ToString(), out doubleParse))
+                            {
+                                Data[mapCol.ColumnName] = DateTime.FromOADate(double.Parse(worksheet.Cells[row, mapCol.Index].Value.ToString()));
+                            }
+                            else
+                            {
+                                var dataDate = worksheet.Cells[row, mapCol.Index].Value.ToString().Split('/');
+                                if (dataDate.Length >= 3)
+                                {
+                                    Data[mapCol.ColumnName] = dataDate[2] + '-' + dataDate[1] + '-' + dataDate[0];
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (dowCode != null && mapCol.ColumnName == "DowCode")
+                        {
+                            Data[mapCol.ColumnName] = dowCode;
+                        }
+                    }
+                }
+                records.Add(Data);
+                WorkSheetRowItem wsrItem = new WorkSheetRowItem()
+                {
+                    Data = Data,
+                    Filter = filter,
+                    //Index = row - 1,
+                    Index = row + 1,
+                    Params = Params
+                };
+                var dataItem = new InsertRowSheet()
+                {
+                    TableName = tableName,
+                    cols = cols,
+                    wsrItem = wsrItem,
+                };
+                lstInsertRowSheet.Add(dataItem);
+                #endregion
+            }
+            var modelMulti = new modelMultiProcess()
+            {
+                Repository = Repository,
+                HubContext = HubContext,
+                ProcessName = "reloadGridView",
+                UserID = UserID,
+                Tenant = RequestContext.RequestSession.Tenant,
+                IsReturnList = true
+            };
+            var multi = new MultiProcess<InsertRowSheet>(modelMulti);
+            await multi.Excute(lstInsertRowSheet, async (lst) =>
+            {
+                try
+                {
+                    foreach (var item in lst)
+                    {
+                        InsertSalaryTemplate(item.TableName, item.cols, item.wsrItem);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                    throw;
+                }
+
+            });
+            return excelTemplateID;
+            #endregion
+        }
+
         #endregion
 
         #region Create Structure Table
@@ -2164,7 +2637,192 @@ namespace ERM.Business.HR
                 return null;
             }
         }
-        
+
+        #endregion
+
+        #region Test 
+
         #endregion
     }
 }
+
+
+
+
+
+
+// Class
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERM.Model.HR.temp
+{
+    public class EmployeeItem
+    {
+        /// <summary>
+        /// STT của Employee trong list (1 -> n)
+        /// </summary>
+        public int ID { get; set; }
+        /// <summary>
+        /// Mã nhân viên
+        /// </summary>
+        public string EmployeeID { get; set; }
+        public string DowCode { get; set; }
+        /// <summary>
+        /// Trả về mã nhân viên khi join string
+        /// </summary>
+        /// <returns></returns>
+        public override string ToString()
+        {
+            return this.EmployeeID;
+        }
+    }
+
+    public class Paras
+    {
+        public string PrefixTableName { get; set; }
+        public Guid ExcelTemplateID { get; set; }
+        public string ProcessName { get; set; }
+    }
+
+    public class TemplateObject
+    {
+        public string TemplateCode { get; set; }
+        public string ViewName { get; set; }
+        public string FileName { get; set; }
+        public string WhereExpression { get; set; }
+        public byte[] ContentSource { get; set; }
+        public string ExcelColBegin { get; set; }
+    }
+
+    public class InsertRowSheet
+    {
+        public string TableName { get; set; }
+        public WorkSheetRowItem wsrItem { get; set; }
+        public List<SqlColumnInfo> cols { get; set; }
+    }
+
+
+    public class SqlColumnInfo
+    {
+        public string ColumnName { get; set; }
+        public bool AllowNull { get; set; }
+        public bool IsKey { get; set; }
+        public bool IsIdentity { get; set; }
+        public string DataTypeName { get; set; }
+    }
+
+    public class ImportDataResult
+    {
+        public string StatusName { get; set; }
+        public string ErrorMessage { get; set; }
+        public bool IsError { get; set; }
+    }
+
+    public class LoadDatasourceItemInfo
+    {
+        /// <summary>
+        /// Điều kiện lấy dữ liệu
+        /// </summary>
+        public string Filter { get; set; }
+        /// <summary>
+        /// Tham số trong phần điều kiện
+        /// </summary>
+        public Hashtable Params { get; set; }
+        /// <summary>
+        /// Nguồn dữ liệu
+        /// </summary>
+        public string Source { get; set; }
+        /// <summary>
+        /// Các field cần lấy dữ liệu
+        /// </summary>
+        public string Columns { get; set; }
+        /// <summary>
+        /// 
+        /// </summary>
+        public List<SqlColumnInfo> lstOfCol { get; set; }
+    }
+
+    public class InsertItemDatasourceInfo
+    {
+        public Hashtable Data { get; set; }
+        public string UserID { get; set; }
+        public string Source { get; set; }
+        public string SessionKey { get; set; }
+        public string Language { get; set; }
+        public string PagePath { get; set; }
+        public string Email { get; set; }
+        public string FunctionID { get; set; }
+        public string TokenID { get; set; }
+        public string Customer { get; set; }
+    }
+    public class WorkSheetRowItem
+    {
+        public Hashtable Data { get; set; }
+        public string Filter { set; get; }
+        public int Index { get; set; }
+        public Hashtable Params { set; get; }
+    };
+
+    public class CreateTableParams
+    {
+        public string SchemaName { get; set; }
+        public string PrefixTableName { get; set; }
+        public Guid ExcelTemplateID { get; set; }
+    }
+
+    public class TemplateSample
+    {
+        public string TableName { get; set; }
+        public string ColumnName { get; set; }
+        public string ColumnCaption { get; set; }
+        public int Level { get; set; }
+    }
+    public class CreateTemplateParams
+    {
+        public string ExcelTemplateType { get; set; }
+        public Guid ExcelTemplateID { get; set; }
+    }
+
+    public class ListEmployeeID
+    {
+        public string EmployeeID { get; set; }
+    }
+    public class RequestParams
+    {
+        public string SchemaName { get; set; }
+        public string PrefixTableName { get; set; }
+        public Guid ExcelTemplateID { get; set; }
+        public DateTime FromTime { get; set; }
+        public DateTime ToTime { get; set; }
+        public string DowCode { get; set; }
+        public DateTime GenDay { get; set; }
+        public bool IsCbk { get; set; }
+    }
+
+    public class CreateTemplateAndStructureTable
+    {
+        public string Base64string { get; set; }
+        public string DowCode { get; set; }
+        public string FileName { get; set; }
+        public int RowMapping { get; set; }
+        public DateTime FromTime { get; set; }
+        public DateTime ToTime { get; set; }
+    }
+
+    public class FillData
+    {
+        public string SchemaName { get; set; }
+        public string PrefixTableName { get; set; }
+        public string DowCode { get; set; }
+        public Guid ExcelTemplateID { get; set; }
+        public string FuncID { get; set; }
+        public DateTime FromTime { get; set; }
+        public DateTime ToTime { get; set; }
+    }
+}
+
