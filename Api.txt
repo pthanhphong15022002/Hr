@@ -30,6 +30,9 @@ userID: ""
 {language: 'VN', functionID: 'HREM106', userID: '', functionType: 'T', defaultName: 'Khen thưởng - Kỷ luật', …}
 6
 : 
+
+Anh em nghiên cứu thị trường cà phê thì note thông tin vào đây nha.
+Link: https://docs.google.com/spreadsheets/d/1UNJHjA_z3dpxjcAvT5398f_Y9vEDs6B5KK_BFbzIeco/edit?usp=sharing
 {language: 'VN', functionID: 'HREM107', userID: '', functionType: 'T', defaultName: 'Sức khỏe - Hoạt động', …}
 7
 : 
