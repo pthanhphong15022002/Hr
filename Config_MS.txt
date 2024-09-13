@@ -1,0 +1,213 @@
+{
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "Redis": "172.16.7.33:6379,password=Erm@2021,ssl=false,allowAdmin=true,abortConnect=false,defaultDatabase=15,syncTimeout=5000,preheat=3,testcluster=false,idleTimeout=15000,tryit=2,poolsize=1000",
+    "MongoDB": "mongodb://admin:Erm%402021@172.16.7.33:27017",
+    "PostgreSQL": "Server=172.16.7.34;Port=5432;Database=ERM_System;User Id=postgres;Password=Erm@2021;Read Buffer Size=18000;MinPoolSize=1;MaxPoolSize=100;Pooling=True;Integrated Security=True;ConnectionLifeTime=15;App=postgres",
+    "CoDX": "Server=172.16.7.34;Database=CoDX;User Id=sa;Password=Erm@2021;TrustServerCertificate=true;App=sql",
+    "SQL": "Server=172.16.7.34;Database=CoDX;User Id=sa;Password=Erm@2021;TrustServerCertificate=true;App=sql",
+    "MySql": "Server=210.2.92.198;Database=qac;Uid=qca;Pwd=2eE&MxkN"
+  },
+
+  "fileSetting": {
+    "Url": "http://172.16.7.99/lvfile",
+    //"Url": "http://172.16.7.240/lvfile",
+    "Tenant": "hps-file-test",
+    "TenantUser": "admin",
+    "User": "root",
+    "Password": "root",
+    "NotUseElastic": "0"
+  },
+  "BankHubSetting": {
+    "partnerID": "test",
+    "passPhrase": "abc123",
+    "API_Url": "http://localhost:8999/api/BankHub/"
+    //"API_Url": "https://bankhub.codx.vn/api/BankHub/"
+  },
+  "LVAI": {
+    "Url": "https://ai.codx.vn/",
+    "UploadDoc": "api/Chat/v1.2/document/upload?api-version=1.2",
+    "OcrGetData": "api/BackgroundJob/v1.2/get-response/{0}?api-version=1.2",
+    "ChatGPT": "api/Vision/v1.3/recognize-invoice?api-version=1.3",
+    "OcrContent": "api/DocReader/v1.2/ocr-recognize?api-version=1.2",
+    "OcrContentv3": "api/Vision/v1.2/recognize-invoice?api-version=1.2",
+    "JsonFilePath": "\\\\172.16.7.34\\Public\\ERMCore\\Release\\Prompt_ocr.json",
+    "API_KEY": "NjFhNzQxNDYwMDMxNGFhZWFhNTAzMTAxMDdkNmYZmYzYWQwMDkMzMZWRmZjQwZTZhMGVkODNlMmMyMzdmMA",
+    "AgentDocumentId": "664c556e9c65d2a0fe75b0c2",
+    "Sso": "https://apibot.trogiupluat.vn/",
+    "Sso_create": "api/sso/app-client/v1.2/create",
+    "Sso_gettoken": "api/sso/app-client/v1.2/token-generate",
+    "Sso_key": "36029A5F-B736-4DA9-AE46-D66847C9062C"
+  },
+  "otpSetting": {
+    "SmsGateWayService_Endpoint": "http://113.185.0.35:8888/smsbn/api",
+    "SmsGateWayService_TemplateId": "658242",
+    "SmsGateWayService_Username": "Lacviet_cskh",
+    "SmsGateWayService_ApiPass": "Lacviet@123",
+    "SmsGateWayService_ApiUser": "Lacviet_cskh",
+    "SmsGateWayService_ContractId": "12862",
+    "SmsGateWayService_LabelId": "136592",
+    "SmsGateWayService_AgentId": "159"
+  },
+
+  "Signatures": {
+    "VNPT": {
+      "Url": "https://gateway.vnpt-ca.vn/signservice/v4/",
+      "ClientId": "4669-637628848788756993.apps.signserviceapi.com",
+      "ClientSecret": "NDIwMzhjMzc-MDZiNS00NjY5",
+      "Token": "oauth/token",
+      "Gateway": "api_gateway"
+    },
+    "Viettel": {
+      "Url": "https://remotesigning.viettel.vn",
+      "ClientId": "samples_test_client",
+      "ClientSecret": "205640fd6ea8c7d80bb91c630b52d286d21ee511",
+      "ProfileID": "adss:ras:profile:001"
+    }
+  },
+  "SyncfusionLicense": "Mgo+ACkHNlJ9XG51S0ZrXVNbdV5dVGpAd0N3RGlcdlR1fUUmHVdTRHRcQlphT39QdEZjWnpXdnA=",
+
+  "AppSettings": {
+    "HostUI": "http://172.16.7.34:8000",
+    "APIGateway": "http://localhost:8011",
+    "DBShare": "ERM_System",
+    "DBShareType": "PostgreSQL",
+    "DBNameType": "PostgreSQL",
+    "Secret": "A8D3F5D1A91944445CB61358CA999-LV@2020-8D16AB267DBABFD3BB94223791914",
+    "Language": "VN",
+    "PocoAssembly": "ERM.Model",
+    "UserExpireHour": "24",
+    "PublicPath": "\\\\172.16.7.34\\Public\\Upload",
+    "ConnectTimeout": 1800,
+    "IsLogFile": true,
+    "ActiveAudit": true,
+    "AuthService": true,
+    "BackgroundService": "http://172.16.7.34:8010",
+    "MultiDB": "",
+    "CacheType": "csredis",
+    "TenantExists": "register;erm_;default;apps;codxdemo",
+    "ServiceShares": "ERM.Services.Tenant;",
+    "SingleExec": false,
+    "MethodByPassAuths": [ "CreateUserLoginAsync", "LoginAsync", "GetCache", "GetCacheAsync", "GetUserBySessionAsync", "CheckExistTenantAsync", "ExistsTenantAsync", "ForgetPWAsync", "ChangePasswordAsync", "GetByRecIDAsync", "GetFilesByObjectTypeReferAsync", "ScheduleAsync", "CreateUserNoLoginAsync", "AddUserDemoAsync", "GenOTPLoginAsync", "GenQRCodeAsync", "ScanQRCodeAsync", "Get2FAUserAsync", "GetChangePassSettingAsync", "GetItemSharingAsync", "ValidatePermisstionAsync", "VerifyAuthOTP", "GetAzureAccountsAsync", "GetSSOTypeAsync", "UpdateAPIConfigAsync", "GetMobileMappingAsync", "AddMobileMappingAsync", "GetSenviAccountsAsync", "ViewInstanceAsync", "GetLogByIDAsync", "GetOneUserByUserIDAsync", "GetListFile", "GetAvatarAsync", "GetFileAsync", "GetFilesByIDAsync" ],
+    "TenantDemo": "codxdemo",
+    "TenantExperience": "congtycsc",
+    "APIEInv": "http://localhost:8899/api/invoice/",
+    "MinThreadsWorker": 200,
+    "MinThreadsCompletion": 20,
+    "Grafana": {
+      "Loki": "",
+      "Trace": ""
+    },
+
+    "RabbitMQ": {
+      "Username": "admin",
+      "Password": "Erm@2021",
+      "HostName": "172.16.7.33",
+      "Port": "5672",
+      "VHostUrl": "/",
+      "RetryCount": 5
+    },
+
+    "Elastic": {
+      "ESHost": "http://192.168.18.36:9200",
+      "ESUserName": "",
+      "ESPass": ""
+    },
+
+    "Mail": {
+      "SmtpActive": true,
+      "SmtpHost": "webmail.lacviet.com.vn",
+      "SmtpPort": 25,
+      "SmtpAddress": "sureerp@lacviet.com.vn",
+      "SmtpUser": "sureerp@lacviet.com.vn",
+      "SmtpPassword": "Lacviet@2015",
+      "SSL": false,
+      "ReceiveType": "",
+      "ImapPopActive": false,
+      "ImapPopHost": "",
+      "ImapPopPort": 0,
+      "ImapPopUser": "",
+      "ImapPopPassword": "",
+      "ApiHost": "",
+      "ApiUser": "codx@lacviet.com.vn",
+      "ApiPW": "codx@lacviet.com.vn@123",
+      "ApiMailMethod": "/api/Email/Json/Encrypt",
+      "ApiTokenMethod": "api/Token"
+    }
+  },
+
+  "Firebase": {
+    "type": "service_account",
+    "project_id": "codx-406703",
+    "private_key_id": "1ca446842c22c50b9a74e27699452969e4ef7f84",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCx1z5yuet+iCMw\nWB1Lo1cxHfRBoypXA+wmM3iJxMYQaizqIJdNW9wfz2lYUoWnJdkCsrRKRBC11JnW\nXfx14D577+29dEHh/P636UCfDfWFkPDWKu/4X72yLgzSrtgrYOJ9qierbs9PujkO\nCo/rAzsNGK/Z1fLUKuLBoAz6sPKwCa5WMKF6yXCYPAxMC7y933zH9ADF4XP/Rfer\nmErkFTK6sFRCnXDTl+sVnWDsyX/rXMtNKAkkm8cP/h5lTPMHxOwZGN5r7gAIcSkG\nYT1n1IbehPMTPoSvQQsunABjmcb0uU1Vnq6mv8Q3jL+mS2xdCDnZcG1Zma/n9VcC\n4xGZoqLpAgMBAAECggEAM952CcsdGs4FCWQhwz5UP3CfnYdD4ZY0yZ2IghIgvIfj\nKrQvvPHWXXbGoGqNLceVqDpL6D866nWkGshVymGJh+deHTwrvQhnmGdRIDLXkcnI\n3IYwcG4oKzBQMCCrztcWqBU5NcB/eZ70ZhqBiEdscTDqlSvYA7awZU3Ti0iRt/LV\nRQ3U7k7tVj83q67QQWoIdEPZYLll8VlB/9XdBGVs6t3aV8YND++gQ/lXqBX7N1fs\nk91QFrE58sYThCIeM9PNtf8Hb605wdLaf4bFVN09QSkOTAsL0oV9JvKbb30jZNlO\n1vVQB0RONcN4WWO2boSKYyt79HLfmCqC/k4WRRxv8wKBgQD0iEMTh37bnpHLm+DO\nzmu0Ec/I7PJ4KQ5VazZdphHz8HbGb48miAOvA47HMDKJtOPsx5R7zZoxNiiiJXbo\no4tjMfOSSvS1OQDgjFnh99Q76fGYw+Ir9ygON0wriNAT//bjWmAiGedlJ3KNiGDT\niG4jHGt9WJm4k9trwiFW2e7t7wKBgQC6LlDZpvrmA4jyCgxTyuYkRneAHWowrqG3\nAmUdwTsp1uQVfKOanqjq2qz2yQsWlEm9i17MPWopminUliwPJZDNibMfiL2KVSAz\nxBu+QXkW0V/soH2i+AgQVUlwGRdMrJNGX2UbigjvQC/4otdA1C/lrwuh4HvpK+8u\nChsL1X1UpwKBgQCgId9zGYb8gQHOyRxVsZ2cRRHB7VD3WUN2sofemdMl4PGXDxU6\nUVXANV85l5lwzlF4DFZzIHf6BBJl5IzS2c58vghYY9eOGW82nRJ7RNTqC1BYDua8\njdTgQlwSIjzI7BUcW2Ga00XR2xxMDOQDglNFkOXfJrc7xS+qiG1Wt86cZwKBgQC3\nufb9IkPb8kcVGwdZNRPxXjyVB/H/woVBVTK1rzcULcR807ebYNCumkcvbevsRz+R\ntdRB1qVKEqEO8XbfJ6ICws0p5EWvGhwiGXeLQ48cDlgL6cCxrvQ+Mfu7jHcqqe7X\n9lGPYKM6fmwYf5HNntb5YMko4J9G1Z09IKnZ/r6kZwKBgQDkJOp0/HK4fUezMRhe\nAN9aB8X9uMYjs1ZMHop+4o3U12sFkik7ouuCqm17fd+RMgD4WM4mvsHW3RpbP91g\nJAYOM56QxcNTxQsni+CM1AInbb7JrARZ+jpIJUUxWEamgr31OWQW+NZxkSA5ePWY\njH5MGxY+psDGg/qkcUzYqv455g==\n-----END PRIVATE KEY-----\n",
+    "client_email": "firebase-adminsdk-fz69g@codx-406703.iam.gserviceaccount.com",
+    "client_id": "102814600965599314063",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fz69g%40codx-406703.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+  },
+  "MultiService": {
+    "Active": false,
+    "Mongo": "BG,BI,BP,CM,CO,DM,DP,EI,EP,ES,FD,OD,OE,OM,PM,RP,SV,WP",
+    "Postgre": "AC,AM,AR,BS,HR,IV,PS,PR,SM,SYS,Tenant,TM,TR,WR",
+    "ReportMongo": "RPTBP,RPTCM,RPTDM,RPTDP,RPTEP,RPTES,RPTOD,RPTOM,RPTRP,RPTSV",
+    "ReportPostgre": "RPTAC,RPTAD,RPTAM,RPTHR,RPTIV,RPTSM,RPTTenant,RPTTM,RPTPR,RPTTR"
+  },
+  "ServiceMapping": {
+    "RP": {
+      "Service": "rptrp",
+      "AssemblyName": "Codx.RptBusiness.RP"
+    },
+    "LS": {
+      "Service": "HR"
+    },
+    "TS": {
+      "Service": "HR"
+    },
+    "PR": {
+      "Service": "HR"
+    },
+    "CT": {
+      "Service": "AC"
+    }
+  },
+  "Azure": {
+    "ClientID": "266ec157-e491-4dcc-923b-21224eb31f90",
+    "TenantID": "56590ff3-61e3-48da-9990-d4f901e87755",
+    "IsPersonalAccount": false,
+    "ClientSecret": "ut78Q~~H31Yv8Z6NmhjdbP9eCvLw0Wubwxprvb5l"
+  },
+
+  "AzureAccounts": [
+    {
+      "clientID": "266ec157-e491-4dcc-923b-21224eb31f90",
+      "tenantID": "56590ff3-61e3-48da-9990-d4f901e87755",
+      "isPersonalAccount": false,
+      "redirectUrl": "redirectlogin",
+      "clientSecret": "ut78Q~~H31Yv8Z6NmhjdbP9eCvLw0Wubwxprvb5l",
+      "Name": "Masan HN"
+    },
+    {
+      "clientID": "266ec157-e491-4dcc-923b-21224eb31f90",
+      "tenantID": "56590ff3-61e3-48da-9990-d4f901e87755",
+      "isPersonalAccount": false,
+      "redirectUrl": "redirectlogin",
+      "clientSecret": "ut78Q~~H31Yv8Z6NmhjdbP9eCvLw0Wubwxprvb5l",
+      "Name": "Masan CT"
+    },
+    {
+      "clientID": "266ec157-e491-4dcc-923b-21224eb31f90",
+      "tenantID": "56590ff3-61e3-48da-9990-d4f901e87755",
+      "isPersonalAccount": false,
+      "redirectUrl": "redirectlogin",
+      "clientSecret": "ut78Q~~H31Yv8Z6NmhjdbP9eCvLw0Wubwxprvb5l",
+      "Name": "Masan HCM"
+    }
+  ],
+  "QTSCSettings": {
+    "APIBravo": "http://210.2.92.142:1028/api"
+  }
+}
