@@ -1,0 +1,71 @@
+version: '3.4'
+
+services:
+  erm.gateway:
+    image: ${DOCKER_REGISTRY-}ermgateway
+    build:
+      context: .
+      dockerfile: Services/ERM.Gateway/Dockerfile
+
+  erm.services.background:
+    image: ${DOCKER_REGISTRY-}ermservicesbackground
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.Background/Dockerfile
+
+
+  erm.services.bs:
+    image: ${DOCKER_REGISTRY-}ermservicesbs
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.BS/Dockerfile
+
+
+  erm.services.fed:
+    image: ${DOCKER_REGISTRY-}ermservicesfed
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.FED/Dockerfile
+
+
+  erm.services.hr:
+    image: ${DOCKER_REGISTRY-}ermserviceshr
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.HR/Dockerfile
+
+
+  erm.services.sys:
+    image: ${DOCKER_REGISTRY-}ermservicessys
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.SYS/Dockerfile
+
+
+  erm.services.tenant:
+    image: ${DOCKER_REGISTRY-}ermservicestenant
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.Tenant/Dockerfile
+
+
+  erm.services.tm:
+    image: ${DOCKER_REGISTRY-}ermservicestm
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.TM/Dockerfile
+
+
+  erm.services.wp:
+    image: ${DOCKER_REGISTRY-}ermserviceswp
+    build:
+      context: .
+      dockerfile: Services/ERM.Services/ERM.Services.WP/Dockerfile
+
+
+  erm.tenant:
+    image: ${DOCKER_REGISTRY-}ermtenant
+    build:
+      context: .
+      dockerfile: UIs/ERM.Tenant/Dockerfile
+
