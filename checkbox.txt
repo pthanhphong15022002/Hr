@@ -1,0 +1,191 @@
+import {
+  ChangeDetectorRef,
+  Component,
+  Injector,
+  OnInit,
+  Optional,
+  TemplateRef,
+  ViewChild,
+} from '@angular/core';
+import { SelectionSettingsModel } from '@syncfusion/ej2-angular-grids';
+import {
+  ApiHttpService,
+  CodxGridviewV2Component,
+  CRUDService,
+  DataService,
+  DialogData,
+  DialogRef,
+  NotificationsService,
+} from 'codx-core';
+import { CodxHrService } from 'projects/codx-hr/src/public-api';
+
+@Component({
+  selector: 'lib-popup-choose-info',
+  templateUrl: './popup-choose-info.component.html',
+  styleUrls: ['./popup-choose-info.component.css'],
+})
+export class PopupChooseInfoComponent implements OnInit {
+  // @ViewChild('form') form: CodxFormComponent;
+  headerText: string;
+  data: any;
+  action: string = '';
+  dialogRef: DialogRef = null;
+
+  constructor(
+    private inject: Injector,
+    private api: ApiHttpService,
+    private notiSV: NotificationsService,
+    private hrService: CodxHrService,
+    private df: ChangeDetectorRef,
+    @Optional() dialogRef?: DialogRef,
+    @Optional() dialogData?: DialogData
+  ) {
+    this.dialogRef = dialogRef;
+    this.data = dialogData.data?.data;
+    this.headerText = dialogData.data?.headerText;
+    this.action = dialogData?.data?.action;
+  }
+
+  selectionOptions: SelectionSettingsModel = {
+    mode: 'Row',
+    cellSelectionMode: 'BoxWithBorder',
+    type: 'Multiple',
+    checkboxOnly: false,
+    persistSelection: true,
+    checkboxMode: 'Default',
+    enableSimpleMultiRowSelection: true,
+    enableToggle: true,
+    allowColumnSelection: true,
+  };
+
+  @ViewChild('grvPopup') grvPopup: CodxGridviewV2Component;
+
+  @ViewChild('templateCheckboxHeader', { static: true })
+  templateCheckboxHeader: TemplateRef<any> | undefined;
+  @ViewChild('templateCheckbox', { static: true })
+  templateCheckbox: TemplateRef<any> | undefined;
+
+  @ViewChild('templateEAccountHeaderGridCol1', { static: true })
+  templateEAccountHeaderGridCol1: TemplateRef<any> | undefined;
+  @ViewChild('templateEAccountHeaderGridCol2', { static: true })
+  templateEAccountHeaderGridCol2: TemplateRef<any> | undefined;
+
+  @ViewChild('templateEAccountGridCol1', { static: true })
+  templateEAccountGridCol1: TemplateRef<any> | undefined;
+  @ViewChild('templateEAccountGridCol2', { static: true })
+  templateEAccountGridCol2: TemplateRef<any> | undefined;
+
+  columnsGrid = [];
+  searchText: string = '';
+
+  ngOnInit(): void {
+    this.arrItems = []; // Khởi tạo mảng rỗng mỗi khi gọi popup
+    this.initFormGroup();
+    this.columnsGrid = [
+      // {
+      //   headerTemplate: this.templateCheckboxHeader,
+      //   template: this.templateCheckbox,
+      //   width: 30,
+      // },
+      {
+        headerTemplate: this.templateEAccountHeaderGridCol1,
+        template: this.templateEAccountGridCol1,
+      },
+      {
+        headerTemplate: this.templateEAccountHeaderGridCol2,
+        template: this.templateEAccountGridCol2,
+      },
+    ];
+  }
+
+  initFormGroup() {
+    this.hrService
+      .getFormGroup(
+        this.dialogRef.formModel?.formName,
+        this.dialogRef.formModel?.gridViewName,
+        this.dialogRef.formModel
+      )
+      .then((fg) => {
+        this.dialogRef.formModel.formGroup = fg;
+        if (this.data) {
+          this.dialogRef.formModel.formGroup.patchValue(this.data);
+        }
+      });
+  }
+
+  // Mảng chứa nhiều item được chọn
+  arrItems: any[] = [];
+  // Chọn item
+  itemSelected: any;
+  lstRowIndex: any[];
+  onSelected(event) {
+    this.itemSelected = event;
+    if (event._isSelect) {
+      const isDuplicate = this.arrItems.some(
+        (item) => item.recID === event.recID
+      );
+      if (!isDuplicate) {
+        this.arrItems.push(event);
+        this.lstRowIndex.push(event._rowIndex);
+      }
+    }
+  }
+
+  onCheckBoxChange(event) {
+    if (event.selectedRowIndexes.length === 0) {
+      // Bỏ chọn tất cả
+      this.arrItems = [];
+    } else if (
+      event.checked &&
+      event.selectedRowIndexes.length === this.grvPopup.dataSource.length && (!this.searchText)
+    ) {
+      // Chọn tất cả
+      this.arrItems = this.grvPopup.dataService.data;
+    } 
+    // else {
+    //   this.arrItems = this.arrItems.filter((item) =>
+    //     event.selectedRowIndexes.includes(item._rowIndex)
+    //   );
+    // }
+  }
+
+  // Map data vào index row
+  onSave() {
+    if (this.action === 'add') {
+      this.save(this.arrItems, this.data.excelTemplateID);
+    }
+    this.df.detectChanges();
+  }
+
+  save(data, templateID) {
+    this.api
+      .execSv(
+        'HR',
+        'HR',
+        'SysExcelTemplateFieldBusiness',
+        'AddChooseInfoAsync',
+        [data, templateID]
+      )
+      .subscribe((res) => {
+        if (res) {
+          this.notiSV.notifyCode('SYS006');
+          this.dialogRef.close({
+            save: true,
+            data: res,
+          });
+        } else {
+          this.notiSV.notifyCode('SYS023');
+          this.dialogRef.close(null);
+        }
+      });
+  }
+  dataServiceList: DataService = null;
+  // Tìm kiếm
+  onSearch(event) {
+    this.searchText = event;
+    this.grvPopup.dataService.search(event, (item: any) => {
+      this.hrService.refreshGridView(this.grvPopup);
+    })
+  }
+
+}
