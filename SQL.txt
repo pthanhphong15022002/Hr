@@ -1,0 +1,32 @@
+Create table HR_SysCategoryExcelHSNVDetail(
+	FactorCode nvarchar(100),
+	DisplayName nvarchar(100),
+	FCategoryCode varchar(10),
+	FCategoryCodeDetail varchar(10),
+	TableName varchar(50),
+	DisplayTableName nvarchar(200),
+	DisplayTableNameDetail nvarchar(200),
+)
+
+
+
+
+INSERT INTO HR_SysCategoryExcelHSNVDetail (FactorCode, DisplayName, FCategoryCode, FCategoryCodeDetail, TableName, DisplayTableName)
+VALUES 
+('IDCardNo', N'Số CMND - SYLL', 'CV', NULL, 'HR_Employees', N'Thông tin cá nhân', NULL),
+('EmployeeName', N'Họ và tên - SYLL', 'CV', NULL, 'HR_Employees', N'Thông tin cá nhân', NULL),
+('EmployeeID', N'Mã nhân viên - SYLL', 'CV', NULL, 'HR_Employees', N'Thông tin cá nhân', NULL),
+('JoinedOn', N'Ngày vào làm - SYLL', 'CV', NULL, 'HR_Employees', N'Thông tin cá nhân', NULL),
+('DepartmentID', N'Tên phòng ban', 'CV', NULL, 'HR_Employees', N'Thông tin cá nhân', NULL),
+('BasicSalary', N'Lương cơ bản', 'IC', NULL, 'HR_PayIncome', N'Lương', NULL),
+('InsSalary', N'Lương đóng BH', 'IC', NULL, 'HR_PayIncome', N'Lương', NULL),
+('Amount', N'Số tiền', 'EA', 'PC12', 'HR_LSAlloGrade', N'Phụ cấp',N'Phụ cấp xăng'),
+('CurrentcyCode', N'Nguyên tệ', 'EA', 'PC12', 'HR_LSAlloGrade', N'Phụ cấp',N'Phụ cấp xăng'),
+('Amount', N'Số tiền', 'EA', 'PC13', 'HR_LSAlloGrade', N'Phụ cấp',N'Phụ cấp điện thoại'),
+('CurrentcyCode', N'Nguyên tệ', 'EA', 'PC13', 'HR_LSAlloGrade', N'Phụ cấp', N'Phụ cấp điện thoại'),
+('Amount', N'Số tiền', 'EA', 'PC14', 'HR_LSAlloGrade', N'Phụ cấp', N'Phụ cấp cơm'),
+('CurrentcyCode', N'Nguyên tệ', 'EA', 'PC14', 'HR_LSAlloGrade', N'Phụ cấp', N'Phụ cấp cơm'),
+('Amount', N'Số tiền', 'EA', 'PC15', 'HR_LSAlloGrade', N'Phụ cấp', N'Phụ cấp nhà ở'),
+('CurrentcyCode', N'Nguyên tệ', 'EA', 'PC15', 'HR_LSAlloGrade', N'Phụ cấp', N'Phụ cấp nhà ở'),
+('ContractNo', N'Số hợp đồng', 'CT', NULL, 'HR_EmpContract', N'Hợp đồng lao động', NULL),
+('Award', N'Tiền thưởng', 'CT', NULL, 'HR_EmpContract', N'Hợp đồng lao động', NULL);
