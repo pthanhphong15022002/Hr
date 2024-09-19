@@ -1,0 +1,50 @@
+        <div class="m-3">
+            <button class="d-flex align-items-center btn btn-primary" style="max-width: fit-content;"
+            (click)="createTemplateSample()">
+            <codx-label default="Tạo Template mẫu"></codx-label>
+        </button>
+        </div>
+
+
+Hàm xử lý:
+
+  createTemplateSample() {
+    this.api.execSv<any>(
+      'HR',
+      'HR',
+      'SysExcelTemplateBusiness',
+      'CreateTemplateHSNVAsync',
+    ).subscribe((res) => {
+      console.log('file', res);
+      this.prService.downloadFile(res);
+    })
+  }
+
+
+  downloadFile(data: any) {
+    var sampleArr = this.base64ToArrayBuffer(data);
+    this.saveByteArray(sampleArr, 'File_Export.xlsx');
+  }
+
+  base64ToArrayBuffer(base64) {
+    var binaryString = window.atob(base64);
+    var binaryLen = binaryString.length;
+    var bytes = new Uint8Array(binaryLen);
+    for (var i = 0; i < binaryLen; i++) {
+      var ascii = binaryString.charCodeAt(i);
+      bytes[i] = ascii;
+    }
+    return bytes;
+  }
+
+  saveByteArray(byte, fileName) {
+    var dataType =
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    var blob = new Blob([byte], {
+      type: dataType,
+    });
+    var link = document.createElement('a');
+    link.href = window.URL.createObjectURL(blob);
+    link.download = fileName;
+    link.click();
+  }
