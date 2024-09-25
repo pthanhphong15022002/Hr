@@ -1,0 +1,13 @@
+HR_EmpAllowance (EmployeeID, AlloGradeCode, EffectDate, IsCurrent, IsCopy, CreatedBy, IsPast)
+
+HR_EmpBasicSalary (EmployeeID, DecisionNo, EffectDate, IsCurrent, IsCopy, CreatedBy, IsPast)
+
+HR_EmpContract (EmployeeID, ContractNo, ContFrom, SignedDate, IsCurrent, IsCopy, CreatedBy, IsPast)
+
+HR_Employees (EmployeeID, EmployeeName, PositionControl, Probationary, SalaryPct, SalaryFactor, BaseSalary, 
+ContractSalary, ExtraSalary, NetSalary, AdvanceValue, AdvancePct, PITEndyear, SISalary, SIReturned, SIBooks, SISheets,
+SIPages, ShiftWorking, Status, Maternity, Longitude, Latitude, Stop, CreatedOn, CreatedBy, IsExpertRecruit, IsExpertTrain, 
+IsTUnion, IsAltShift, IsNotLateEarly, IsNotScan, IsNotOTKow, IsNotCLeaveKow, IsSettleTax, IsFixAdvanceAmount, IsForeigner, 
+FoNotReside)
+
+Tên store: [HR_SpAutoInsertDataPrefixTableEmpTemplate]
