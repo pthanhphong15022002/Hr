@@ -1,0 +1,782 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoInsertDataPrefixTableSalaryTemplate]    Script Date: 9/25/2024 3:57:55 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[HR_SpAutoInsertDataPrefixTableEmpTemplate]
+	@SchemaName VARCHAR(10),
+	@PrefixTableName VARCHAR(100),
+	@ExcelTemplateID uniqueidentifier,
+	@FromTime VARCHAR(100),
+	@ToTime   VARCHAR(100),
+	@DowCode  VARCHAR(10),
+	@CreatedBy VARCHAR(50),
+	@GenDate VARCHAR(100),
+	@strEmps NVARCHAR(MAX),
+	@isCkb BIT
+AS
+BEGIN
+	DECLARE @strSql VARCHAR(MAX), @CountIC INT 
+	DECLARE @AAG VARCHAR(450), @AAGColumn VARCHAR(50), @MainTable VARCHAR(MAX)
+	declare @PRDecPlaceCurrencyForCal int, @PRDecPlaceCurrencyForPay int
+	select top(1)@PRDecPlaceCurrencyForCal = PRDecPlaceCurrencyForCal, @PRDecPlaceCurrencyForPay = PRDecPlaceCurrencyForPay from HR_ConfigPR
+
+	-- table lấy data
+	SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + CAST(Replace(@ExcelTemplateID,'-','') AS VARCHAR(50)) + '_' + @CreatedBy + ']'
+
+	DECLARE @CountDataTemp int , @SQLQUERY nvarchar(1000)
+	SET @CountDataTemp = 0
+	SET @SQLQUERY = N'if exists (select top(1) 1 from ' + @MainTable + ' ) set @CountDataTemp = 1'
+	--EXEC (N'if exists (select top(1) 1 from ' + @MainTable + ' ) set @CountDataTemp = 1')
+	EXEC sp_executesql  @SQLQUERY, N'@CountDataTemp int output',@CountDataTemp output
+	
+	IF @CountDataTemp = 0 return
+
+
+	SELECT @CountIC = COUNT(1) FROM HR_SysExcelTemplateEmpField WITH (NOLOCK) 
+	WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'IC' AND (FieldName = 'FromTime' OR FieldName = 'ToTime')	
+	
+	SELECT TOP(1) @AAG = FieldName FROM HR_SysExcelTemplateEmpField WITH (NOLOCK) WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'AAG'
+
+	SELECT ce.* INTO #Emps FROM (
+		SELECT CAST([Data] AS NVARCHAR(20)) AS EmployeeID
+		FROM SplitStrings_CTE(@strEmps, ',')
+	) AS ce OPTION (MAXRECURSION 0)
+
+	SELECT R.EmployeeID, CASE WHEN R.JoinedOn > R1.FromDate THEN R.JoinedOn ELSE R1.FromDate END AS FromDate,
+		CASE WHEN R.StoppedOn < R1.ToDate THEN R.StoppedOn ELSE R1.ToDate END AS ToDate 
+	INTO #HCSEM_VWEmployeeGeneralInfo FROM (
+		SELECT T.EmployeeID, T.JoinedOn, T.StoppedOn
+		FROM HR_Employees AS T WITH (NOLOCK) 
+			INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID
+	) AS R INNER JOIN (
+		SELECT T.EmployeeID, T.FromDate, T.ToDate
+		FROM HR_ConfigTSEmpStandardWD AS T WITH (NOLOCK) INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+	) AS R1 ON R.EmployeeID = R1.EmployeeID
+
+	SET @AAGColumn = '[AAG.' + @AAG + ']'
+
+	SELECT @AAG = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(50), D.FieldName)
+		FROM (
+			SELECT FieldName FROM HR_SysExcelTemplateEmpField
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'AAG'
+		) AS D 
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+
+	SELECT ce.* INTO #AAG FROM (
+		SELECT CAST([data] AS VARCHAR(20)) AS [Data] FROM HR_FNSplitString_varchar(@AAG, ',')
+	) AS ce  OPTION (MAXRECURSION 0)
+	
+
+
+	IF @AAG IS NOT NULL AND @AAGColumn IS NOT NULL
+	BEGIN
+		IF @CountIC <= 0 -- kiểm tra xem có cột IC.ToTime và IC.FromTime hay không
+		BEGIN
+			-- chuỗi query tạo bảng đê insert data
+			IF @isCkb = 1 -- có check vào checkbox lấy fromtime của nhân viên
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AAG, (' SELECT A.[CV.EmployeeID], A.Amount, A.AmountF, A.AmountNonTax, A.AlloGradeCode, A.DowCode, '
+												+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+												+ 'A.ToTime, A.CreatedBy, A.IsCopy, A.IsPast, A.DayNum, A.ExRate '
+												+ 'FROM '
+												+ '(SELECT [CV.EmployeeID], ' + '[AAG.' + data + ']' + ' AS Amount, ' + '[AAG.' + data + ']' + ' AS AmountF, 0 AS AmountNonTax, '''
+												+ data + ''' AS AlloGradeCode, '''
+												+ @DowCode + ''' AS DowCode, ''' 
+												+ @FromTime + ''' AS FromTime, ''' + @ToTime + ''' AS ToTime, ''' + @CreatedBy 
+												+ ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum, 0 AS ExRate, '
+												+ 'C.JoinedOn AS FromTime ' 
+												+ ' FROM ' + @MainTable + ' AS A ' 
+												+ ' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+												+ ' INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+												+ ' WHERE A.Amount <> 0') AS strSelect
+						FROM #AAG
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+							 
+			END
+			ELSE 
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AAG, (' SELECT [CV.EmployeeID], ' + '[AAG.' + data + ']' + ' AS Amount, ' + '[AAG.' + data + ']' + ' AS AmountF, 0 AS AmountNonTax, '''
+											+ data + ''' AS AlloGradeCode, '''
+											+ @DowCode + ''' AS DowCode, ''' 
+											+ @FromTime + ''' AS FromTime, ''' + @ToTime + ''' AS ToTime, ''' + @CreatedBy 
+											+ ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum, 0 AS ExRate ' + 
+											' FROM ' + @MainTable + ' AS A ' +
+											' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+											+ ' WHERE [AAG.' + data + '] <> 0') AS strSelect
+						FROM #AAG
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+		END
+		ELSE 
+		BEGIN
+			-- chuỗi query tạo bảng đê insert data khi có IC.ToTime và IC.FromTime
+			IF @isCkb = 1 -- có check vào checkbox lấy fromtime của nhân viên
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AAG, (' SELECT A.[CV.EmployeeID], A.Amount, A.AmountF, A.AmountNonTax, A.AlloGradeCode, A.DowCode, '
+											+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+											+ 'A.ToTime, A.CreatedBy, A.IsCopy, A.IsPast, A.DayNum, A.ExRate '
+											+ 'FROM '
+											+ '(SELECT [CV.EmployeeID], ' + '[AAG.' + data + ']' + ' AS Amount, ' + '[AAG.' + data + ']' + ' AS AmountF, 0 AS AmountNonTax, '''
+											+ data + ''' AS AlloGradeCode, '''
+											+ @DowCode + ''' AS DowCode, '
+											+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+											+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum, 0 AS ExRate, '
+											+ 'C.JoinedOn AS FromTime '  
+											+ 'FROM ' + @MainTable + ' AS A ' 
+											+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+											+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+											+ ' where A.Amount <> 0') AS strSelect
+						FROM #AAG
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+			ELSE 
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AAG, (' SELECT [CV.EmployeeID], ' + '[AAG.' + data + ']' + ' AS Amount, ' + '[AAG.' + data + ']' + ' AS AmountF, 0 AS AmountNonTax, '''
+											+ data + ''' AS AlloGradeCode, '''
+											+ @DowCode + ''' AS DowCode, '
+											+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+											+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum, 0 AS ExRate ' + 
+											' FROM ' + @MainTable + ' AS A ' +
+											' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+											+ ' where [AAG.' + data + '] <> 0') AS strSelect
+						FROM #AAG
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+		END
+
+		SET @strSql = SUBSTRING(@strSql, 0, LEN(@strSql) - 5)
+		
+		--
+		DELETE T FROM HR_PayAllowance AS T INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID 
+			INNER JOIN #AAG AS T2 ON T.AlloGradeCode = T2.[Data]
+		WHERE T.DowCode = @DowCode
+
+		-- Insert data vào bảng HCSPR_PayAllowance theo AAG.
+		INSERT INTO HR_PayAllowance( EmployeeID, Amount, AmountF, AmountNonTax, AlloGradeCode, DowCode, FromTime , ToTime , CreatedBy, IsCopy, IsPast, DayNum, ExRate )
+		EXEC (@strSql)
+		-- cap nhat fromtime, totime
+		UPDATE T SET T.FromTime = T1.FromDate, T.ToTime = T1.ToDate
+		FROM HR_PayAllowance AS T INNER JOIN #HCSEM_VWEmployeeGeneralInfo AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+	END 
+------------------------------------------------------------------------
+
+	-- Start insert data table HCSPR_PaySalary
+	
+	DECLARE @AKW VARCHAR(450), @AKWColumn VARCHAR(50)
+
+	SELECT @AKW = FieldName FROM HR_SysExcelTemplateEmpField WITH (NOLOCK) WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'AKW'
+
+	SET @AKWColumn = '[AKW.' + @AKW + ']'
+
+	SELECT @AKW = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(50), D.FieldName)
+		FROM (
+			SELECT FieldName FROM HR_SysExcelTemplateEmpField
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'AKW'
+		) AS D 
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+	
+	SELECT ce.* INTO #AKW FROM (
+		SELECT CAST([data] AS VARCHAR(20)) AS [Data] FROM HR_FNSplitString_varchar(@AKW, ',')
+	) AS ce  OPTION (MAXRECURSION 0)
+
+	IF @AKW IS NOT NULL AND @AKWColumn IS NOT NULL
+	BEGIN
+		IF @CountIC <= 0 -- kiểm tra xem có cột IC.ToTime và IC.FromTime hay không
+		BEGIN
+			-- chuỗi query tạo bảng đê insert data
+			IF @isCkb = 1
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AKW, (' SELECT A.[CV.EmployeeID], A.Amount, A.AmountF, A.KowCode, A.DowCode, '
+											+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+											+ 'A.ToTime, A.CreatedBy, A.IsCopy, A.IsPast, A.DayNum '
+											+ 'FROM '
+											+ '(SELECT [CV.EmployeeID], ' + '[AKW.' + data + ']' + ' AS Amount, ' + '[AKW.' + data + ']' + ' AS AmountF, '''
+											+ data + ''' AS KowCode, '''
+											+ @DowCode + ''' AS DowCode, ''' 
+											+ @FromTime + ''' AS FromTime, ''' + @ToTime + ''' AS ToTime, ''' + @CreatedBy 
+											+ ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum, C.JoinedOn AS FromTime '
+											+ 'FROM ' + @MainTable + ' AS A '
+											+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+											+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+											+ ' where A.Amount <> 0') AS strSelect
+						FROM #AKW
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+
+			END
+			ELSE 
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AKW, (' SELECT [CV.EmployeeID], ' + '[AKW.' + data + ']' + ' AS Amount, ' + '[AKW.' + data + ']' + ' AS AmountF, '''
+											+ data + ''' AS KowCode, '''
+											+ @DowCode + ''' AS DowCode, ''' 
+											+ @FromTime + ''' AS FromTime, ''' + @ToTime + ''' AS ToTime, ''' + @CreatedBy 
+											+ ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum ' + 
+											' FROM ' + @MainTable + ' AS A ' +
+											' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+											+ ' where [AKW.' + data + '] <> 0') AS strSelect
+						FROM #AKW
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+		END
+		ELSE 
+		BEGIN
+			-- chuỗi query tạo bảng đê insert data
+			IF @isCkb = 1
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AKW, (' SELECT A.[CV.EmployeeID], A.Amount, A.AmountF, A.KowCode, A.DowCode, '
+											+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+											+ 'A.ToTime, A.CreatedBy, A.IsCopy, A.IsPast, A.DayNum '
+											+ 'FROM '
+											+ '(SELECT [CV.EmployeeID], ' + '[AKW.' + data + ']' + ' AS Amount, ' + '[AKW.' + data + ']' + ' AS AmountF, '''
+											+ data + ''' AS KowCode, '''
+											+ @DowCode + ''' AS DowCode, '
+											+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+											+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum, C.JoinedOn AS FromTime ' 
+											+ 'FROM ' + @MainTable + ' AS A ' 
+											+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+											+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+											+ ' where A.Amount <> 0') AS strSelect
+						FROM #AKW
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+			ELSE 
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS AKW, (' SELECT [CV.EmployeeID], ' + '[AKW.' + data + ']' + ' AS Amount, ' + '[AKW.' + data + ']' + ' AS AmountF, '''
+											+ data + ''' AS KowCode, '''
+											+ @DowCode + ''' AS DowCode, '
+											+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+											+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, 0 AS DayNum ' + 
+											' FROM ' + @MainTable + ' AS A ' +
+											' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+											+ ' where [AKW.' + data + '] <> 0') AS strSelect
+						FROM #AKW
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+		END
+		
+		SET @strSql = SUBSTRING(@strSql, 0, LEN(@strSql) - 5)
+		
+
+		DELETE T FROM HR_PaySalary AS T INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID 
+			INNER JOIN #AKW AS T2 on T.KowCode = T2.[Data]
+		WHERE T.DowCode = @DowCode
+		
+		-- insert data 
+		INSERT INTO HR_PaySalary(EmployeeID, Amount, AmountF, KowCode, DowCode, FromTime, ToTime, CreatedBy, IsCopy, IsPast, DayNum)
+		EXEC (@strSql)
+
+		UPDATE T SET T.FromTime = T1.FromDate, T.ToTime = T1.ToDate
+		FROM HR_PaySalary AS T INNER JOIN #HCSEM_VWEmployeeGeneralInfo AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+	END
+------------------------------------------------------------------------
+
+	-- Start insert data table HCSPR_PayTExcept - ATE
+
+	DECLARE @ATE VARCHAR(max), @ATEColumn VARCHAR(max)
+
+	SELECT @ATE = FieldName FROM HR_SysExcelTemplateEmpField WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'ATE'
+
+	SET @ATEColumn = '[ATE.' + @ATE + ']'
+
+	SELECT @ATE = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(50), D.FieldName)
+		FROM (
+			SELECT FieldName FROM HR_SysExcelTemplateEmpField
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'ATE'
+		) AS D 
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+
+	SELECT ce.* INTO #ATE FROM (
+		SELECT CAST([data] AS VARCHAR(20)) AS [Data] FROM HR_FNSplitString_varchar(@ATE, ',')
+	) AS ce  OPTION (MAXRECURSION 0)
+
+	IF @ATE IS NOT NULL AND @ATEColumn IS NOT NULL
+	BEGIN
+		-- chuỗi query tạo bảng đê insert data
+		SELECT @strSql = STUFF((
+			SELECT strSelect + ' Union ' 
+			FROM (
+				SELECT data AS ATE, (' SELECT [CV.EmployeeID], ' + '[ATE.' + data + ']' + ' AS Amount, 0 AS AmountTax, ' + '[ATE.' + data + ']' + ' AS AmountF, '''
+									+ data + ''' AS ExceptCode, '''
+									+ @DowCode + ''' AS DowCode, ''' 
+									+ @GenDate + ''' AS GenDate, '
+									+ '0 AS ExRate, 0 AS UIExRate, CAST(0 AS BIT) AS IsAdvance, 0 AS NumYear, 0 AS DayOffNum, 0 AS DayOffSalary, 0 AS TrainCost, 0 AS LeaveSalary, 0 AS FixAssetCost, ''' 
+									+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsCopy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsTaxYear, CAST(0 AS BIT) AS IsLoan, 0 AS LoanCost, ' 
+									+ 'CAST(0 AS BIT) AS IsTaxed, 0 as AvgSalary, 0 AS Seniority, CAST(0 AS BIT) AS IsAllo, 0 AS CompensationTrainMonths, 0 AS AdjustAmount, 0 AS AdjustAmountCo '
+									+ ' FROM ' + @MainTable + ' AS A ' +
+									' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+									+ ' where [ATE.' + data + '] <> 0') AS strSelect
+				FROM #ATE
+			) AS A 
+		FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+
+		DELETE T FROM HR_PayTExcept AS T INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID
+			INNER JOIN #ATE AS T2 ON T.ExceptCode = T2.[Data]
+		WHERE T.DowCode = @DowCode
+
+		-- insert data
+		SET @strSql = SUBSTRING(@strSql, 0, LEN(@strSql) - 5)
+		INSERT INTO HR_PayTExcept (EmployeeID, Amount, AmountTax, AmountF, ExceptCode, DowCode, GenDate, ExRate, UIExRate, IsAdvance, NumYear, DayOffNum, DayOffSalary,
+			TrainCost, LeaveSalary, FixAssetCost, CreatedBy, IsCopy, IsPast, IsTaxYear, IsLoan, LoanCost, IsTaxed, AvgSalary, Seniority, IsAllo, CompensationTrainMonths, 
+			AdjustAmount, AdjustAmountCo) 
+		EXEC (@strSql)
+
+		UPDATE T SET T.GenDate = CASE WHEN T.GenDate BETWEEN T1.FromDate AND T1.ToDate THEN T.GenDate ELSE T1.FromDate END ,
+			Amount = round(Amount, @PRDecPlaceCurrencyForPay), AmountF = round(AmountF, @PRDecPlaceCurrencyForCal),
+			AmountTax = round(AmountTax, @PRDecPlaceCurrencyForPay)
+		FROM HR_PayTExcept AS T INNER JOIN #HCSEM_VWEmployeeGeneralInfo AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+		-- End insert data table HCSPR_PayTExcept - ATE
+	END
+------------------------------------------------------------------------
+
+	-- Start insert data table HCSTS_KowDs - DKW
+
+	DECLARE @DKW VARCHAR(450), @DKWColumn VARCHAR(50)
+	
+	SELECT @DKW = FieldName FROM HR_SysExcelTemplateEmpField WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'DKW'
+
+	SET @DKWColumn = '[DKW.' + @DKW + ']'
+
+	SELECT @DKW = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(50), D.FieldName)
+		FROM (
+			SELECT FieldName FROM HR_SysExcelTemplateEmpField
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'DKW'
+		) AS D 
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+
+	SELECT ce.* INTO #DKW FROM (
+		SELECT CAST([data] AS VARCHAR(20)) AS [Data] FROM HR_FNSplitString_varchar(@DKW, ',')
+	) AS ce  OPTION (MAXRECURSION 0)
+
+	IF @DKW IS NOT NULL AND @DKWColumn IS NOT NULL
+	BEGIN
+		-- chuỗi query tạo bảng đê insert data
+		SELECT @strSql = STUFF((
+			SELECT strSelect + ' Union ' 
+			FROM (
+				SELECT data AS DKW, (' SELECT [CV.EmployeeID], ' + '[DKW.' + data + ']' + ' AS DayNum, '''
+									+ data + ''' AS KowCode, '''
+									+ @DowCode + ''' AS DowCode, ''' 
+									+ @GenDate + ''' AS WorkDate, '
+									+ 'CAST(0 AS BIT) AS IsNoon, 0 AS IsPay, ''' 
+									+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCheckedPay ' 
+									+ ' FROM ' + @MainTable + ' AS A ' +
+									' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+									+ ' WHERE A.[DKW.' + data + '] <> 0') AS strSelect
+				FROM #DKW
+			) AS A 
+		FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+
+		DELETE T FROM HR_TSKowDs AS T INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID 
+			INNER JOIN #DKW AS T2 on T.KowCode = T2.[Data]
+		WHERE T.DowCode = @DowCode
+
+		-- insert data
+		SET @strSql = SUBSTRING(@strSql, 0, LEN(@strSql) - 5)
+
+		INSERT INTO HR_TSKowDs (EmployeeID, DayNum, KowCode, DowCode, WorkDate, IsNoon, IsPay, CreatedBy, IsPast, IsCheckedPay)
+		EXEC (@strSql)
+
+		UPDATE T SET T.WorkDate = CASE WHEN T.WorkDate BETWEEN T1.FromDate AND T1.ToDate THEN T.WorkDate ELSE T1.FromDate END 
+		FROM HR_TSKowDs AS T INNER JOIN #HCSEM_VWEmployeeGeneralInfo AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+		--End insert data table HCSTS_KowDs - DKW
+	END 
+------------------------------------------------------------------------
+
+	-- Start insert data table HCSPR_SalCoeffEmp - DSC
+
+	DECLARE @DSC VARCHAR(450), @DSCColumn VARCHAR(50)
+
+	SELECT @DSC = FieldName FROM HR_SysExcelTemplateEmpField WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'DSC'
+
+	SET @DSCColumn = '[DSC.' + @DSC + ']'
+
+	SELECT @DSC = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(50), D.FieldName)
+		FROM (
+			SELECT FieldName FROM HR_SysExcelTemplateEmpField
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'DSC'
+		) AS D 
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+
+
+
+	SELECT ce.* INTO #DSC FROM (
+		SELECT CAST([data] AS VARCHAR(20)) AS [Data] FROM HR_FNSplitString_varchar(@DSC, ',')
+	) AS ce  OPTION (MAXRECURSION 0)
+	
+	-- chuỗi query tạo bảng đê insert data
+	IF @DSC IS NOT NULL AND @DSCColumn IS NOT NULL
+	BEGIN
+		IF @CountIC <= 0
+		BEGIN
+			IF @isCkb = 1 -- có check vào check box lấy ngày vào làm của nv
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS DSC, (' SELECT A.[CV.EmployeeID], A.Coefficient, A.CoeffCode, A.DowCode, '
+											+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+											+ 'A.ToTime, A.CreatedBy, A.IsPast '
+											+ 'FROM '
+											+ '(SELECT [CV.EmployeeID], ' + '[DSC.' + data + ']' + ' AS Coefficient, '''
+											+ data + ''' AS CoeffCode, '''
+											+ @DowCode + ''' AS DowCode, ''' 
+											+ @FromTime + ''' AS FromTime, '''
+											+ @ToTime + ''' AS ToTime, '''
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, C.JoinedOn AS FromTime ' 
+											+ ' FROM ' + @MainTable + ' AS A ' 
+											+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+											+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+											+ ' where A.Coefficient <> 0') AS strSelect
+						FROM #DSC
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+			ELSE
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS DSC, (' SELECT [CV.EmployeeID], ' + '[DSC.' + data + ']' + ' AS Coefficient, '''
+											+ data + ''' AS CoeffCode, '''
+											+ @DowCode + ''' AS DowCode, ''' 
+											+ @FromTime + ''' AS FromTime, '''
+											+ @ToTime + ''' AS ToTime, '''
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast ' 
+											+ ' FROM ' + @MainTable + ' AS A ' +
+											' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID' 
+											+ ' where [DSC.' + data + '] <> 0') AS strSelect
+						FROM #DSC
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+		END
+		ELSE
+		BEGIN
+			IF @isCkb = 1
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS DSC, (' SELECT A.[CV.EmployeeID], A.Coefficient, A.CoeffCode, A.DowCode, '
+											+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+											+ 'A.ToTime, A.CreatedBy, A.IsPast '
+											+ 'FROM '
+											+ '(SELECT [CV.EmployeeID], ' + '[DSC.' + data + ']' + ' AS Coefficient, '''
+											+ data + ''' AS CoeffCode, '''
+											+ @DowCode + ''' AS DowCode, '
+											+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+											+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, C.JoinedOn AS FromTime ' 
+											+ 'FROM ' + @MainTable + ' AS A '
+											+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+											+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+											+ ' where A.Coefficient <> 0') AS strSelect
+						FROM #DSC
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+			ELSE 
+			BEGIN
+				SELECT @strSql = STUFF((
+					SELECT strSelect + ' Union ' 
+					FROM (
+						SELECT data AS DSC, (' SELECT [CV.EmployeeID], ' + '[DSC.' + data + ']' + ' AS Coefficient, '''
+											+ data + ''' AS CoeffCode, '''
+											+ @DowCode + ''' AS DowCode, '
+											+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+											+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+											+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast ' 
+											+ ' FROM ' + @MainTable + ' AS A ' +
+											' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+											+ ' where [DSC.' + data + '] <> 0') AS strSelect
+						FROM #DSC
+					) AS A 
+				FOR XML PATH, TYPE).value(N'.[1]', N'nvarchar(max)'),1, 1, N'')
+			END
+		END
+
+
+		DELETE T FROM HR_PRSalCoeffEmp AS T INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID 
+			INNER JOIN #DSC AS T2 ON T.CoeffCode = T2.[Data]
+		WHERE T.DowCode = @DowCode
+
+		-- insert data
+		SET @strSql = SUBSTRING(@strSql, 0, LEN(@strSql) - 5)
+
+		INSERT INTO HR_PRSalCoeffEmp(
+			EmployeeID, Coefficient, CoeffCode, DowCode, FromTime, ToTime, CreatedBy, IsPast
+		) EXEC (@strSql)
+
+		UPDATE T SET T.FromTime = T1.FromDate, T.ToTime = T1.ToDate
+		FROM HR_PRSalCoeffEmp AS T INNER JOIN #HCSEM_VWEmployeeGeneralInfo AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+	END 
+	
+	-- End insert data table HCSPR_SalCoeffEmp - DSC
+
+----------------------------------------------------------------------
+
+	-- Insert data vào bảng HCSPR_PayIncome - IC
+	DECLARE @IC INT, @ICColumn VARCHAR(50)
+	DECLARE @i INT, @strIc VARCHAR(MAX), @strSelectIC VARCHAR(MAX)
+	DECLARE @tableIC TABLE( 
+		EmployeeID VARCHAR(50),
+		DowCode VARCHAR(50)
+	) -- bảng lưu data để xóa
+	SET @strSelectIC = ''
+	DECLARE @sum INT
+	DECLARE @TablePayIncome TABLE (
+		ColumnName VARCHAR(MAX)
+	)
+	SELECT @IC = COUNT(*) FROM HR_SysExcelTemplateEmpField WHERE ExcelTemplateID = @ExcelTemplateID AND TableName = 'IC'
+	SET @i = 0
+	IF @IC > 0
+	BEGIN
+		-- insert vào bảng tạm
+		INSERT INTO @TablePayIncome 
+		SELECT '[' + B.FCategoryCode + '.' + A.FieldName + ']' AS ColumnName --, B.Description AS DisplayName, B.DataType 
+		FROM HR_SysExcelTemplateEmpField AS A 
+			LEFT JOIN HR_SysCategoryExcelTemplateEmpDetail AS B ON A.FieldName = B.FactorCode 
+		WHERE B.FCategoryCode IS NOT NULL AND A.ExcelTemplateID = @ExcelTemplateID AND B.FCategoryCode = 'IC'
+	
+		-- lấy tổng chạy vòng while
+		SELECT @sum = COUNT(*) 
+		FROM (
+			SELECT '[' + B.FCategoryCode + '.' + A.FieldName + ']' AS ColumnName --, B.Description AS DisplayName, B.DataType 
+			FROM HR_SysExcelTemplateEmpField AS A 
+				LEFT JOIN HR_SysCategoryExcelTemplateEmpDetail AS B ON A.FieldName = B.FactorCode 
+			WHERE B.FCategoryCode IS NOT NULL AND A.ExcelTemplateID = @ExcelTemplateID AND B.FCategoryCode = 'IC'
+		) AS A
+		
+
+		WHILE @i < @sum
+		BEGIN 
+		
+			SELECT TOP 1 @strIc = ColumnName FROM @TablePayIncome 
+
+			SET @strSelectIC = @strSelectIC + @strIc + ','
+
+			DELETE FROM @TablePayIncome WHERE ColumnName = @strIc
+
+			SET @i = @i + 1
+		END 
+
+		-- Lấy FromTime, ToTime
+		DECLARE @fieldsIC VARCHAR(MAX) 
+			SELECT @fieldsIC = COALESCE(@fieldsIC + ', ', '') + A.FieldName 
+			FROM (
+				SELECT A.FieldName 
+				FROM HR_SysExcelTemplateEmpField AS A 
+				LEFT JOIN HR_SysCategoryExcelTemplateEmpDetail AS B ON A.FieldName = B.FactorCode 
+				WHERE B.FCategoryCode IS NOT NULL AND A.ExcelTemplateID = @ExcelTemplateID AND B.FCategoryCode = 'IC'
+			) AS A
+		IF @CountIC <= 0 --DK1
+			BEGIN --BEGIN 1
+				IF @isCkb = 1 -- check box lấy ngày vào của nv
+					BEGIN
+						IF CHARINDEX('FromTime', @fieldsIC) > 0 AND CHARINDEX('ToTime', @fieldsIC) > 0
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '
+								--+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+								--+ 'A.ToTime, A.DowCode, A.CreatedBy, A.IsPast, A.IsCopy '
+								+ 'A.DowCode, A.CreatedBy, A.IsPast, A.IsCopy '
+								+ 'FROM '
+								+ '(SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '''
+								--+ @FromTime + ''' AS FromTimeMain, '''
+								--+ @ToTime + ''' AS ToTime, '''
+								+ @DowCode + ''' AS DowCode, '''
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy, C.JoinedOn AS FromTime ' 
+								+ 'FROM ' + @MainTable + ' AS A '
+								+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+								+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+							END
+						ELSE
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '
+								+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+								+ 'A.ToTime, A.DowCode, A.CreatedBy, A.IsPast, A.IsCopy '
+								+ 'FROM '
+								+ '(SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '''
+								+ @FromTime + ''' AS FromTimeMain, '''
+								+ @ToTime + ''' AS ToTime, '''
+								+ @DowCode + ''' AS DowCode, '''
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy, C.JoinedOn AS FromTime ' 
+								+ 'FROM ' + @MainTable + ' AS A '
+								+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+								+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+							END
+					END
+				ELSE
+					BEGIN
+						IF CHARINDEX('FromTime', @fieldsIC) > 0 AND CHARINDEX('ToTime', @fieldsIC) > 0
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '''
+								--+ @FromTime + ''' AS FromTime, '''
+								--+ @ToTime + ''' AS ToTime, '''
+								+ @DowCode + ''' AS DowCode, '''
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy ' 
+								+ ' FROM ' + @MainTable + ' AS A ' +
+								' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+							END
+						ELSE
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '''
+								+ @FromTime + ''' AS FromTime, '''
+								+ @ToTime + ''' AS ToTime, '''
+								+ @DowCode + ''' AS DowCode, '''
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy ' 
+								+ ' FROM ' + @MainTable + ' AS A ' +
+								' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+							END
+					END
+			END --END1
+		ELSE --NK1
+			BEGIN --BEGIN1
+				IF @isCkb = 1
+					BEGIN
+						IF CHARINDEX('FromTime', @fieldsIC) > 0 AND CHARINDEX('ToTime', @fieldsIC) > 0
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ','
+								--+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+								--+ 'A.ToTime, A.DowCode, A.CreatedBy, A.IsPast, A.IsCopy '
+								+ 'A.DowCode, A.CreatedBy, A.IsPast, A.IsCopy '
+								+ 'FROM '
+								+ '(SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ','''
+								--+ '[IC.FromTime] AS FromTime, '
+								--+ '[IC.ToTime] AS ToTime, '''  
+								+ @DowCode + ''' AS DowCode, ''' 
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy, C.JoinedOn AS FromTime ' 
+								+ 'FROM ' + @MainTable + ' AS A ' 
+								+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+								+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+							END
+						ELSE
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '
+								+ 'CASE WHEN A.FromTime > CAST(A.FromTime AS DATETIME) THEN A.FromTime ELSE A.FromTime END AS FromTime, '
+								+ 'A.ToTime, A.DowCode, A.CreatedBy, A.IsPast, A.IsCopy '
+								+ 'FROM '
+								+ '(SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '
+								+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+								+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+								+ @DowCode + ''' AS DowCode, ''' 
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy, C.JoinedOn AS FromTime ' 
+								+ 'FROM ' + @MainTable + ' AS A ' 
+								+ 'INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID '
+								+ 'INNER JOIN HR_Employees AS C ON T.EmployeeID = C.EmployeeID) AS A'
+							END
+					END
+				ELSE
+					BEGIN
+						IF CHARINDEX('FromTime', @fieldsIC) > 0 AND CHARINDEX('ToTime', @fieldsIC) > 0
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ','''
+								--+ '[IC.FromTime] AS FromTime, '
+								--+ '[IC.ToTime] AS ToTime, '''  
+								
+								+ @DowCode + ''' AS DowCode, ''' 
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy ' 
+								+ ' FROM ' + @MainTable + ' AS A ' +
+								' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+							END
+						ELSE
+							BEGIN
+								SET @strSql = 'SELECT [CV.EmployeeID], ' + LEFT(@strSelectIC, LEN(@strSelectIC) - 1)  + ', '
+								+ 'CASE WHEN [IC.FromTime] IS NULL THEN ''' + @FromTime + ''' ELSE [IC.FromTime] END AS FromTime, '
+								+ 'CASE WHEN [IC.ToTime] IS NULL THEN ''' + @ToTime + ''' ELSE [IC.ToTime] END AS ToTime, '''  
+								+ @DowCode + ''' AS DowCode, ''' 
+								+ @CreatedBy + ''' AS CreatedBy, CAST(0 AS BIT) AS IsPast, CAST(0 AS BIT) AS IsCopy ' 
+								+ ' FROM ' + @MainTable + ' AS A ' +
+								' INNER JOIN #Emps AS T ON A.[CV.EmployeeID] = T.EmployeeID'
+							END
+					END
+		END -- END1
+		
+		DELETE T FROM HR_PayIncome AS T INNER JOIN #Emps AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE DowCode = @DowCode
+
+		-- insert data 
+		DECLARE @execStr NVARCHAR(MAX)
+
+		DECLARE @_strSql VARCHAR(MAX)
+		SELECT @_strSql = REPLACE(@strSql, '''', '''''')
+
+		-- Kiểm tra xem @fieldsIC có chứa FromTime và ToTime không
+		IF CHARINDEX('FromTime', @fieldsIC) > 0 AND CHARINDEX('ToTime', @fieldsIC) > 0
+		BEGIN
+
+			-- Nếu có FromTime và ToTime trong @fieldsIC
+			SET @execStr = 'INSERT INTO HR_PayIncome( EmployeeID, ' + @fieldsIC + 
+			', DowCode, CreatedBy, IsPast, IsCopy) EXEC ( ''' + @_strSql + ''')'
+			
+		END
+		ELSE
+		BEGIN
+
+			-- Nếu không có FromTime và ToTime trong @fieldsIC
+			SET @execStr = 'INSERT INTO HR_PayIncome( EmployeeID, ' + @fieldsIC + 
+			', FromTime, ToTime, DowCode, CreatedBy, IsPast, IsCopy) EXEC ( ''' + @_strSql + ''')'
+		END
+
+		EXEC (@execStr)
+
+		UPDATE T SET T.FromTime = T1.FromDate, T.ToTime = T1.ToDate
+		FROM HR_PayIncome AS T INNER JOIN #HCSEM_VWEmployeeGeneralInfo AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.DowCode = @DowCode
+	END
+	-- END Insert data vào bảng HCSPR_PayIncome - IC
+END
+
