@@ -1,0 +1,121 @@
+-- Tạo bảng tạm để lưu dữ liệu
+CREATE TABLE #TempTable (
+    FieldName NVARCHAR(MAX),
+    Value NVARCHAR(MAX),
+    DataType NVARCHAR(MAX)
+);
+
+-- Khai báo các biến cần thiết
+DECLARE @FieldName NVARCHAR(MAX);
+DECLARE @values NVARCHAR(MAX);
+DECLARE @sql NVARCHAR(MAX);
+DECLARE @Condition NVARCHAR(MAX);
+DECLARE @str NVARCHAR(MAX);
+
+-- Lấy danh sách FieldName
+SELECT @FieldName = COALESCE(@FieldName + ', ', '') + FieldName
+FROM HR_SysExcelTemplateEmpField
+WHERE TableName = 'CV' 
+AND ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B';
+
+-- Lấy danh sách Value từ bảng TExcelEmp
+SELECT @values = COALESCE(@values + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+FROM HR_SysExcelTemplateEmpField
+WHERE TableName = 'CV' 
+AND ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B';
+
+-- Điều kiện lấy dữ liệu theo EmployeeID
+SET @str = 'TE01';
+SET @Condition = 'WHERE [CV.EmployeeID] = ''' + @str + '''';
+
+-- Truy vấn để lấy các giá trị từ bảng TExcelEmp
+SET @sql = 'SELECT ' + @values + ' FROM TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001 ' + @Condition;
+
+-- Tạo bảng tạm để lưu dữ liệu tạm thời cho các giá trị từ truy vấn
+CREATE TABLE #TempData (EmployeeName NVARCHAR(MAX), EmployeeType NVARCHAR(MAX), EmployeeID NVARCHAR(MAX), JoinedOn DATETIME, DepartmentID NVARCHAR(MAX));
+
+-- Thực thi câu lệnh SQL và chèn dữ liệu vào bảng tạm
+INSERT INTO #TempData
+EXEC sp_executesql @sql;
+
+-- Chèn FieldName và Value vào bảng #TempTable
+INSERT INTO #TempTable (FieldName, Value)
+SELECT 'EmployeeName', EmployeeName FROM #TempData
+UNION ALL
+SELECT 'EmployeeType', EmployeeType FROM #TempData
+UNION ALL
+SELECT 'EmployeeID', EmployeeID FROM #TempData
+UNION ALL
+SELECT 'JoinedOn', CAST(JoinedOn AS NVARCHAR(MAX)) FROM #TempData
+UNION ALL
+SELECT 'DepartmentID', DepartmentID FROM #TempData;
+
+-- Xóa bảng tạm #TempData sau khi sử dụng
+DROP TABLE #TempData;
+
+-- Lấy DataType từ INFORMATION_SCHEMA.COLUMNS cho các FieldName
+DECLARE @FieldNameCondition NVARCHAR(MAX);
+
+SET @FieldNameCondition = '''' + REPLACE(@FieldName, ', ', ''',''') + '''';
+
+-- Xây dựng câu SQL động để lấy DataType
+SET @sql = 'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS ' +
+           'WHERE TABLE_NAME = ''HR_Employees'' AND COLUMN_NAME IN (' + @FieldNameCondition + ')';
+
+-- Thực thi câu SQL để lấy DataType
+DECLARE @FieldNameTemp NVARCHAR(MAX), @DataType NVARCHAR(MAX);
+
+-- Sử dụng con trỏ (cursor) để lấy từng FieldName và DataType
+DECLARE cur CURSOR FOR
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = 'HR_Employees' 
+AND COLUMN_NAME IN ('EmployeeID', 'EmployeeName', 'EmployeeType', 'DepartmentID', 'JoinedOn');
+
+OPEN cur;
+FETCH NEXT FROM cur INTO @FieldNameTemp, @DataType;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Cập nhật bảng tạm với DataType tương ứng
+    UPDATE #TempTable
+    SET DataType = @DataType
+    WHERE FieldName = @FieldNameTemp;
+
+    FETCH NEXT FROM cur INTO @FieldNameTemp, @DataType;
+END;
+
+CLOSE cur;
+DEALLOCATE cur;
+
+-- Xem kết quả
+SELECT * FROM #TempTable;
+
+---------------------------------------
+
+DECLARE @FieldUpdate NVARCHAR(MAX);
+declare @UpdateQuery nvarchar(max);
+declare @Cond nvarchar(max);
+
+SELECT	@FieldUpdate =  COALESCE(@FieldUpdate + ', ', '') + 
+FieldName + ' = ' + 
+    CASE 
+        WHEN DataType IN ('int', 'decimal', 'float', 'real') THEN Value  -- Nếu là số, không cần dấu nháy
+        WHEN DataType IN ('nvarchar', 'nchar') THEN 'N''' + Value + ''''  -- Nếu là chuỗi, thêm dấu nháy
+        ELSE '''' + Value + ''''  -- Mặc định là chuỗi
+    END
+FROM #TempTable 
+
+declare @strEmps varchar(max);
+-- Tạo câu lệnh UPDATE hoàn chỉnh
+set @Cond = ' where EmployeeID = ' + @str;
+
+set @UpdateQuery = 'Update HR_Employees Set ' + @FieldUpdate + @Cond;
+
+PRINT @UpdateQuery;  -- Hiển thị câu lệnh SQL
+-- EXEC sp_executesql @sql;  -- Thực thi nếu cần
+
+
+-- Dọn dẹp bảng tạm
+--DROP TABLE #TempTable;
+
