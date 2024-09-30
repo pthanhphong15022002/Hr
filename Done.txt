@@ -1,0 +1,151 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoUpdateDataPrefixTableEmpTemplate]    Script Date: 9/30/2024 11:32:49 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[HR_SpAutoUpdateDataPrefixTableEmpTemplate]
+    @SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+	@employeeIDList VARCHAR(MAX)
+AS
+BEGIN
+    DECLARE @CurrentEmployeeID NVARCHAR(50);
+	DECLARE emp_cursor CURSOR FOR
+	SELECT EmployeeID FROM dbo.SplitString(@employeeIDList, ',')
+
+	OPEN emp_cursor;
+	FETCH NEXT FROM emp_cursor INTO @CurrentEmployeeID;
+
+	-- Duyệt qua từng EmployeeID để xử lý
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		-- Bắt đầu xử lý @CurrentEmployeeID như là EmployeeID hiện tại
+
+		-- Khởi tạo lại các biến
+		DECLARE @values NVARCHAR(MAX);
+		DECLARE @fieldName NVARCHAR(255);
+		DECLARE @tableName NVARCHAR(255);
+		DECLARE @columnName NVARCHAR(255);
+		DECLARE @query NVARCHAR(MAX);
+		DECLARE @dynamicSQL NVARCHAR(MAX);
+		DECLARE @fieldValue NVARCHAR(MAX);
+		DECLARE @MainTable NVARCHAR(255);
+		DECLARE @MainTableReplace NVARCHAR(255);
+		DECLARE @ExcelTemplateIDReplace VARCHAR(50);
+    
+		SET @ExcelTemplateIDReplace = CAST(REPLACE(@ExcelTemplateID, '-', '') AS VARCHAR(50))
+		SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy + ']'
+		SET @MainTableReplace = @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy
+    
+		-- Khai báo bảng tạm để lưu kết quả
+		DECLARE @TempTable TABLE (
+			COLUMN_NAME NVARCHAR(255),
+			VALUE NVARCHAR(MAX)
+		);
+    
+		-- Duyệt qua các trường theo ExcelTemplateID và tạo câu query động
+		DECLARE column_cursor CURSOR FOR
+		SELECT TableName + '.' + FieldName, TableName, FieldName
+		FROM HR_SysExcelTemplateEmpField
+		WHERE ExcelTemplateID = @ExcelTemplateID
+		AND TableName = 'CV';
+    
+		OPEN column_cursor;
+		FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @fieldName;
+    
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			-- Tạo câu query lấy dữ liệu cho từng cột
+			SET @query = 'SELECT @fieldValue = [' + @tableName + '.' + @fieldName + '] FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = @CurrentEmployeeID';
+    
+			-- Thực thi câu query động để lấy giá trị cho từng cột
+			EXEC sp_executesql @query, N'@fieldValue NVARCHAR(MAX) OUTPUT, @CurrentEmployeeID NVARCHAR(50)', @fieldValue OUTPUT, @CurrentEmployeeID;
+    
+			-- Kiểm tra nếu có giá trị thì thêm vào bảng tạm
+			IF @fieldValue IS NOT NULL
+			BEGIN
+				-- Chèn giá trị cột và giá trị tương ứng vào bảng tạm
+				INSERT INTO @TempTable (COLUMN_NAME, VALUE)
+				VALUES (@columnName, @fieldValue);
+			END
+    
+			-- Tiếp tục vòng lặp
+			FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @fieldName;
+		END;
+    
+		-- Đóng cursor sau khi hoàn thành
+		CLOSE column_cursor;
+		DEALLOCATE column_cursor;
+    
+		-- Lưu kết quả của INFORMATION_SCHEMA.COLUMNS vào một bảng tạm khác
+		DECLARE @SchemaTable TABLE (
+			COLUMN_NAME NVARCHAR(255),
+			DATA_TYPE NVARCHAR(50)
+		);
+    
+		INSERT INTO @SchemaTable (COLUMN_NAME, DATA_TYPE)
+		SELECT COLUMN_NAME, DATA_TYPE 
+		FROM INFORMATION_SCHEMA.COLUMNS 
+		WHERE TABLE_NAME = @MainTableReplace
+		AND COLUMN_NAME LIKE 'CV.%';
+    
+		-- Kết hợp bảng @TempTable với @SchemaTable để tạo bảng tạm
+		CREATE TABLE #TempTable (
+			COLUMN_NAME NVARCHAR(255),
+			VALUE NVARCHAR(MAX),
+			DATA_TYPE NVARCHAR(30)
+		);
+    
+		INSERT INTO #TempTable (COLUMN_NAME, VALUE, DATA_TYPE)
+		SELECT 
+			REPLACE(t.COLUMN_NAME, 'CV.', '') AS COLUMN_NAME,  -- Loại bỏ 'CV.' khỏi tên cột
+			t.VALUE, 
+			s.DATA_TYPE
+		FROM @TempTable t
+		JOIN @SchemaTable s
+		ON t.COLUMN_NAME = s.COLUMN_NAME;
+    
+		-- Xây dựng câu lệnh UPDATE
+		DECLARE @FieldUpdate NVARCHAR(MAX);
+		DECLARE @UpdateQuery NVARCHAR(MAX);
+		DECLARE @Cond NVARCHAR(MAX);
+
+		SET @FieldUpdate = '';
+		-- Sử dụng COALESCE để tạo chuỗi câu lệnh update
+		SELECT @FieldUpdate = COALESCE(@FieldUpdate + ', ', '') + 
+			COLUMN_NAME + ' = ' + 
+			CASE 
+				WHEN DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN Value  -- Nếu là số, không cần dấu nháy
+				WHEN DATA_TYPE IN ('nvarchar', 'nchar') THEN 'N''' + Value + ''''  -- Nếu là chuỗi, thêm dấu nháy
+				ELSE '''' + Value + ''''  -- Mặc định là chuỗi
+			END
+		FROM #TempTable;
+
+		SET @FieldUpdate = STUFF(@FieldUpdate, 1, 2, '');
+
+		-- Điều kiện WHERE cho câu lệnh UPDATE
+		SET @Cond = ' WHERE EmployeeID = ''' + @CurrentEmployeeID + '''';
+    
+		-- Tạo câu lệnh UPDATE hoàn chỉnh
+		SET @UpdateQuery = 'UPDATE HR_Employees SET ' + @FieldUpdate + @Cond;
+    
+		-- Thực thi câu lệnh update nếu cần
+		EXEC sp_executesql @UpdateQuery;
+
+		-- Dọn dẹp bảng tạm
+		DROP TABLE #TempTable;
+		DELETE FROM @TempTable;
+		DELETE FROM @SchemaTable;
+    
+		-- Lặp qua EmployeeID tiếp theo
+		FETCH NEXT FROM emp_cursor INTO @CurrentEmployeeID;
+	END;
+
+	-- Đóng và hủy con trỏ khi hoàn thành
+	CLOSE emp_cursor;
+	DEALLOCATE emp_cursor;
+END
