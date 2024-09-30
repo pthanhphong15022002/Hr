@@ -1,0 +1,70 @@
+DECLARE @fieldValue NVARCHAR(MAX);
+DECLARE @columnName NVARCHAR(255);
+DECLARE @tableName NVARCHAR(255);
+DECLARE @fieldName NVARCHAR(255);
+DECLARE @select NVARCHAR(MAX);
+DECLARE @CurrentEmployeeID NVARCHAR(50);
+DECLARE @allowanceCode NVARCHAR(50);
+DECLARE @employeeID NVARCHAR(50);
+DECLARE @CreatedBy NVARCHAR(50);
+DECLARE @dataType NVARCHAR(50);
+
+SET @employeeID = 'TE01';
+SET @allowanceCode = 'PC02';
+SET @CreatedBy = '2404020001';
+
+-- Tạo bảng tạm để chứa kết quả với cột COLUMN_NAME, DATA_TYPE và VALUE
+DECLARE @TempTable TABLE (
+    COLUMN_NAME NVARCHAR(255),
+    DATA_TYPE NVARCHAR(50),
+    VALUE NVARCHAR(MAX)
+);
+
+-- Khởi tạo cursor để lấy thông tin các cột cần truy vấn
+DECLARE column_cursor CURSOR FOR
+SELECT DISTINCT A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName, A.TableName, A.FieldName, C.DATA_TYPE
+FROM HR_SysExcelTemplateEmpField AS A 
+LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
+    ON A.ExcelTemplateID = B.ExcelTemplateID
+LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS C
+    ON C.TABLE_NAME = 'TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001' 
+    AND C.COLUMN_NAME = A.FieldName
+WHERE A.ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B'
+AND A.TableName = 'EA';
+
+-- Mở cursor
+OPEN column_cursor;
+
+-- Bắt đầu vòng lặp fetch dữ liệu
+FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @fieldName, @dataType;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Tạo câu query lấy dữ liệu cho từng cột
+    SET @select = 'SELECT @fieldValue = [' + @tableName + '.' + @allowanceCode + '.' + @fieldName + '] 
+                   FROM TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001 
+                   WHERE [CV.EmployeeID] = @employeeID';
+
+    -- Thực thi câu query động để lấy giá trị cho từng cột
+    EXEC sp_executesql @select, 
+                       N'@fieldValue NVARCHAR(MAX) OUTPUT, @employeeID NVARCHAR(50)', 
+                       @fieldValue OUTPUT, @employeeID;
+
+    -- Kiểm tra nếu có giá trị thì thêm vào bảng tạm
+    IF @fieldValue IS NOT NULL
+    BEGIN
+        -- Chèn giá trị COLUMN_NAME, DATA_TYPE và VALUE vào bảng tạm
+        INSERT INTO @TempTable (COLUMN_NAME, DATA_TYPE, VALUE)
+        VALUES (@columnName, @dataType, @fieldValue);
+    END
+
+    -- Tiếp tục fetch dữ liệu
+    FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @fieldName, @dataType;
+END;
+
+-- Hiển thị kết quả từ bảng tạm
+SELECT * FROM @TempTable;
+
+-- Đóng cursor sau khi hoàn thành
+CLOSE column_cursor;
+DEALLOCATE column_cursor;
