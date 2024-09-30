@@ -22,13 +22,13 @@ DECLARE @TempTable TABLE (
 
 -- Khởi tạo cursor để lấy thông tin các cột cần truy vấn
 DECLARE column_cursor CURSOR FOR
-SELECT DISTINCT A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName, A.TableName, A.FieldName, C.DATA_TYPE
+SELECT DISTINCT A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName as COLUMN_NAME, A.TableName, A.FieldName, C.DATA_TYPE
 FROM HR_SysExcelTemplateEmpField AS A 
 LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
     ON A.ExcelTemplateID = B.ExcelTemplateID
 LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS C
-    ON C.TABLE_NAME = 'TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001' 
-    AND C.COLUMN_NAME = A.FieldName
+   ON C.TABLE_NAME = 'TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001' 
+   AND C.COLUMN_NAME = COLUMN_NAME
 WHERE A.ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B'
 AND A.TableName = 'EA';
 
