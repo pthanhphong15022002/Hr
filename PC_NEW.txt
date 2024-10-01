@@ -139,7 +139,7 @@ BEGIN
 
     -- Tạo câu truy vấn UPDATE
     SET @UpdateQueryCV = 'UPDATE HR_EmpAllowance SET ' + @FieldUpdateCV + 
-    ' WHERE EmployeeID = ' + @currentEmployeeID + ' AND AlloGradeCode = ''' + @AlloCode + '''';
+    ' WHERE EmployeeID = ''' + @currentEmployeeID + ''' AND AlloGradeCode = ''' + @AlloCode + '''';
 
     -- In câu lệnh UPDATE để kiểm tra
     PRINT @UpdateQueryCV;
@@ -149,7 +149,7 @@ BEGIN
 
     -- Xóa bảng tạm sau khi sử dụng
     DROP TABLE #TempTable;
-
+	DELETE FROM @TempTable;
     -- Tiếp tục vòng lặp để xử lý AlloGradeCode tiếp theo
     FETCH NEXT FROM allo_cursor INTO @AlloCode;
 END;
