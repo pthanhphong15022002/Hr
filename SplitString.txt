@@ -1,0 +1,35 @@
+USE [codx_hr]
+GO
+/****** Object:  UserDefinedFunction [dbo].[SplitString]    Script Date: 10/1/2024 11:33:38 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- Batch 1: Tạo hàm để tách chuỗi
+ALTER FUNCTION [dbo].[SplitString]
+(
+    @string NVARCHAR(MAX), 
+    @delimiter CHAR(1)
+)
+RETURNS @output TABLE (
+    EmployeeID NVARCHAR(50)
+)
+BEGIN
+    DECLARE @start INT, @end INT
+    SET @start = 1
+    SET @end = CHARINDEX(@delimiter, @string)
+    
+    WHILE @start <= LEN(@string)
+    BEGIN
+        IF @end = 0 
+            SET @end = LEN(@string) + 1
+        
+        INSERT INTO @output (EmployeeID)
+        VALUES (LTRIM(RTRIM(SUBSTRING(@string, @start, @end - @start))))
+        
+        SET @start = @end + 1
+        SET @end = CHARINDEX(@delimiter, @string, @start)
+    END
+    
+    RETURN
+END
