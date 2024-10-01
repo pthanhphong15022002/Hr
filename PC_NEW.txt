@@ -1,7 +1,7 @@
+DECLARE @strEmp NVARCHAR(MAX) = 'TE01, TE02, TE03';
+DECLARE @MainTable NVARCHAR(100) = 'TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001';
 DECLARE @currentAllowanceCode NVARCHAR(20);
 DECLARE @conditions NVARCHAR(MAX);
-DECLARE @currentEmployeeID NVARCHAR(30) = 'TE01';
-DECLARE @MainTable NVARCHAR(100) = 'TExcelEmp_902D1686798111EFBFD7509A4C39550B_2404020001';
 DECLARE @query NVARCHAR(MAX);
 DECLARE @fieldValue NVARCHAR(MAX);
 DECLARE @columnName NVARCHAR(255);
@@ -31,137 +31,157 @@ DECLARE @SchemaTable TABLE (
     DATA_TYPE NVARCHAR(50)
 );
 
--- Khai báo con trỏ để duyệt qua từng AlloGradeCode
-DECLARE alloGrade_cursor CURSOR FOR
-SELECT AlloGradeCode FROM @currentAllowanceCodes;
+-- Duyệt qua từng EmployeeID trong kết quả của function SplitString
+DECLARE @currentEmployeeID NVARCHAR(50);
 
--- Mở con trỏ
-OPEN alloGrade_cursor;
-FETCH NEXT FROM alloGrade_cursor INTO @currentAllowanceCode;
+DECLARE emp_cursor CURSOR FOR
+SELECT EmployeeID FROM dbo.SplitString(@strEmp, ',');
 
--- Bắt đầu vòng lặp xử lý từng AlloGradeCode
+OPEN emp_cursor;
+FETCH NEXT FROM emp_cursor INTO @currentEmployeeID;
+
+-- Xử lý từng EmployeeID
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    -- Tạo điều kiện cho các cột trong bảng EA theo AlloGradeCode hiện tại
-    SET @conditions = 'EA.' + @currentAllowanceCode + '%';
-
-    -- Khai báo FieldSelect để chứa các cột cần SELECT
-    DECLARE @FieldSelect NVARCHAR(MAX) = '';
-
-    -- Sử dụng COALESCE để tạo chuỗi các cột cần SELECT
-    SELECT @FieldSelect = COALESCE(@FieldSelect + ', ', '') + '[' + A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName + ']'
-    FROM HR_SysExcelTemplateEmpField AS A
-    LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
-        ON A.ExcelTemplateID = B.ExcelTemplateID
-    WHERE A.ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B'
-    AND A.TableName = 'EA'
-    AND B.AlloGradeCode = @currentAllowanceCode;
-
-	SET @FieldSelect = STUFF(@FieldSelect, 1, 2, '');
-    -- Tạo câu lệnh SELECT
-    DECLARE @select NVARCHAR(MAX);
-    SET @select = 'SELECT ' + @FieldSelect + ' FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = ''' + @currentEmployeeID + '''';
-
-    -- Chạy truy vấn để lấy dữ liệu và lưu vào bảng tạm @TempTable
-    DECLARE column_cursor CURSOR FOR
-    SELECT
-        '[' + A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName + ']', 
-        A.TableName, 
-        B.AlloGradeCode, 
-        A.FieldName
-    FROM HR_SysExcelTemplateEmpField AS A
-    LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
-        ON A.ExcelTemplateID = B.ExcelTemplateID
-    WHERE A.ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B'
-    AND A.TableName = 'EA'
-    AND B.AlloGradeCode = @currentAllowanceCode;
+    -- Khai báo con trỏ để duyệt qua từng AlloGradeCode
+    DECLARE alloGrade_cursor CURSOR FOR
+    SELECT AlloGradeCode FROM @currentAllowanceCodes;
 
     -- Mở con trỏ
-    OPEN column_cursor;
-    FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @AlloCode, @fieldName;
+    OPEN alloGrade_cursor;
+    FETCH NEXT FROM alloGrade_cursor INTO @currentAllowanceCode;
 
-    -- Bắt đầu vòng lặp xử lý từng cột
+    -- Bắt đầu vòng lặp xử lý từng AlloGradeCode
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        -- Tạo câu lệnh truy vấn động để lấy giá trị của từng cột từ bảng chính
-        SET @query = 'SELECT @fieldValue = [' + @tableName + '.' + @AlloCode + '.' + @fieldName + '] FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = @CurrentEmployeeID';
+        -- Tạo điều kiện cho các cột trong bảng EA theo AlloGradeCode hiện tại
+        SET @conditions = 'EA.' + @currentAllowanceCode + '%';
 
-        -- Thực thi câu truy vấn
-        EXEC sp_executesql @query, 
-            N'@fieldValue NVARCHAR(MAX) OUTPUT, @CurrentEmployeeID NVARCHAR(50)', 
-            @fieldValue OUTPUT, @currentEmployeeID;
+        -- Khai báo FieldSelect để chứa các cột cần SELECT
+        DECLARE @FieldSelect NVARCHAR(MAX) = '';
 
-        -- Nếu có giá trị thì chèn vào bảng tạm
-        IF @fieldValue IS NOT NULL
+        -- Sử dụng COALESCE để tạo chuỗi các cột cần SELECT
+        SELECT @FieldSelect = COALESCE(@FieldSelect + ', ', '') + '[' + A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName + ']'
+        FROM HR_SysExcelTemplateEmpField AS A
+        LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
+            ON A.ExcelTemplateID = B.ExcelTemplateID
+        WHERE A.ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B'
+        AND A.TableName = 'EA'
+        AND B.AlloGradeCode = @currentAllowanceCode;
+
+	    SET @FieldSelect = STUFF(@FieldSelect, 1, 2, '');
+
+        -- Tạo câu lệnh SELECT
+        DECLARE @select NVARCHAR(MAX);
+        SET @select = 'SELECT ' + @FieldSelect + ' FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = ''' + @currentEmployeeID + '''';
+
+        -- Chạy truy vấn để lấy dữ liệu và lưu vào bảng tạm @TempTable
+        DECLARE column_cursor CURSOR FOR
+        SELECT
+            '[' + A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName + ']', 
+            A.TableName, 
+            B.AlloGradeCode, 
+            A.FieldName
+        FROM HR_SysExcelTemplateEmpField AS A
+        LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
+            ON A.ExcelTemplateID = B.ExcelTemplateID
+        WHERE A.ExcelTemplateID = '902D1686-7981-11EF-BFD7-509A4C39550B'
+        AND A.TableName = 'EA'
+        AND B.AlloGradeCode = @currentAllowanceCode;
+
+        -- Mở con trỏ
+        OPEN column_cursor;
+        FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @AlloCode, @fieldName;
+
+        -- Bắt đầu vòng lặp xử lý từng cột
+        WHILE @@FETCH_STATUS = 0
         BEGIN
-            INSERT INTO @TempTable (COLUMN_NAME, VALUE, TableName)
-            VALUES (REPLACE(REPLACE(@columnName, '[', ''), ']', ''), @fieldValue, @currentAllowanceCode);
+            -- Tạo câu lệnh truy vấn động để lấy giá trị của từng cột từ bảng chính
+            SET @query = 'SELECT @fieldValue = [' + @tableName + '.' + @AlloCode + '.' + @fieldName + '] FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = @CurrentEmployeeID';
+
+            -- Thực thi câu truy vấn
+            EXEC sp_executesql @query, 
+                N'@fieldValue NVARCHAR(MAX) OUTPUT, @CurrentEmployeeID NVARCHAR(50)', 
+                @fieldValue OUTPUT, @currentEmployeeID;
+
+            -- Nếu có giá trị thì chèn vào bảng tạm
+            IF @fieldValue IS NOT NULL
+            BEGIN
+                INSERT INTO @TempTable (COLUMN_NAME, VALUE, TableName)
+                VALUES (REPLACE(REPLACE(@columnName, '[', ''), ']', ''), @fieldValue, @currentAllowanceCode);
+            END;
+
+            -- Tiếp tục vòng lặp cho cột tiếp theo
+            FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @AlloCode, @fieldName;
         END;
 
-        -- Tiếp tục vòng lặp cho cột tiếp theo
-        FETCH NEXT FROM column_cursor INTO @columnName, @tableName, @AlloCode, @fieldName;
+        -- Đóng và giải phóng con trỏ cho cột
+        CLOSE column_cursor;
+        DEALLOCATE column_cursor;
+
+		DECLARE @sql NVARCHAR(MAX);
+		SET @sql = 'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS 
+					WHERE TABLE_NAME = ''' + @MainTable + ''' AND COLUMN_NAME LIKE ''EA.' + @currentAllowanceCode + '%''';
+
+		-- Chèn schema vào @SchemaTable
+		INSERT INTO @SchemaTable (COLUMN_NAME, DATA_TYPE)
+		EXEC sp_executesql @sql;
+        -- Tạo bảng tạm #TempTable để lưu kết quả sau khi join 2 bảng @TempTable và @SchemaTable
+        CREATE TABLE #TempTable (
+            COLUMN_NAME NVARCHAR(255),
+            VALUE NVARCHAR(MAX),
+            TableName NVARCHAR(20),
+            DATA_TYPE NVARCHAR(50)
+        );
+
+        -- Kết hợp hai bảng @TempTable và @SchemaTable để tạo bảng #TempTable
+        INSERT INTO #TempTable (COLUMN_NAME, VALUE, TableName, DATA_TYPE)
+        SELECT T.COLUMN_NAME, T.VALUE, T.TableName, S.DATA_TYPE
+        FROM @TempTable AS T
+        INNER JOIN @SchemaTable AS S
+            ON T.COLUMN_NAME = S.COLUMN_NAME;
+
+        -- Tạo bảng cập nhật cho HR_EmpAllowance
+        DECLARE @FieldUpdateCV NVARCHAR(MAX) = '';
+        DECLARE @UpdateQueryCV NVARCHAR(MAX);
+
+        -- Tạo chuỗi UPDATE cho HR_EmpAllowance
+        SELECT @FieldUpdateCV = COALESCE(@FieldUpdateCV + ', ', '') + 
+            REPLACE(COLUMN_NAME, 'EA.' + @currentAllowanceCode + '.', '') + ' = ' + 
+            CASE 
+                WHEN DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN VALUE
+                ELSE 'N''' + VALUE + ''''
+            END
+        FROM #TempTable;
+
+        -- Loại bỏ dấu phẩy đầu tiên
+        SET @FieldUpdateCV = STUFF(@FieldUpdateCV, 1, 2, '');  
+
+        -- Tạo câu truy vấn UPDATE
+        SET @UpdateQueryCV = 'UPDATE HR_EmpAllowance SET ' + @FieldUpdateCV + 
+        ' WHERE EmployeeID = ''' + @currentEmployeeID + ''' AND AlloGradeCode = ''' + @currentAllowanceCode + '''';
+
+	    -- Thực thi câu lệnh UPDATE nếu cần
+        --EXEC sp_executesql @UpdateQueryCV;
+		print @UpdateQueryCV
+        -- Xóa bảng tạm sau khi sử dụng
+        DROP TABLE #TempTable;
+	    DELETE FROM @TempTable
+	    DELETE FROM @SchemaTable
+
+        -- Tiếp tục vòng lặp cho AlloGradeCode tiếp theo
+        FETCH NEXT FROM alloGrade_cursor INTO @currentAllowanceCode;
     END;
 
-    -- Đóng và giải phóng con trỏ cho cột
-    CLOSE column_cursor;
-    DEALLOCATE column_cursor;
+    -- Đóng và giải phóng con trỏ sau khi hoàn thành
+    CLOSE alloGrade_cursor;
+    DEALLOCATE alloGrade_cursor;
 
-    -- Tạo câu lệnh để lấy schema của các cột từ INFORMATION_SCHEMA
-    DECLARE @sql NVARCHAR(MAX);
-    SET @sql = 'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = ''' + @MainTable + ''' AND COLUMN_NAME LIKE ''EA.' + @currentAllowanceCode + '%''';
-
-    -- Chèn schema vào @SchemaTable
-    INSERT INTO @SchemaTable (COLUMN_NAME, DATA_TYPE)
-    EXEC sp_executesql @sql;
-
-    -- Tạo bảng tạm #TempTable để lưu kết quả sau khi join 2 bảng @TempTable và @SchemaTable
-    CREATE TABLE #TempTable (
-        COLUMN_NAME NVARCHAR(255),
-        VALUE NVARCHAR(MAX),
-        TableName NVARCHAR(20),
-        DATA_TYPE NVARCHAR(50)
-    );
-
-    -- Kết hợp hai bảng @TempTable và @SchemaTable để tạo bảng #TempTable
-    INSERT INTO #TempTable (COLUMN_NAME, VALUE, TableName, DATA_TYPE)
-    SELECT T.COLUMN_NAME, T.VALUE, T.TableName, S.DATA_TYPE
-    FROM @TempTable AS T
-    INNER JOIN @SchemaTable AS S
-        ON T.COLUMN_NAME = S.COLUMN_NAME;
-
-    -- Tạo câu lệnh UPDATE cho HR_EmpAllowance
-    DECLARE @FieldUpdateCV NVARCHAR(MAX) = '';
-    DECLARE @UpdateQueryCV NVARCHAR(MAX);
-
-    -- Tạo chuỗi UPDATE cho HR_EmpAllowance
-    SELECT @FieldUpdateCV = COALESCE(@FieldUpdateCV + ', ', '') + 
-        REPLACE(COLUMN_NAME, 'EA.' + @currentAllowanceCode + '.', '') + ' = ' + 
-        CASE 
-            WHEN DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN VALUE
-            ELSE 'N''' + VALUE + ''''
-        END
-    FROM #TempTable;
-
-    -- Loại bỏ dấu phẩy đầu tiên
-    SET @FieldUpdateCV = STUFF(@FieldUpdateCV, 1, 2, '');  
-
-    -- Tạo câu truy vấn UPDATE
-    SET @UpdateQueryCV = 'UPDATE HR_EmpAllowance SET ' + @FieldUpdateCV + 
-    ' WHERE EmployeeID = ''' + @currentEmployeeID + ''' AND AlloGradeCode = ''' + @currentAllowanceCode + '''';
-	print @FieldUpdateCV
-	print @UpdateQueryCV
-    -- Nếu cần, thực thi câu lệnh UPDATE
-    --EXEC sp_executesql @UpdateQueryCV;
-
-    -- Xóa bảng tạm #TempTable sau khi sử dụng
-    DROP TABLE #TempTable;
-	DELETE FROM @TempTable
-	DELETE FROM @SchemaTable
-    -- Tiếp tục vòng lặp cho AlloGradeCode tiếp theo
-    FETCH NEXT FROM alloGrade_cursor INTO @currentAllowanceCode;
+    -- Tiếp tục vòng lặp cho EmployeeID tiếp theo
+    FETCH NEXT FROM emp_cursor INTO @currentEmployeeID;
 END;
 
--- Đóng và giải phóng con trỏ sau khi hoàn thành
-CLOSE alloGrade_cursor;
-DEALLOCATE alloGrade_cursor;
+-- Đóng và giải phóng con trỏ cho EmployeeID
+CLOSE emp_cursor;
+DEALLOCATE emp_cursor;
+
