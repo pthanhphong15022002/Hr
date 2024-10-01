@@ -1,0 +1,130 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoInsertDataPrefixTableEmpTemplate]    Script Date: 10/1/2024 10:18:42 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_SpAutoInsertDataPrefixTableEmpTemplate]
+    @SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+	@strEmps VARCHAR(MAX)
+AS
+BEGIN
+    DECLARE @FieldInsert NVARCHAR(MAX);
+    DECLARE @ValueInsert NVARCHAR(MAX) = '';
+    DECLARE @FieldNames NVARCHAR(MAX);
+    DECLARE @sql NVARCHAR(MAX);
+    DECLARE @MainTable VARCHAR(MAX);
+	DECLARE @Conditions VARCHAR(MAX);
+
+    SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + CAST(REPLACE(@ExcelTemplateID, '-', '') AS VARCHAR(50)) + '_' + @CreatedBy + ']';
+	SET @strEmps = '''' + REPLACE(@strEmps, ',', ''',''') + '''';
+	SET @Conditions = ' where [CV.EmployeeID] in (' + @strEmps + ')'
+
+    -- Xử lý cho bảng CV
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'CV' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'CV' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SET @sql = 'INSERT INTO HR_Employees (Probationary, SalaryPct, SalaryFactor, BaseSalary, ContractSalary, ExtraSalary, NetSalary, AdvanceValue, AdvancePct, SISalary, SIBooks, SISheets, SIPages, Status, Longitude, Latitude, CreatedOn, CreatedBy' + @FieldInsert + ') ' +
+               'SELECT 0 AS Probationary, 0 as SalaryPct, 0 as SalaryFactor, [BS.RealSalary], 0 as ContractSalary, 0 as ExtraSalary, 0 as NetSalary, 0 as AdvanceValue, 0 as AdvancePct, 0 as SISalary, 0 as SIBooks, 0 as SISheets, 0 as SIPages, 10 as Status, 0 as Longitude, 0 as Latitude, GETDATE() as CreatedOn, N''' + @CreatedBy + ''' as CreatedBy' + @FieldNames + ' ' +
+               'FROM ' + @MainTable + @Conditions;
+    EXEC sp_executesql @sql;
+
+    -- Xử lý cho bảng HD
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'HD' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'HD' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SET @sql = 'INSERT INTO HR_EmpContract (EmployeeID' + @FieldInsert + ') ' +
+               'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+               'FROM ' + @MainTable + @Conditions;
+    EXEC sp_executesql @sql;
+
+    -- Xử lý cho bảng BS
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'BS' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'BS' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SET @sql = 'INSERT INTO HR_EmpBasicSalary (EmployeeID' + @FieldInsert + ') ' +
+               'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+               'FROM ' + @MainTable + @Conditions;
+    EXEC sp_executesql @sql;
+
+    -- Xử lý cho bảng EA
+    DECLARE @columns NVARCHAR(MAX);
+    DECLARE @insert NVARCHAR(MAX);
+    DECLARE @AlloGradeCode NVARCHAR(20);
+
+	SET @FieldInsert = '';
+    -- Lấy danh sách các trường cần insert
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'EA'
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    -- Khởi tạo Cursor để lấy tất cả các AlloGradeCode
+    DECLARE allo_cursor CURSOR FOR 
+    SELECT DISTINCT AlloGradeCode
+    FROM HR_SysExcelTemplateEmpAlloGrade
+    WHERE ExcelTemplateID = @ExcelTemplateID;
+
+    OPEN allo_cursor;
+
+    FETCH NEXT FROM allo_cursor INTO @AlloGradeCode;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Reset biến cho từng lần lặp
+        SET @columns = NULL;
+
+        -- Tạo danh sách các cột tương ứng cho AlloGradeCode hiện tại
+        SELECT @columns = COALESCE(@columns + ', ', '') + '[' + A.TableName + '.' + @AlloGradeCode + '.' + A.FieldName + ']'
+        FROM HR_SysExcelTemplateEmpField AS A
+        WHERE A.ExcelTemplateID = @ExcelTemplateID
+        AND A.TableName = 'EA';
+
+        -- Tạo câu SELECT cho giá trị
+        SET @ValueInsert = 'SELECT [CV.EmployeeID], ' + @CreatedBy + ' as CreatedBy, ' + @columns + ' FROM ' + @MainTable + @Conditions;
+
+        -- Tạo câu INSERT
+        SET @insert = 'INSERT INTO HR_EmpAllowance (EmployeeID, CreatedBy' + @FieldInsert + ') ' + @ValueInsert;
+        -- Thực thi câu lệnh INSERT
+        EXEC sp_executesql @insert;
+
+        FETCH NEXT FROM allo_cursor INTO @AlloGradeCode;
+    END
+
+    CLOSE allo_cursor;
+    DEALLOCATE allo_cursor;
+END
