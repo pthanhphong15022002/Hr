@@ -1,0 +1,23 @@
+USE [codx_hr]
+GO
+/****** Object:  UserDefinedFunction [dbo].[HR_FNSplitString]    Script Date: 10/3/2024 5:58:52 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER function [dbo].[HR_FNSplitString]
+( 
+    @str nvarchar(max) = 'SELECT @Amount = 47840.00 / ( ~13~ * 8 + ~15~ + ~18~ - ~12~ ) * ~15~ * 1.5 FROM #ASFactors ',  
+    @separator char(1) = '~'
+) 
+returns table 
+AS 
+	return (
+		with tokens(p, a, b) AS (
+			select cast(1 as bigint), cast(1 as bigint), charindex(@separator, @str)
+			union all
+			select p + 1, b + 1, charindex(@separator, @str, b + 1) from tokens where b > 0
+		)
+		select p-1 as zeroBasedOccurance, substring(@str, a, case when b > 0 then b-a ELSE LEN(@str) end) AS data
+		from tokens  
+	)
