@@ -1,0 +1,93 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]    Script Date: 10/3/2024 3:52:45 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]
+    @SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+    @strEmps VARCHAR(MAX)
+AS
+BEGIN
+    -- Biến lưu trữ danh sách EmployeeID cần Insert và Update
+    DECLARE @insertEmps VARCHAR(MAX) = '';
+    DECLARE @updateEmps VARCHAR(MAX) = '';
+    DECLARE @CurrentEmpID NVARCHAR(50);
+    DECLARE @sql NVARCHAR(MAX);
+
+    -- Tạo bảng tạm để lưu EmployeeID tách ra từ @strEmps
+    DECLARE @EmployeeIDs TABLE (EmployeeID NVARCHAR(50));
+
+	INSERT INTO test_count_cmquan(CountStr)
+	values(@strEmps)
+    -- Tách chuỗi @strEmps thành các EmployeeID riêng lẻ và chèn vào bảng tạm
+    INSERT INTO @EmployeeIDs (EmployeeID)
+    SELECT data FROM HR_FNSplitString(@strEmps, ',') option (MaxRecursion 0);
+ --   DECLARE @EmployeeIDs TABLE (EmployeeID NVARCHAR(50));
+ --   INSERT INTO @EmployeeIDs (EmployeeID)
+	--SELECT
+ --   STUFF(
+ --       (
+ --           SELECT ',' + ST1.EmployeeID
+ --           FROM HR_Employees ST1
+	--		where EmployeeID in (
+	--		SELECT value FROM STRING_SPLIT(@strEmps, ','))
+ --           FOR XML PATH (''), TYPE
+ --       ).value('text()[1]','nvarchar(max)'), 1, 1, '')
+
+    -- Cursor để lặp qua từng EmployeeID
+    DECLARE emp_cursor CURSOR FOR
+    SELECT EmployeeID FROM @EmployeeIDs;
+    OPEN emp_cursor;
+    FETCH NEXT FROM emp_cursor INTO @CurrentEmpID;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Kiểm tra sự tồn tại của EmployeeID trong bảng HR_Employees
+        IF EXISTS (SELECT 1 FROM HR_Employees WHERE EmployeeID = @CurrentEmpID)
+        BEGIN
+            -- Nếu EmployeeID tồn tại, thêm vào danh sách Update
+            SET @updateEmps = @updateEmps + ',' + @CurrentEmpID;
+        END
+        ELSE
+        BEGIN
+            -- Nếu EmployeeID không tồn tại, thêm vào danh sách Insert
+            SET @insertEmps = @insertEmps + ',' + @CurrentEmpID;
+        END
+        FETCH NEXT FROM emp_cursor INTO @CurrentEmpID;
+    END
+
+    CLOSE emp_cursor;
+    DEALLOCATE emp_cursor;
+
+    -- Gọi store procedure INSERT nếu có EmployeeID cần Insert
+    IF LEN(@insertEmps) > 0
+    BEGIN
+        -- Loại bỏ dấu phẩy đầu tiên
+        SET @insertEmps = SUBSTRING(@insertEmps, 2, LEN(@insertEmps) - 1);
+
+        EXEC HR_SpAutoInsertDataPrefixTableEmpTemplate 
+            @SchemaName = @SchemaName,
+            @PrefixTableName = @PrefixTableName,
+            @ExcelTemplateID = @ExcelTemplateID,
+            @CreatedBy = @CreatedBy,
+            @strEmps = @insertEmps;
+    END
+
+    -- Gọi store procedure UPDATE nếu có EmployeeID cần Update
+    IF LEN(@updateEmps) > 0
+    BEGIN
+        -- Loại bỏ dấu phẩy đầu tiên
+        SET @updateEmps = SUBSTRING(@updateEmps, 2, LEN(@updateEmps) - 1);
+
+        --EXEC HR_SpAutoUpdateDataPrefixTableEmpTemplate 
+        --    @SchemaName = @SchemaName,
+        --    @PrefixTableName = @PrefixTableName,
+        --    @ExcelTemplateID = @ExcelTemplateID,
+        --    @CreatedBy = @CreatedBy,
+        --    @employeeIDList = @updateEmps;
+    END
+END
