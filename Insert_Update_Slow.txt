@@ -1,0 +1,266 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]    Script Date: 10/4/2024 10:14:26 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]
+    @SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+    @strEmps VARCHAR(MAX)
+AS
+BEGIN
+    -- Biến lưu trữ danh sách EmployeeID cần Insert và Update
+    DECLARE @insertEmps VARCHAR(MAX) = '';
+    DECLARE @updateEmps VARCHAR(MAX) = '';
+    DECLARE @CurrentEmpID NVARCHAR(50);
+    DECLARE @sql NVARCHAR(MAX);
+	DECLARE @MainTableReplace NVARCHAR(100);
+	DECLARE	@ExcelTemplateIDReplace NVARCHAR(50);
+	DECLARE @MainTable NVARCHAR(256);
+
+
+	SET @ExcelTemplateIDReplace = CAST(REPLACE(@ExcelTemplateID, '-', '') AS VARCHAR(50));
+	SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy + ']';
+	SET @MainTableReplace = @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy;
+
+    -- Tạo bảng tạm để lưu EmployeeID tách ra từ @strEmps
+    DECLARE @EmployeeIDs TABLE (EmployeeID NVARCHAR(50));
+
+    -- Tách chuỗi @strEmps thành các EmployeeID riêng lẻ và chèn vào bảng tạm
+    INSERT INTO @EmployeeIDs (EmployeeID)
+    SELECT data FROM HR_FNSplitString(@strEmps, ',') option (MaxRecursion 0);
+
+
+    -- Cursor để lặp qua từng EmployeeID
+    DECLARE emp_cursor CURSOR FOR
+    SELECT EmployeeID FROM @EmployeeIDs;
+    OPEN emp_cursor;
+    FETCH NEXT FROM emp_cursor INTO @CurrentEmpID;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Kiểm tra sự tồn tại của EmployeeID trong bảng HR_Employees
+        IF EXISTS (SELECT 1 FROM HR_Employees WHERE EmployeeID = @CurrentEmpID)
+        BEGIN
+            -- Nếu EmployeeID tồn tại, thêm vào danh sách Update
+            --SET @updateEmps = @updateEmps + ',' + @CurrentEmpID;
+
+			INSERT INTO test_count_cmquan(EmployeeId)
+			values(@CurrentEmpID)
+
+			SET NOCOUNT ON;
+
+			DECLARE @DATA_TYPE NVARCHAR(50),
+					@FieldUpdateCV NVARCHAR(MAX) = '',
+					@FieldUpdateHD NVARCHAR(MAX) = '',
+					@FieldUpdateBS NVARCHAR(MAX) = '',
+					@FieldUpdateEA NVARCHAR(MAX) = '',
+					@query NVARCHAR(MAX),
+					@fieldValue NVARCHAR(MAX),
+					@TableName NVARCHAR(50),
+					@FieldName NVARCHAR(50),
+					@AlloCode NVARCHAR(50) = '',
+					@FullColumnName NVARCHAR(MAX)
+					
+
+			-- Khởi tạo lại các chuỗi cập nhật cho mỗi employee
+			SET @FieldUpdateCV = ''
+			SET @FieldUpdateHD = ''
+			SET @FieldUpdateBS = ''
+			SET @FieldUpdateEA = ''
+
+			DECLARE allow_cursor CURSOR FOR
+			SELECT AlloGradeCode FROM HR_SysExcelTemplateEmpAlloGrade 
+			WHERE ExcelTemplateID = @ExcelTemplateID;
+
+			OPEN allow_cursor;
+			FETCH NEXT FROM allow_cursor INTO @AlloCode;
+
+			WHILE @@FETCH_STATUS = 0
+			BEGIN
+				-- Cursor cho các cột
+				DECLARE column_cursor CURSOR FOR
+				SELECT
+					CASE
+						WHEN A.TableName = 'EA' THEN '[' + A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName + ']'
+						ELSE '[' + A.TableName + '.' + A.FieldName + ']'
+					END AS FullColumnName,
+					A.TableName,
+					ISNULL(B.AlloGradeCode, '') AS AlloGradeCode,
+					A.FieldName,
+					C.DATA_TYPE
+				FROM HR_SysExcelTemplateEmpField AS A
+				LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS B
+					ON A.ExcelTemplateID = B.ExcelTemplateID
+				LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS C
+					ON C.COLUMN_NAME = A.TableName + '.' + A.FieldName OR C.COLUMN_NAME = A.TableName + '.' + B.AlloGradeCode + '.' + A.FieldName
+				WHERE A.ExcelTemplateID = @ExcelTemplateID
+				AND A.TableName = 'EA'
+				AND C.TABLE_NAME = @MainTableReplace
+				AND B.AlloGradeCode = @AlloCode; 
+				
+				OPEN column_cursor;
+				FETCH NEXT FROM column_cursor INTO @FullColumnName, @TableName, @AlloCode, @FieldName, @DATA_TYPE;
+				
+				WHILE @@FETCH_STATUS = 0
+				BEGIN
+					-- Lấy giá trị cho từng cột
+					SET @query = 'SELECT @fieldValue = [' + @TableName + '.' + @AlloCode + '.' + @FieldName + '] FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = @CurrentEmpID';
+
+					EXEC sp_executesql @query, N'@CurrentEmpID NVARCHAR(50), @fieldValue NVARCHAR(MAX) OUTPUT', @CurrentEmpID, @fieldValue OUTPUT;
+
+					-- Thêm kết quả vào chuỗi cập nhật tương ứng
+					SET @FieldUpdateEA = COALESCE(@FieldUpdateEA + ', ', '') + REPLACE(@FieldName, 'EA.' + @AlloCode + '.', '') + ' = ' + 
+					CASE 
+						WHEN @DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN @fieldValue
+						ELSE 'N''' + @fieldValue + ''''
+					END
+
+					FETCH NEXT FROM column_cursor INTO @FullColumnName, @TableName, @AlloCode, @FieldName, @DATA_TYPE; 
+				END
+
+				CLOSE column_cursor;
+				DEALLOCATE column_cursor;
+
+				-- Sinh câu lệnh UPDATE dựa trên các trường đã thu thập
+				IF LEN(@FieldUpdateEA) > 0
+				BEGIN
+					SET @FieldUpdateEA = STUFF(@FieldUpdateEA, 1, 2, ''); 
+					SET @query = 'UPDATE HR_EmpAllowance SET ' + @FieldUpdateEA + ' WHERE EmployeeID = @CurrentEmpID AND AlloGradeCode = @AlloCode';
+					print @query
+					EXEC sp_executesql @query, N'@CurrentEmpID NVARCHAR(50), @AlloCode NVARCHAR(50)', @CurrentEmpID, @AlloCode;
+				END
+
+				-- Reset các chuỗi cập nhật cho employee tiếp theo
+				SET @FieldUpdateEA = ''
+
+				FETCH NEXT FROM allow_cursor INTO @AlloCode; 
+			END
+
+			CLOSE allow_cursor;
+			DEALLOCATE allow_cursor;
+
+			-- Cursor cho các cột không phải EA
+			DECLARE column_cursor CURSOR FOR
+			SELECT '[' + A.TableName + '.' + A.FieldName + ']' AS FullColumnName,
+				   A.TableName,
+				   A.FieldName,
+				   C.DATA_TYPE
+			FROM HR_SysExcelTemplateEmpField AS A
+			LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS C
+				ON C.COLUMN_NAME = A.TableName + '.' + A.FieldName
+			WHERE A.ExcelTemplateID = @ExcelTemplateID
+			AND A.TableName IN ('CV', 'BS', 'HD')
+			AND C.TABLE_NAME = @MainTableReplace;
+
+			OPEN column_cursor;
+			FETCH NEXT FROM column_cursor INTO @FullColumnName, @TableName, @FieldName, @DATA_TYPE;
+
+			WHILE @@FETCH_STATUS = 0
+			BEGIN
+				-- Lấy giá trị cho từng cột
+				SET @query = 'SELECT @fieldValue = [' + @TableName + '.' + @FieldName + '] FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = @CurrentEmpID';
+
+				EXEC sp_executesql @query, N'@CurrentEmpID NVARCHAR(50), @fieldValue NVARCHAR(MAX) OUTPUT', @CurrentEmpID, @fieldValue OUTPUT;
+
+				-- Thêm kết quả vào chuỗi cập nhật tương ứng
+				IF @TableName = 'CV'
+				BEGIN
+
+					SET @FieldUpdateCV = COALESCE(@FieldUpdateCV + ', ', '') + REPLACE(@FieldName, 'CV.', '') + ' = ' + 
+					CASE 
+						WHEN @DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN @fieldValue
+						ELSE 'N''' + @fieldValue + ''''
+					END;
+
+				END
+				ELSE IF @TableName = 'HD'
+				BEGIN
+					SET @FieldUpdateHD = COALESCE(@FieldUpdateHD + ', ', '') + REPLACE(@FieldName, 'HD.', '') + ' = ' + 
+					CASE 
+						WHEN @DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN @fieldValue
+						ELSE 'N''' + @fieldValue + ''''
+					END;
+				END
+				ELSE IF @TableName = 'BS'
+				BEGIN
+					SET @FieldUpdateBS = COALESCE(@FieldUpdateBS + ', ', '') + REPLACE(@FieldName, 'BS.', '') + ' = ' + 
+					CASE 
+						WHEN @DATA_TYPE IN ('int', 'decimal', 'float', 'real', 'money') THEN @fieldValue
+						ELSE 'N''' + @fieldValue + ''''
+					END;
+				END
+
+				FETCH NEXT FROM column_cursor INTO @FullColumnName, @TableName, @FieldName, @DATA_TYPE; 
+			END
+
+			CLOSE column_cursor;
+			DEALLOCATE column_cursor;
+
+			-- Sinh câu lệnh UPDATE dựa trên các trường đã thu thập
+			IF LEN(@FieldUpdateCV) > 0
+			BEGIN
+				SET @FieldUpdateCV = STUFF(@FieldUpdateCV, 1, 2, ''); 
+				SET @query = 'UPDATE HR_Employees SET ' + @FieldUpdateCV + ' WHERE EmployeeID = @CurrentEmpID';
+				print @query
+				EXEC sp_executesql @query, N'@CurrentEmpID NVARCHAR(50)', @CurrentEmpID;
+			END
+
+			IF LEN(@FieldUpdateHD) > 0
+			BEGIN
+				SET @FieldUpdateHD = STUFF(@FieldUpdateHD, 1, 2, ''); 
+				SET @query = 'UPDATE HR_EmpContract SET ' + @FieldUpdateHD + ' WHERE EmployeeID = @CurrentEmpID';
+				print @query
+				EXEC sp_executesql @query, N'@CurrentEmpID NVARCHAR(50)', @CurrentEmpID;
+			END
+
+			IF LEN(@FieldUpdateBS) > 0
+			BEGIN
+				SET @FieldUpdateBS = STUFF(@FieldUpdateBS, 1, 2, ''); 
+				SET @query = 'UPDATE HR_EmpBasicSalary SET ' + @FieldUpdateBS + ' WHERE EmployeeID = @CurrentEmpID';
+				print @query
+				EXEC sp_executesql @query, N'@CurrentEmpID NVARCHAR(50)', @CurrentEmpID;
+			END
+        END
+        ELSE
+        BEGIN
+            -- Nếu EmployeeID không tồn tại, thêm vào danh sách Insert
+            SET @insertEmps = @insertEmps + ',' + @CurrentEmpID;
+        END
+        FETCH NEXT FROM emp_cursor INTO @CurrentEmpID;
+    END
+
+    CLOSE emp_cursor;
+    DEALLOCATE emp_cursor;
+
+    -- Gọi store procedure INSERT nếu có EmployeeID cần Insert
+    IF LEN(@insertEmps) > 0
+    BEGIN
+        -- Loại bỏ dấu phẩy đầu tiên
+        SET @insertEmps = SUBSTRING(@insertEmps, 2, LEN(@insertEmps) - 1);
+
+        EXEC HR_SpAutoInsertDataPrefixTableEmpTemplate 
+            @SchemaName = @SchemaName,
+            @PrefixTableName = @PrefixTableName,
+            @ExcelTemplateID = @ExcelTemplateID,
+            @CreatedBy = @CreatedBy,
+            @strEmps = @insertEmps;
+    END
+
+    -- Gọi store procedure UPDATE nếu có EmployeeID cần Update
+    --IF LEN(@updateEmps) > 0
+    --BEGIN
+    --    -- Loại bỏ dấu phẩy đầu tiên
+    --    SET @updateEmps = SUBSTRING(@updateEmps, 2, LEN(@updateEmps) - 1);
+
+    --    EXEC HR_SpAutoUpdateDataPrefixTableEmpTemplate 
+    --        @SchemaName = @SchemaName,
+    --        @PrefixTableName = @PrefixTableName,
+    --        @ExcelTemplateID = @ExcelTemplateID,
+    --        @CreatedBy = @CreatedBy,
+    --        @employeeIDList = @updateEmps;
+    --END
+END
