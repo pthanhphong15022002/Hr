@@ -1,0 +1,92 @@
+ALTER PROCEDURE [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]
+	@SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+    @strEmps VARCHAR(MAX)
+AS
+BEGIN 
+
+    DECLARE @sql NVARCHAR(MAX), @EmployeeID NVARCHAR(50), @columnName NVARCHAR(50), @fieldValue NVARCHAR(MAX), @insertEmps NVARCHAR(MAX), @ExcelTemplateIDReplace VARCHAR(50), @MainTable VARCHAR(100), @MainTableReplace VARCHAR(100)
+	set @strEmps=N'TE1256,HLT,TE2509,TE2510,TE10,TE3761,TE2513,TE2514,TE1264,TE3766,TE3767,TE3768,TE2518,TE2519,TE2520,TE2521,TE3775,TE24,TE3777,TE1275,TE2525,TE28,TE29,TE3781,TE2528,TE31,TE3784,TE1282,TE2531,TE2532,TE1285,TE2534,TE1287,TE2536,TE2537,TE2538,TE3793,TE3578,TE3579,TE4000,TE2739,TE258,TE259,TE1493,TE1494,TE1495,TE1496,TE265,TE266,TE1499'
+	select T.EmployeeID, T1.EmployeeID as CurrentEmployeeID into #tblEmps from (
+	SELECT cast(data as nvarchar(20)) as EmployeeID FROM HR_FNSplitString(@strEmps, ',')
+	) as T LEFT join HR_Employees as T1 with (nolock) on T.EmployeeID = T1.EmployeeID
+	option (MaxRecursion 0);
+
+	SET @ExcelTemplateIDReplace = CAST(REPLACE(@ExcelTemplateID, '-', '') AS VARCHAR(50));
+	SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy + ']';
+	SET @MainTableReplace = @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy;
+
+    -- Khởi tạo câu lệnh UPDATE một lần
+    SET @sql = 'UPDATE HR_Employees SET ' + @columnName + ' = @fieldValue WHERE EmployeeID = @EmployeeID'
+	SET @sql = 'UPDATE HR_EmpBasicSalary SET ' + @columnName + ' = @fieldValue WHERE EmployeeID = @EmployeeID'
+	SET @sql = 'UPDATE HR_EmpAllowance SET ' + @columnName + ' = @fieldValue WHERE EmployeeID = @EmployeeID'
+
+	SELECT '[' + A.TableName + '.' + A.FieldName + ']' AS FullColumnName,
+       A.TableName,
+       A.FieldName,
+       C.DATA_TYPE
+	INTO #tblTemp
+	FROM HR_SysExcelTemplateEmpField AS A WITH (NOLOCK)
+	LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS C
+		ON C.COLUMN_NAME = A.TableName + '.' + A.FieldName
+	WHERE A.ExcelTemplateID = @ExcelTemplateID
+	AND A.TableName IN ('CV', 'BS', 'HD')
+	AND C.TABLE_NAME = @MainTableReplace;
+
+	DECLARE @selectColumnsCV NVARCHAR(MAX), @selectColumnsBS NVARCHAR(MAX), @selectColumnsHD NVARCHAR(MAX)
+	SELECT @selectColumnsCV = COALESCE(@selectColumnsCV + ', ', '') + FullColumnName
+	FROM #tblTemp 
+	WHERE TableName = 'CV';
+
+	SELECT @selectColumnsBS = COALESCE(@selectColumnsBS + ', ', '') + FullColumnName
+	FROM #tblTemp 
+	WHERE TableName = 'BS';
+
+	SELECT @selectColumnsHD = COALESCE(@selectColumnsHD + ', ', '') + FullColumnName
+	FROM #tblTemp 
+	WHERE TableName = 'HD';
+
+    DECLARE @CurrentEmpID NVARCHAR(20)
+    DECLARE emp_cursor CURSOR FOR
+		SELECT EmployeeID, CurrentEmployeeID
+		FROM #tblEmps;
+
+
+    OPEN emp_cursor;
+    FETCH NEXT FROM emp_cursor INTO @EmployeeID, @CurrentEmpID
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+		if @CurrentEmpID is not null 
+		BEGIN
+			SET @sql = 'SELECT ' + @selectColumnsCV + ' FROM ' + @MainTable + ' WHERE [CV.EmployeeID] = @@CurrentEmpID';
+
+			-- Thực thi câu lệnh SQL để lấy dữ liệu
+			EXEC sp_executesql @sql, N'@@CurrentEmpID NVARCHAR(20)', @CurrentEmpID;
+			print 'Hàm Update'
+		END
+		ELSE
+		BEGIN
+			SET @insertEmps = @insertEmps + ',' + @EmployeeID;
+		END
+        FETCH NEXT FROM emp_cursor INTO @EmployeeID, @CurrentEmpID
+    END
+
+    CLOSE emp_cursor
+    DEALLOCATE emp_cursor
+	DROP TABLE #tblEmps
+
+	IF LEN(@insertEmps) > 0
+    BEGIN
+        -- Loại bỏ dấu phẩy đầu tiên
+        SET @insertEmps = SUBSTRING(@insertEmps, 2, LEN(@insertEmps) - 1);
+
+        EXEC HR_SpAutoInsertDataPrefixTableEmpTemplate 
+            @SchemaName = @SchemaName,
+            @PrefixTableName = @PrefixTableName,
+            @ExcelTemplateID = @ExcelTemplateID,
+            @CreatedBy = @CreatedBy,
+            @strEmps = @insertEmps;
+    END
+END
