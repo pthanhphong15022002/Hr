@@ -1,0 +1,219 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spProcessScancodeInfo_AutoShift]    Script Date: 10/18/2024 4:53:53 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/*
+	Create by : hntruong  18/08/2021 - nhan dien ca tu dong cho nhan vien
+	06/02/2023-PBL2212/0028-FRAMAS - YC - Bảng phân ca khi xóa làm sao nhận diện được ca nào là tự động, ca nào là tự phân ca để giữ lại
+*/
+ALTER PROC [dbo].[HR_spProcessScancodeInfo_AutoShift]
+(
+	@UserID NVARCHAR(20),
+    @EmployeeID VARCHAR(max),
+    @FromDate DATETIME ,
+    @ToDate DATETIME,
+	@DowCode varchar(7),
+	@Err NVARCHAR(max)  OUT
+)
+AS
+BEGIN
+	--tap nhan vien
+	SELECT E.EmployeeID, E.IsAltShift, E.ShiftCode, E.TimeCardNo as BarCode INTO #Emp
+	FROM dbo.HR_FNSplitString(@EmployeeID,',') D
+	INNER JOIN dbo.HR_Employees E ON E.EmployeeID = D.data
+	option (maxrecursion 0) 
+
+	SELECT S.EmployeeID, S.BeginDate, S.ShiftPeriodCode
+	INTO #HR_TSFirstShiftInPeriod
+	FROM HR_TSFirstShiftInPeriod S
+	inner JOIN #Emp E ON E.EmployeeID = S.EmployeeID
+
+	
+	--Get table phan ca
+	select S.EmployeeID,S.WorkDate,S.ShiftCode,S.PreDate,S.RegionCode 
+	INTO #HR_TSAssignShift 
+	from dbo.HR_TSAssignShift S WITH(NOLOCK) INNER JOIN #Emp E ON E.EmployeeID = S.EmployeeID
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(S.EmployeeID, @DowCode) P
+	where (S.WorkDate between @FromDate AND @ToDate and ISNULL(P.DowCode,'') = '')  OR  (S.WorkDate between P.BegDay AND P.EndDay and ISNULL(P.DowCode,'') <> '')
+
+
+	--tap ca vs thoi gian ca
+	SELECT        ShiftCode, EarliestShiftTime, LatestShiftTime, EarliestTimeIn, LatestTimeIn, EarliestTimeOut, 
+				LatestTimeOut, TotalDate, IsNight, Sorting,Note
+	INTO #HR_LSShift
+	FROM            HR_LSShift WITH(NOLOCK)
+	WHERE Stop = 0
+	--SELECT * FROM #HR_LSShift
+	--nhan vien va ca ngay can xu ly
+	SELECT E.EmployeeID, d.mDate AS WorkDate, CASE WHEN E.IsAltShift = 1 THEN S.ShiftCode ELSE E.ShiftCode END AS ShiftCode, E.IsAltShift,
+				CONVERT(NVARCHAR(10),d.mDate,111) AS strWorkDate
+	INTO #empDays
+	FROM #Emp E
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+	CROSS APPLY dbo.HR_FNGet_SelectFromTODate(case when isnull(@DowCode,'') = '' THEN @FromDate ELSE P.BegDay END,case when isnull(@DowCode,'') = '' THEN @ToDate ELSE P.EndDay END) d
+	LEFT JOIN #HR_TSAssignShift S ON S.EmployeeID = E.EmployeeID AND CAST(S.WorkDate AS date) = CAST(d.mDate AS date)
+
+
+		--SELECT S.EmployeeID, S.BeginDate, S.ShiftPeriodCode
+		--FROM HR_TSFirstShiftInPeriod S
+		--inner JOIN #Emp E ON E.EmployeeID = S.EmployeeID
+
+
+		--SELECT 'ƯEFWEFEWF',E.EmployeeID, E.WorkDate, S.ShiftPeriodCode, E.IsAltShift, 
+		--		ROW_NUMBER()OVER(PARTITION BY E.EmployeeID,E.WorkDate ORDER BY S.BeginDate DESC) AS RN, E.strWorkDate
+		--FROM #empDays E
+		--LEFT JOIN #HR_TSFirstShiftInPeriod S ON S.EmployeeID = E.EmployeeID AND S.BeginDate <= E.WorkDate
+		--WHERE E.IsAltShift = 1 AND E.ShiftCode IS NULL
+
+		
+		
+	--SELECT 'wqdqwdwqd',E.EmployeeID, E.WorkDate, NULL AS ShiftPeriodCode, E.ShiftCode, E.strWorkDate, 0 AS IsNhanDienTuDong, E.IsAltShift
+	--FROM  #empDays E
+--	WHERE E.ShiftCode IS NOT NULL
+
+
+	--xu ly tap nhan vien nhan dien ca tu dong
+	SELECT T.EmployeeID,T.WorkDate,T.ShiftPeriodCode, LD.ShiftCode, T.strWorkDate, 1 AS IsNhanDienTuDong, T.IsAltShift
+	INTO #empDays_shift
+	FROM (
+		SELECT E.EmployeeID, E.WorkDate, S.ShiftPeriodCode, E.IsAltShift, 
+				ROW_NUMBER()OVER(PARTITION BY E.EmployeeID,E.WorkDate ORDER BY S.BeginDate DESC) AS RN, E.strWorkDate
+		FROM #empDays E
+		LEFT JOIN #HR_TSFirstShiftInPeriod S ON S.EmployeeID = E.EmployeeID AND S.BeginDate <= E.WorkDate
+		WHERE E.IsAltShift = 1 AND E.ShiftCode IS NULL
+	) T INNER JOIN dbo.HR_LSShiftPeriodDetail LD ON LD.PeriodCode = T.ShiftPeriodCode
+	WHERE T.RN = 1
+	UNION ALL
+	SELECT E.EmployeeID, E.WorkDate, NULL AS ShiftPeriodCode, E.ShiftCode, E.strWorkDate, 0 AS IsNhanDienTuDong, E.IsAltShift
+	FROM  #empDays E
+	WHERE E.ShiftCode IS NOT NULL
+
+
+	--	SELECT T.EmployeeID,T.WorkDate,T.ShiftPeriodCode, LD.ShiftCode, T.strWorkDate, 1 AS IsNhanDienTuDong, T.IsAltShift
+	--FROM (
+	--	SELECT E.EmployeeID, E.WorkDate, S.ShiftPeriodCode, E.IsAltShift, 
+	--			ROW_NUMBER()OVER(PARTITION BY E.EmployeeID,E.WorkDate ORDER BY S.BeginDate DESC) AS RN, E.strWorkDate
+	--	FROM #empDays E
+	--	LEFT JOIN #HR_TSFirstShiftInPeriod S ON S.EmployeeID = E.EmployeeID AND S.BeginDate <= E.WorkDate
+	--	WHERE E.IsAltShift = 1 AND E.ShiftCode IS NULL
+	--) T INNER JOIN dbo.HR_LSShiftPeriodDetail LD ON LD.PeriodCode = T.ShiftPeriodCode
+	--WHERE T.RN = 1
+	--UNION ALL
+	--SELECT E.EmployeeID, E.WorkDate, NULL AS ShiftPeriodCode, E.ShiftCode, E.strWorkDate, 0 AS IsNhanDienTuDong, E.IsAltShift
+	--FROM  #empDays E
+	--WHERE E.ShiftCode IS NOT NULL
+	--SELECT * FROM #empDays_shift
+
+	SELECT T.EmployeeID,T.WorkDate,T.ShiftPeriodCode, T.ShiftCode,
+			CAST( T.strWorkDate + ' ' + L.EarliestShiftTime AS DATETIME) AS ShiftFromTime,
+			CAST( CONVERT(NVARCHAR(10),DATEADD(DAY,L.TotalDate-1, T.WorkDate),111) + ' ' + L.LatestShiftTime AS DATETIME) AS ShiftToTime, L.TotalDate,
+			CAST( T.strWorkDate + ' ' + L.EarliestTimeIn AS DATETIME) AS VaoSom,
+			CAST( T.strWorkDate + ' ' + L.LatestTimeIn AS DATETIME) AS VaoTre,
+			CAST( CONVERT(NVARCHAR(10),DATEADD(DAY,L.TotalDate-1, T.WorkDate),111) + ' ' + L.EarliestTimeOut AS DATETIME) AS RaSom,
+			CAST( CONVERT(NVARCHAR(10),DATEADD(DAY,L.TotalDate-1, T.WorkDate),111) + ' ' + L.LatestTimeOut AS DATETIME) AS RaTre, 
+			L.Sorting, T.IsNhanDienTuDong, T.IsAltShift
+	INTO #empDays_shift_withTime_sub
+	FROM #empDays_shift T 
+	INNER JOIN #HR_LSShift L ON L.ShiftCode = T.ShiftCode
+
+	--doi voi nhan dien tu dong thi xu ly moc vao ra theo thiet lap vao/ra chi tiet tren ca, ko tu dong thi lay moc nhan dien la thoi gian som nhat/tre nhat cua ca
+	SELECT S.EmployeeID,S.WorkDate,S.ShiftCode,S.TotalDate,S.ShiftFromTime, S.ShiftToTime, S.VaoSom, S.VaoTre, 
+			CASE WHEN S.RaSom >  S.RaTre THEN DATEADD(DAY,-1, S.RaSom) ELSE S.RaSom END AS RaSom,
+			S.RaTre,S.IsNhanDienTuDong, S.IsAltShift
+	INTO #empDays_shift_withTime
+	FROM (
+		SELECT S.EmployeeID,S.WorkDate,S.ShiftCode,S.TotalDate,S.ShiftFromTime, S.ShiftToTime, 
+				CASE WHEN S.IsNhanDienTuDong = 1 THEN S.VaoSom ELSE S.ShiftFromTime END AS VaoSom, 
+				CASE WHEN S.IsNhanDienTuDong = 1 THEN CASE WHEN S.VaoSom>=S.VaoTre THEN DATEADD(DAY,1,S.VaoTre) ELSE S.VaoTre END ELSE S.ShiftToTime END AS VaoTre,
+				CASE WHEN S.IsNhanDienTuDong = 1 THEN CASE WHEN S.TotalDate > 1 AND S.RaTre > S.ShiftToTime THEN DATEADD(DAY,-1, S.RaSom) ELSE S.RaSom END ELSE S.ShiftFromTime END AS RaSom,
+				CASE WHEN S.IsNhanDienTuDong = 1 THEN CASE WHEN S.TotalDate > 1 AND S.RaTre > S.ShiftToTime THEN DATEADD(DAY,-1, S.RaTre) ELSE S.RaTre END ELSE S.ShiftToTime END AS RaTre, S.Sorting,
+				S.IsNhanDienTuDong, S.IsAltShift
+		FROM #empDays_shift_withTime_sub S
+	) S
+
+	--Get table ScanCode
+	select E.EmployeeID, S.WorkDate,CAST(S.ScanTime AS DATETIME) AS ScanTime,S.ReaderID,S.In1Out0 
+	INTO #HR_TSScanCode
+	from dbo.HR_TSScanCode S WITH(NOLOCK) INNER JOIN #Emp E ON E.BarCode =S.TimeCardNo
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+	where (S.WorkDate between DateAdd(day,-1,@FromDate) AND DateAdd(day,3,@ToDate) and ISNULL(P.DowCode, '') = '')
+	or ( S.WorkDate between DateAdd(day,-1,P.BegDay) AND DateAdd(day,3,P.EndDay) and ISNULL(P.DowCode, '') <> '')
+	GROUP BY E.EmployeeID, S.WorkDate,S.ScanTime ,S.ReaderID,S.In1Out0
+	UNION ALL
+	select E.EmployeeID, CONVERT(NVARCHAR(10),S.ScanTime,111) as WorkDate,CAST(S.ScanTime AS DATETIME) AS ScanTime,S.ReaderID,S.In1Out0 
+	from dbo.HR_TSScanTime S WITH(NOLOCK) INNER JOIN #Emp E ON E.EmployeeID =S.EmployeeID
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+	where (S.WorkDate between @FromDate AND @ToDate AND ISNULL(S.IsManualInput,0) = 1 and ISNULL(P.DowCode,'') = '')
+	OR (S.WorkDate between P.BegDay AND P.EndDay AND ISNULL(S.IsManualInput,0) = 1 and ISNULL(P.DowCode,'') <> '')
+	GROUP BY E.EmployeeID,S.ScanTime ,S.ReaderID,S.In1Out0
+
+	select *from #HR_TSScanCode
+	select *from #empDays_shift_withTime
+
+	select T.EmployeeID,T.WorkDate,T.ShiftCode,T.ShiftFromTime,T.ShiftToTime,T.RI AS RI,T.RO AS RO, T.IsNhanDienTuDong, T.IsAltShift,
+				ROW_NUMBER()OVER(PARTITION BY T.EmployeeID,T.WorkDate ORDER BY T.RN, T.RI, T.RO desc) AS RN
+	INTO #lstOfEmpShiftTheoDoUuTien
+	from (
+		SELECT T.EmployeeID,T.WorkDate,T.ShiftCode,T.ShiftFromTime,T.ShiftToTime,MIN(T.RI) AS RI,MAX(T.RO) AS RO, T.IsNhanDienTuDong, T.IsAltShift, T.RN
+		FROM (
+			SELECT S.EmployeeID, S.WorkDate, S.ShiftCode, S.ShiftFromTime,S.ShiftToTime,S.VaoSom,S.VaoTre,S.RaSom,S.RaTre, 
+						RI.ScanTime AS RI, RO.ScanTime AS RO,
+						CASE WHEN RI.ScanTime IS NOT NULL AND RO.ScanTime IS NOT NULL THEN 1
+							WHEN RI.ScanTime IS NOT NULL THEN 2
+							ELSE 3 END AS RN, S.IsNhanDienTuDong, S.IsAltShift
+			FROM #empDays_shift_withTime S
+			LEFT JOIN #HR_TSScanCode RI ON RI.EmployeeID = S.EmployeeID AND RI.In1Out0 = 1
+												AND RI.ScanTime BETWEEN S.VaoSom AND S.VaoTre
+			LEFT JOIN #HR_TSScanCode RO ON RO.EmployeeID = S.EmployeeID AND RO.In1Out0 = 0
+												AND RO.ScanTime BETWEEN S.RaSom AND S.RaTre
+			WHERE RI.ScanTime IS NOT NULL OR RO.ScanTime IS NOT NULL
+		) T 
+		GROUP BY T.EmployeeID,T.WorkDate,T.ShiftCode,T.ShiftFromTime,T.ShiftToTime, T.IsAltShift, T.IsNhanDienTuDong, T.RN
+	) T 
+
+
+
+	--insert du lieu vao bang phan ca lam viec
+	UPDATE S SET S.ShiftCode = '', S.ModifiedOn = GETDATE(), S.ModifiedBy = @UserID 
+	FROM HR_TSAssignShift S
+	INNER JOIN #lstOfEmpShiftTheoDoUuTien T ON T.RN = 1 AND T.EmployeeID = S.EmployeeID AND T.WorkDate = S.WorkDate
+	WHERE T.IsAltShift = 1 AND T.IsNhanDienTuDong = 1
+
+	INSERT INTO HR_TSAssignShift(EmployeeID,WorkDate,ShiftCode,CreatedOn,CreatedBy,Note)
+	SELECT T.EmployeeID, T.WorkDate,T.ShiftCode, GETDATE(), @UserID, N'Auto'
+	FROM #lstOfEmpShiftTheoDoUuTien T
+	LEFT JOIN HR_TSAssignShift S WITH(NOLOCK) ON S.EmployeeID = T.EmployeeID AND S.WorkDate = T.WorkDate
+	WHERE T.RN = 1 AND T.IsAltShift = 1 AND T.IsNhanDienTuDong = 1 AND S.EmployeeID IS NULL
+
+	DELETE S FROM HR_TSScanTime S
+	INNER JOIN #Emp E ON E.EmployeeID = S.EmployeeID
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+	WHERE (S.WorkDate BETWEEN @FromDate AND @ToDate AND S.IsManualInput = 0 and ISNULL(P.DowCode,'') = '')
+	OR  (S.WorkDate BETWEEN P.BegDay AND P.EndDay AND S.IsManualInput = 0 and ISNULL(P.DowCode,'') <> '')
+
+	SELECT S.EmployeeID, S.WorkDate, S.In1Out0 INTO #ScantimeManual
+	FROM HR_TSScanTime S
+	INNER JOIN #Emp E ON E.EmployeeID = S.EmployeeID
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+	WHERE (S.WorkDate BETWEEN @FromDate AND @ToDate AND S.IsManualInput = 1 and ISNULL(P.DowCode,'') = '')
+	OR (S.WorkDate BETWEEN P.BegDay AND P.EndDay AND S.IsManualInput = 1 and ISNULL(P.DowCode,'') <> '')
+
+	--insert vào scantime
+	INSERT INTO HR_TSScanTime(EmployeeID,WorkDate,ScanTime,In1Out0,IsOver,IsOverF,ShiftCode,RootScanTime,CreatedOn,CreatedBy, Sorting)
+	SELECT S.EmployeeID, S.WorkDate, CONVERT(NVARCHAR(10),S.RI,111) + ' ' + CONVERT(NVARCHAR(8),S.RI,108), 1 AS In1Out0,0,0,S.ShiftCode,  
+													CONVERT(NVARCHAR(10),S.RI,111) + ' ' + CONVERT(NVARCHAR(8),S.RI,108), GETDATE(), @UserID, 1
+	FROM #lstOfEmpShiftTheoDoUuTien S
+	LEFT JOIN #ScantimeManual R ON  R.EmployeeID = S.EmployeeID AND R.WorkDate = S.WorkDate AND R.In1Out0 = 1
+	WHERE S.RI IS NOT NULL AND S.RN = 1 AND R.EmployeeID IS NULL
+	UNION ALL
+	SELECT S.EmployeeID, S.WorkDate, CONVERT(NVARCHAR(10),S.RO,111) + ' ' + CONVERT(NVARCHAR(8),S.RO,108), 0 AS In1Out0,0,0,S.ShiftCode,  
+													CONVERT(NVARCHAR(10),S.RO,111) + ' ' + CONVERT(NVARCHAR(8),S.RO,108), GETDATE(), @UserID, 2
+	FROM #lstOfEmpShiftTheoDoUuTien S
+	LEFT JOIN #ScantimeManual R ON  R.EmployeeID = S.EmployeeID AND R.WorkDate = S.WorkDate AND R.In1Out0 = 0
+	WHERE S.RO IS NOT NULL AND S.RN = 1 AND R.EmployeeID IS NULL
+END
+
+
