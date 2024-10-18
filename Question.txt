@@ -1,8 +1,22 @@
-Q
+Ca sớm nhất: 06:00:00 => Lưu
+Ca trễ nhất: 15:00:00 
+Thiết lập: 1989-12-31 23:00:00 và 1990-01-01 08:00:00
 
-Các tính chất OOP ?
-Phân biệt Interface và Abstract ? Ví dụ
-Local Storage là gì ?
-Kế thừa là gỉ ? Ví dụ => Lớp cha có kế thừa được lớp con không ?
-JWT là gì ? 
-Restful API ?
+Ngày làm: 2024-08-10 và quét thẻ lúc 06:30:00 => ScanTime 2024-08-10 06:30:00 => Lưu
+2024-08-09 23:30:00
+
+
+Code 
+=> 2024-08-10 23:00:00 và 2024-08-10 08:00:00
+
+So sánh:  Sớm nhất < ScanTime < Trễ nhất
+2024-08-10 23:00:00  < 2024-08-09 23:30:00 < 2024-08-10 08:00:00
+
+=> Sai
+
+Đúng
+2024-08-09 23:00:00 và 2024-08-10 08:00:00
+
+So sánh:  Sớm nhất < ScanTime < Trễ nhất
+
+2024-08-09 23:00:00  < 2024-08-09 23:30:00 < 2024-08-10 08:00:00
