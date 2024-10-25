@@ -1,0 +1,444 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spProcessScancodeInfoNotAutoShift_Sub]    Script Date: 10/25/2024 3:44:57 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROC [dbo].[HR_spProcessScancodeInfoNotAutoShift_Sub]
+(
+	@UserID NVARCHAR(100),
+	@FunctionID NVARCHAR(100),
+    @strEmpList NVARCHAR(MAX),
+    @FromDate DATETIME ,
+    @ToDate DATETIME ,
+	@IsHoldScanTimeOld BIT, --giu lai quet the cu
+	@Process INT, --Process = 1: Tab xu ly quet the bat hop le, else: Tinh cong tong hop(xu ly bat hop le)
+	@BUCode NVARCHAR(30),
+	@DowCode varchar(7),
+	@Err NVARCHAR(MAX) OUT
+)	
+
+AS
+
+	set @Err = ''
+	declare @TMS_IsNextDate bit -- neu lam ca dem thi tinh cho ngay hom sau
+	declare @app_IsScan bit set @app_IsScan = 0--file quet the 1 ngay 1 dong
+	declare @TMS_CodeIn nvarchar(1000) set @TMS_CodeIn = ''
+	declare @IsSendMailAfterProcessScan bit
+	declare @IsMissInOutAppCal bit
+	declare @Active bit
+	declare @EmailID INT, @IsScanInOut BIT SET @IsScanInOut = 0--du lieu phan biet dung vao ra
+    DECLARE @IsScanTimeFistLast BIT SET @IsScanTimeFistLast = 0
+	DECLARE @ShiftDefaultDayOff VARCHAR(20)
+	SELECT @ShiftDefaultDayOff=ShiftDefaultDayOff FROM dbo.HR_ConfigTS WHERE BUCode IS NULL
+	--@app_IsScan: QĐQThẻ - File quét thẻ 1 dòng 1 ngày
+	IF ISNULL(@BUCode,'') = ''
+	begin
+		SELECT top 1 @app_IsScan = IsScan1Row1Day, @TMS_CodeIn = isnull(CodeShiftIn,''), @IsScanTimeFistLast = IsScanTimeFistLast, @IsScanInOut = ISNULL(IsScanInOut,0)
+		FROM HR_ConfigTSScanCard with(NOLOCK) WHERE BUCode IS NULL
+		select @TMS_IsNextDate = TSIsNextDayOfNightShift FROM HR_ConfigTS with(NOLOCK) WHERE BUCode IS NULL
+	END
+	ELSE
+    BEGIN
+		SELECT top 1 @app_IsScan = IsScan1Row1Day, @TMS_CodeIn = isnull(CodeShiftIn,''), @IsScanTimeFistLast = IsScanTimeFistLast , @IsScanInOut = ISNULL(IsScanInOut,0)
+		FROM HR_ConfigTSScanCard with(NOLOCK) WHERE ISNULL(BUCode,'') = ISNULL(@BUCode,'')
+		select @TMS_IsNextDate = TSIsNextDayOfNightShift FROM HR_ConfigTS with(NOLOCK) WHERE ISNULL(BUCode,'') = ISNULL(@BUCode,'')
+	END
+	DECLARE @IsUseTimekeeping BIT SET @IsUseTimekeeping = 1
+	--SELECT TOP(1) @IsUseTimekeeping = IsUseTimekeeping FROM mHCSSYS_ConfigMobile WITH(NOLOCK)
+
+	--@TMS_IsNextDate: TTChung/ Nhân viên đi làm ca đêm thì tính công cho ngày hôm sau
+	--@TMS_CodeIn : QĐQThẻ - Mã quy định vào ca
+	----------Lay thong tin cau hinh phan HeThongChamCong/ThongTinQuetTheChiTiet
+	create table #Split(EmployeeID nvarchar(50),LastName nvarchar(100),FirstName nvarchar(100),TimeCardNo nvarchar(250),IsAltShift bit,
+			ShiftCode  nvarchar(50), EndDate datetime, JoinDate datetime)
+
+	SELECT s.data AS EmployeeID INTO #sLstOfEmp FROM (SELECT data FROM dbo.HR_FNSplitString(@strEmpList, ',')) s option (maxrecursion 0)
+
+	insert INTO #Split(EmployeeID,LastName,FirstName,TimeCardNo,IsAltShift,ShiftCode)
+	select E.EmployeeID,E.LastName,E.FirstName,E.TimeCardNo,E.IsAltShift,E.ShiftCode
+	from #sLstOfEmp S
+	inner JOIN HR_Employees E with(NOLOCK) ON E.EmployeeID = S.EmployeeID
+	
+	--Table ScanCode lay tap quet the can xet
+	SELECT S.*
+	into #hrm_atd_ScanCode 
+	FROM (
+		select S.TimeCardNo as TimeCardNo,S.ScanTime as ScanTime,S.ReaderID as ReaderID,S.In1Out0 as In1Out0,
+				0 as Redundant,S.WorkDate as WorkDate,S.TimeCardNo as CodeID,S.Note as Note,
+				0 as Invalid, convert(DATETIME,S.ScanTime) as ScanTimeDate, S.SystemNote, S.ActivityLogId,
+				ROW_NUMBER()OVER(PARTITION BY S.TimeCardNo, S.ScanTime ORDER BY S.RecID) AS rin
+		
+		from HR_TSScanCode S with(NOLOCK)
+		inner join #Split E on S.TimeCardNo = E.TimeCardNo
+		CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+		where (S.WorkDate between DateAdd(day,-1,@FromDate) AND DateAdd(day,2,@ToDate) and isdate(S.ScanTime) = 1 and ISNULL(P.DowCode,'') = '')
+		OR (S.WorkDate between DateAdd(day,-1,P.BegDay) AND DateAdd(day,2,P.EndDay) and isdate(S.ScanTime) = 1 and ISNULL(P.DowCode,'') <> '')
+	) S WHERE S.rin = 1
+
+	--table phan ca theo tap nhan vien
+	select S.EmployeeID,S.WorkDate,S.ShiftCode 
+	into #hrm_pr_shifts
+	from HR_TSAssignShift S with(NOLOCK) inner JOIN #Split Sp ON S.EmployeeID = Sp.EmployeeID
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(S.EmployeeID, @DowCode) P
+	where (S.WorkDate between @FromDate and @ToDate and ISNULL(P.DowCode,'') = '') OR (S.WorkDate between P.BegDay and P.EndDay and ISNULL(P.DowCode,'') <> '')
+	--Create table xac dinh ca(Shift) cua nhan vien
+	select E.EmployeeID,E.LastName,E.FirstName,E.TimeCardNo,E.WorkDate,CASE WHEN E.IsAltShift=1 THEN ISNULL(E.ShiftCode,@ShiftDefaultDayOff) ELSE E.ShiftCode END AS ShiftCode
+	INTO #EmployeeList
+	FROM HR_fnEmpVsShiftCode(@strEmpList,@FromDate,@ToDate,@DowCode) E
+
+	--SELECT * FROM #EmployeeList
+	--CREATE TABLE #tmpScanTime(EmployeeID NVARCHAR(30),TimeCardNo NVARCHAR(250),WorkDate DATETIME,ShiftCode NVARCHAR(30),ScanTime NVARCHAR(20),
+	--					ReaderID NVARCHAR(50),In1Out0 BIT	,Redundant INT,CodeID NVARCHAR(30),Note NVARCHAR(200),RowNumber INT,RowNumberDesc INT,
+	--					VaoSomNhat DATETIME, VaoTreNhat DATETIME, ScanTimeDate DATETIME, IsMobile INT)
+
+	CREATE TABLE #tmpScanTime(EmployeeID NVARCHAR(30),TimeCardNo NVARCHAR(250),WorkDate DATETIME,ShiftCode NVARCHAR(30),ScanTime DATETIME,
+						ReaderID NVARCHAR(50),In1Out0 BIT	,Redundant INT,CodeID NVARCHAR(30),Note NVARCHAR(200),RowNumber INT,RowNumberDesc INT,
+						VaoSomNhat DATETIME, VaoTreNhat DATETIME, ScanTimeDate DATETIME, IsMobile INT, EarliestTimes nvarchar(20), LatestTime  nvarchar(20))
+
+	--create table xac dinh thong tin quet the cua nhan vien theo ca lam viec
+	--SELECT @IsScanInOut
+	--select '102',@IsScanInOut
+	declare @dd1990 datetime set @dd1990='1990/01/01'
+	IF @IsScanInOut = 1
+	BEGIN
+		
+		INSERT INTO #tmpScanTime(EmployeeID,TimeCardNo,WorkDate,ShiftCode,ScanTime,ReaderID,In1Out0,Redundant,
+					CodeID,Note,RowNumber,RowNumberDesc,
+					VaoSomNhat, VaoTreNhat, ScanTimeDate, IsMobile)
+		select SQL_2.EmployeeID,SQL_2.TimeCardNo,SQL_2.WorkDate,SQL_2.ShiftCode,V.ScanTime,V.ReaderID,V.In1Out0,V.Redundant,V.CodeID,V.Note,
+				ROW_NUMBER() OVER(PARTITION BY SQL_2.EmployeeID,SQL_2.WorkDate,V.In1Out0 ORDER BY V.ScanTimeDate ASC) AS RowNumber,
+				ROW_NUMBER() OVER(PARTITION BY SQL_2.EmployeeID,SQL_2.WorkDate,V.In1Out0 ORDER BY V.ScanTimeDate DESC) AS RowNumberDesc,
+					SQL_2.VaoSomNhat, CASE WHEN SQL_2.VaoTreNhat < SQL_2.VaoSomNhat THEN DATEADD(DAY,1,SQL_2.VaoTreNhat) ELSE SQL_2.VaoTreNhat END,V.ScanTime,
+					CASE WHEN V.ActivityLogId IS NOT NULL THEN 1 ELSE 0 END
+		FROM
+		(
+			SELECT SQL_1.EmployeeID,SQL_1.TimeCardNo,SQL_1.WorkDate,SQL_1.ShiftCode,
+				CASE 
+					When L.EarliestShiftTime < @dd1990 then
+							 CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,-1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.EarliestShiftTime, 108), 120)
+					when L.EarliestShiftTime > @dd1990
+					then 
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.EarliestShiftTime, 108), 120)
+					ELSE
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10),SQL_1.WorkDate) + ' ' + CONVERT(NVARCHAR(8), L.EarliestShiftTime, 108), 120)
+					END  as EarliestTimes,
+				CASE 
+					When L.LatestShiftTime < @dd1990 then
+							 CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,-1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.LatestShiftTime, 108), 120)
+					when L.LatestShiftTime > @dd1990
+					then 
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.LatestShiftTime, 108), 120)
+					ELSE
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10),SQL_1.WorkDate) + ' ' + CONVERT(NVARCHAR(8), L.LatestShiftTime, 108), 120)
+					END  as LatestTime,
+				CASE WHEN ISNULL(L.EarliestTimeIn,'') <> '' THEN CONVERT(NVARCHAR(10),SQL_1.WorkDate,111) + ' ' + L.EarliestTimeIn ELSE NULL END AS VaoSomNhat,
+				CASE WHEN ISNULL(L.LatestTimeIn,'') <> '' THEN CONVERT(NVARCHAR(10),SQL_1.WorkDate,111) + ' ' + L.LatestTimeIn ELSE NULL END AS VaoTreNhat
+			FROM #EmployeeList SQL_1 inner JOIN HR_LSShift L WITH(NOLOCK) on SQL_1.ShiftCode = L.ShiftCode
+		) SQL_2 LEFT JOIN #hrm_atd_ScanCode V on V.TimeCardNo = SQL_2.TimeCardNo AND V.ScanTimeDate BETWEEN SQL_2.EarliestTimes AND SQL_2.LatestTime
+	END
+	ELSE
+    BEGIN
+		/*
+			declare @p9 nvarchar(4000)
+			set @p9=N''
+			exec "HR_spProcessScancodeInfoNotAutoShift" @UserID=N'2404020001',@FunctionID=N'TRT101',@strEmpList=N'170820',@FromDate='2024-07-25 00:00:00',@ToDate='2024-07-25 00:00:00',@IsHoldScanTimeOld=1,@Process=1,@DowCode='2024/07',@Err=@p9 output
+			select @p9
+		*/
+		--PRINT 11
+		INSERT INTO #tmpScanTime(EmployeeID,TimeCardNo,WorkDate,ShiftCode,ScanTime,ReaderID,In1Out0,Redundant,
+					CodeID,Note,RowNumber,RowNumberDesc,
+					VaoSomNhat, VaoTreNhat, ScanTimeDate, IsMobile)
+		select SQL_2.EmployeeID,SQL_2.TimeCardNo,SQL_2.WorkDate,SQL_2.ShiftCode,V.ScanTime,V.ReaderID,V.In1Out0,V.Redundant,V.CodeID,V.Note,
+				ROW_NUMBER() OVER(PARTITION BY SQL_2.EmployeeID,SQL_2.WorkDate ORDER BY V.ScanTimeDate ASC) AS RowNumber,
+				ROW_NUMBER() OVER(PARTITION BY SQL_2.EmployeeID,SQL_2.WorkDate ORDER BY V.ScanTimeDate DESC) AS RowNumberDesc,
+				SQL_2.VaoSomNhat, CASE WHEN SQL_2.VaoTreNhat < SQL_2.VaoSomNhat THEN DATEADD(DAY,1,SQL_2.VaoTreNhat) ELSE SQL_2.VaoTreNhat END,V.ScanTime,
+				CASE WHEN V.ActivityLogId IS NOT NULL THEN 1 ELSE 0 END--,SQL_2.EarliestTimes --, SQL_2.LatestTime 
+		FROM
+		(
+			SELECT SQL_1.EmployeeID,SQL_1.TimeCardNo,SQL_1.WorkDate,SQL_1.ShiftCode,L.EarliestShiftTime,L.LatestShiftTime,
+				CASE 
+					When year(L.EarliestShiftTime) < year(@dd1990) then --@dd1990
+							 CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,-1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.EarliestShiftTime, 108), 120)
+					when convert(nvarchar(10),L.EarliestShiftTime,111) > convert(nvarchar(10),@dd1990,111)
+					then 
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.EarliestShiftTime, 108), 120)
+					ELSE
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10),SQL_1.WorkDate,111) + ' ' + CONVERT(NVARCHAR(8), L.EarliestShiftTime, 108), 120)
+					END  as EarliestTimes,
+				CASE 
+					When convert(nvarchar(10),L.LatestShiftTime,111) < @dd1990 then
+							 CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,-1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.LatestShiftTime, 108), 120)
+					when convert(nvarchar(10),L.LatestShiftTime,111) > @dd1990
+					then 
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY,1,SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.LatestShiftTime, 108), 120)
+					ELSE
+							CONVERT(DATETIME, CONVERT(NVARCHAR(10),SQL_1.WorkDate,111) + ' ' + CONVERT(NVARCHAR(8), L.LatestShiftTime, 108), 120)
+					END  as LatestTime,
+				CASE WHEN ISNULL(L.EarliestTimeIn,'') <> '' 
+						THEN
+							CASE 
+								WHEN DATEDIFF(DAY, L.EarliestShiftTime, L.LatestShiftTime) = 0 
+									THEN CONVERT(DATETIME, SQL_1.WorkDate + ' ' + CONVERT(NVARCHAR(8), L.EarliestTimeIn, 108))
+								ELSE
+									CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY, -1, SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.EarliestTimeIn, 108))
+							END
+					 ELSE NULL 
+				END AS VaoSomNhat,
+				CASE WHEN ISNULL(L.LatestTimeIn,'') <> '' 
+						THEN
+							CASE 
+								WHEN DATEDIFF(DAY, L.EarliestShiftTime, L.LatestShiftTime) = 0 
+									THEN CONVERT(DATETIME, SQL_1.WorkDate + ' ' + CONVERT(NVARCHAR(8), L.LatestTimeIn, 108))
+								ELSE
+									CONVERT(DATETIME, CONVERT(NVARCHAR(10), DATEADD(DAY, -1, SQL_1.WorkDate), 111) + ' ' + CONVERT(NVARCHAR(8), L.LatestTimeIn, 108))
+							END
+					 ELSE NULL 
+				END AS VaoTreNhat
+			FROM #EmployeeList SQL_1 inner JOIN HR_LSShift L WITH(NOLOCK) on SQL_1.ShiftCode = L.ShiftCode
+		) SQL_2 LEFT JOIN #hrm_atd_ScanCode V on V.TimeCardNo = SQL_2.TimeCardNo AND V.ScanTimeDate BETWEEN SQL_2.EarliestTimes AND SQL_2.LatestTime 
+
+		select * from #tmpScanTime
+	END
+	--print 'fffff'
+	DELETE S FROM HR_TSScanTime S INNER JOIN #Split sp ON S.EmployeeID = sp.EmployeeID 
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(S.EmployeeID, @DowCode) P
+	WHERE (S.WorkDate BETWEEN @FromDate AND @ToDate AND ISNULL(IsManualInput,0) <> 1 and ISNULL(P.DowCode , '') = '' )
+	OR (S.WorkDate BETWEEN P.BegDay AND P.EndDay AND ISNULL(IsManualInput,0) <> 1 and ISNULL(P.DowCode , '') <> '' )
+
+	--SELECT @IsScanTimeFistLast AS '@IsScanTimeFistLast',@TMS_CodeIn AS '@TMS_CodeIn'
+	SELECT EmployeeID,WorkDate INTO #missing FROM #tmpScanTime GROUP BY EmployeeID,WorkDate HAVING COUNT(1) = 1
+	--SELECT @TMS_CodeIn AS '@TMS_CodeIn'
+
+	IF @IsUseTimekeeping = 1 AND @IsScanTimeFistLast = 1--su dung giai phap checkin tren mobile
+		AND EXISTS (SELECT 1 FROM #tmpScanTime WHERE IsMobile=1)
+	BEGIN
+		--du lieu tren mobile phan biet vao ra
+		SELECT S.* INTO #tmpScanTime_mb
+		FROM (
+			SELECT EmployeeID,WorkDate
+			FROM #tmpScanTime WHERE IsMobile=1 GROUP BY EmployeeID,WorkDate
+		) R INNER JOIN #tmpScanTime S ON S.EmployeeID = R.EmployeeID AND S.WorkDate = R.WorkDate
+
+		--SELECT * FROM #tmpScanTime_mb
+		--lay min vao vs max ra
+		INSERT INTO HR_TSScanTime(TimeCardNo,EmployeeID,WorkDate,ScanTime,In1Out0,ReaderID,
+								IsOver,IsOverF,ShiftCode,IsValid,RootScanTime, Sorting, SystemNote, CreatedBy)
+		SELECT T.TimeCardNo, T.EmployeeID, T.WorkDate, CONVERT(NVARCHAR(10),T.ScanTime,111) + ' ' + CONVERT(NVARCHAR(8),T.ScanTime,108) AS Scantime, T.In1Out0, T.ReaderID,
+							0 AS IsOver,0 AS IsOverF, T.ShiftCode, 0 AS IsValid, CONVERT(NVARCHAR(10),T.ScanTime,111) + ' ' + CONVERT(NVARCHAR(8),T.ScanTime,108),
+							CASE WHEN T.In1Out0 = 1 THEN 1 ELSE 2 END, N'Phan biet vao ra - dau cuoi',  @UserID
+		FROM (
+			SELECT I.TimeCardNo, I.EmployeeID, I.WorkDate,MIN(I.ScanTimeDate) AS ScanTime,1 AS In1Out0, 
+								MAX(i.ReaderID) AS ReaderID,MAX(i.ShiftCode) AS ShiftCode
+			FROM #tmpScanTime_mb I
+			WHERE I.In1Out0=1 AND I.ScanTime IS NOT NULL
+			GROUP BY I.TimeCardNo, I.EmployeeID, I.WorkDate
+			UNION ALL
+			SELECT I.TimeCardNo, I.EmployeeID, I.WorkDate,MAX(I.ScanTimeDate) AS ScanTime,0 AS In1Out0, 
+								MAX(i.ReaderID) AS ReaderID,MAX(i.ShiftCode) AS ShiftCode
+			FROM #tmpScanTime_mb I
+			WHERE I.In1Out0=0 AND I.ScanTime IS NOT NULL
+			GROUP BY I.TimeCardNo, I.EmployeeID, I.WorkDate
+		) T
+		LEFT JOIN HR_TSScanTime S ON S.EmployeeID = T.EmployeeID AND S.WorkDate = T.WorkDate AND S.In1Out0 = T.In1Out0 --AND S.IsManualInput = 1
+		WHERE s.EmployeeID IS NULL
+
+		--du lieu tu may cham cong lay dau cuoi nhu cu
+		SELECT S.* INTO #tmpScanTime_mcc
+		FROM (
+			SELECT EmployeeID,WorkDate
+			FROM #tmpScanTime WHERE IsMobile=0 GROUP BY EmployeeID,WorkDate
+		) R INNER JOIN #tmpScanTime S ON S.EmployeeID = R.EmployeeID AND S.WorkDate = R.WorkDate
+
+		--SELECT * FROM #tmpScanTime_mcc
+		IF EXISTS (SELECT 1 FROM #tmpScanTime_mcc)
+		BEGIN
+			INSERT INTO HR_TSScanTime(ScanTime,TimeCardNo,ReaderID,In1Out0,
+										WorkDate,IsOver,EmployeeID,IsOverF,ShiftCode,IsValid,RootScanTime, Sorting, SystemNote, CreatedBy)
+			SELECT A.ScanTime,A.TimeCardNo,A.ReaderID,A.In1Out0,
+										A.WorkDate,0 AS IsOver,A.EmployeeID,0 AS IsOverF,A.ShiftCode,0 AS valid,A.ScanTime,
+										CASE WHEN A.In1Out0 = 1 THEN 1 ELSE 2 END, N'Ko Phan biet vao ra - dau cuoi', @UserID
+			FROM (
+				SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,
+						CASE WHEN R.EmployeeID IS NOT NULL AND T.VaoSomNhat IS NOT NULL THEN
+							CASE WHEN T.ScanTime BETWEEN T.VaoSomNhat AND T.VaoTreNhat THEN 1 ELSE 0 END
+						else
+							CASE WHEN T.RowNumber = 1 THEN 1 ELSE 0 END END AS In1Out0,
+											T.WorkDate,0 AS IsOver,T.EmployeeID,0 AS IsOverF,T.ShiftCode,0 AS valid
+				FROM #tmpScanTime_mcc T 
+				LEFT JOIN #missing R ON R.EmployeeID = T.EmployeeID AND R.WorkDate = T.WorkDate
+				WHERE T.ScanTime IS NOT NULL AND (T.RowNumber = 1 or T.RowNumberDesc = 1)
+			) A
+			LEFT JOIN HR_TSScanTime S ON S.EmployeeID = A.EmployeeID AND S.WorkDate = A.WorkDate AND S.In1Out0 = A.In1Out0
+			WHERE S.EmployeeID IS NULL
+		END
+
+		RETURN
+	END
+
+	IF @IsScanTimeFistLast = 1--Xử lý quét thẻ lấy đầu cuối
+	BEGIN
+	--select 'fff',@IsScanInOut
+		IF @IsScanInOut = 1 --Dữ liệu quét thẻ phân biệt đúng Vào/ Ra
+		BEGIN
+			--lay min vao vs max ra
+			INSERT INTO HR_TSScanTime(TimeCardNo,EmployeeID,WorkDate,ScanTime,In1Out0,ReaderID,
+									IsOver,IsOverF,ShiftCode,IsValid,RootScanTime, Sorting, SystemNote, CreatedBy)
+			SELECT T.TimeCardNo, T.EmployeeID, T.WorkDate, CONVERT(NVARCHAR(10),T.ScanTime,111) + ' ' + CONVERT(NVARCHAR(8),T.ScanTime,108) AS Scantime, T.In1Out0, T.ReaderID,
+								0 AS IsOver,0 AS IsOverF, T.ShiftCode, 0 AS IsValid, CONVERT(NVARCHAR(10),T.ScanTime,111) + ' ' + CONVERT(NVARCHAR(8),T.ScanTime,108),
+								CASE WHEN T.In1Out0 = 1 THEN 1 ELSE 2 END, N'Phan biet vao ra - dau cuoi', @UserID
+			FROM (
+				SELECT I.TimeCardNo, I.EmployeeID, I.WorkDate,MIN(I.ScanTimeDate) AS ScanTime,1 AS In1Out0, 
+									MAX(i.ReaderID) AS ReaderID,MAX(i.ShiftCode) AS ShiftCode
+				FROM #tmpScanTime I
+				WHERE I.In1Out0=1 AND I.ScanTime IS NOT NULL
+				GROUP BY I.TimeCardNo, I.EmployeeID, I.WorkDate
+				UNION ALL
+				SELECT I.TimeCardNo, I.EmployeeID, I.WorkDate,MAX(I.ScanTimeDate) AS ScanTime,0 AS In1Out0, 
+									MAX(i.ReaderID) AS ReaderID,MAX(i.ShiftCode) AS ShiftCode
+				FROM #tmpScanTime I
+				WHERE I.In1Out0=0 AND I.ScanTime IS NOT NULL
+				GROUP BY I.TimeCardNo, I.EmployeeID, I.WorkDate
+			) T
+		END
+		ELSE--ko phan biet vao ra(Lấy đầu cuối trong ngày), mẫu đầu tiên là vào, cuối là ra
+        BEGIN
+			INSERT INTO HR_TSScanTime(ScanTime,TimeCardNo,ReaderID,In1Out0,
+										WorkDate,IsOver,EmployeeID,IsOverF,ShiftCode,IsValid,RootScanTime, Sorting, SystemNote, CreatedBy)
+			SELECT A.ScanTime,A.TimeCardNo,A.ReaderID,A.In1Out0,
+										A.WorkDate,0 AS IsOver,A.EmployeeID,0 AS IsOverF,A.ShiftCode,0 AS valid,A.ScanTime,
+										CASE WHEN A.In1Out0 = 1 THEN 1 ELSE 2 END, N'Ko Phan biet vao ra - dau cuoi', @UserID
+			FROM (
+				SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,
+						CASE WHEN R.EmployeeID IS NOT NULL AND T.VaoSomNhat IS NOT NULL THEN
+							CASE WHEN T.ScanTime BETWEEN T.VaoSomNhat AND T.VaoTreNhat THEN 1 ELSE 0 END
+						else
+							CASE WHEN T.RowNumber = 1 THEN 1 ELSE 0 END END AS In1Out0,
+											T.WorkDate,0 AS IsOver,T.EmployeeID,0 AS IsOverF,T.ShiftCode,0 AS valid
+				FROM #tmpScanTime T 
+				LEFT JOIN #missing R ON R.EmployeeID = T.EmployeeID AND R.WorkDate = T.WorkDate
+				WHERE T.ScanTime IS NOT NULL AND (T.RowNumber = 1 or T.RowNumberDesc = 1)
+			) A
+		END
+	END
+	ELSE--Xử lý quét thẻ
+    BEGIN
+		IF @IsScanInOut = 1
+		BEGIN
+			SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,T.In1Out0,T.WorkDate,T.EmployeeID,T.ShiftCode
+			INTO #tmpScanTime_XL
+			FROM #tmpScanTime T 
+			WHERE T.ScanTime IS NOT NULL 
+				AND ((ISNULL(@IsScanTimeFistLast,0) = 1 AND ((T.RowNumber = 1 AND T.In1Out0 = 1) or (T.RowNumberDesc = 1 AND T.In1Out0 = 0))) OR ISNULL(@IsScanTimeFistLast,0) = 0)
+
+			--Truong hop quet the 1 cap ma có giờ vào > giờ ra, loại trừ những ngày này ra
+			SELECT T.EmployeeID,T.WorkDate, [1] AS SI, [0] AS SO
+			INTO #tmpScanTime_XL_InValid
+			FROM 
+				(SELECT EmployeeID, WorkDate, In1Out0, CAST(ScanTime AS DATETIME) AS ScanTime FROM #tmpScanTime_XL) AS S
+			PIVOT 
+			(
+					MIN(ScanTime) FOR In1Out0 IN ([1], [0])
+			) AS T
+			WHERE [1] IS NOT NULL AND [0] IS NOT NULL AND [1] > [0]
+
+			INSERT INTO HR_TSScanTime(ScanTime,TimeCardNo,ReaderID,In1Out0,
+										WorkDate,IsOver,EmployeeID,IsOverF,ShiftCode,IsValid,RootScanTime, Sorting , SystemNote, CreatedBy)
+			SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,T.In1Out0,
+										T.WorkDate,0 AS IsOver,T.EmployeeID,0 AS IsOverF,T.ShiftCode,0 AS valid,T.ScanTime,
+										CASE WHEN T.In1Out0 = 1 THEN 1 ELSE 2 END, N'Phan biet vao ra', @UserID
+			FROM #tmpScanTime T 
+			LEFT JOIN #tmpScanTime_XL_InValid S ON S.EmployeeID  = T.EmployeeID AND S.WorkDate = T.WorkDate
+			WHERE T.ScanTime IS NOT NULL AND (S.EmployeeID IS NULL OR (S.EmployeeID IS NOT NULL AND T.In1Out0 = 1))
+		END
+		ELSE
+        BEGIN
+			/*
+				SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,
+						CASE WHEN R.EmployeeID IS NOT NULL AND T.VaoSomNhat IS NOT NULL THEN
+							CASE WHEN T.ScanTime BETWEEN T.VaoSomNhat AND T.VaoTreNhat THEN 1 ELSE 0 END
+						else
+							CASE WHEN T.RowNumber = 1 THEN 1 ELSE 0 END END AS In1Out0,
+											T.WorkDate,0 AS IsOver,T.EmployeeID,0 AS IsOverF,T.ShiftCode,0 AS valid
+				FROM #tmpScanTime T 
+				LEFT JOIN #missing R ON R.EmployeeID = T.EmployeeID AND R.WorkDate = T.WorkDate
+				WHERE T.ScanTime IS NOT NULL AND (T.RowNumber = 1 or T.RowNumberDesc = 1)
+			*/
+			--neu ko xài xư lý đầu cuối và dữ liệu qthe không phan biệt đúng vào ra
+			-->>Tự nhận diện vào ra (update mẫu đầu tiên trong ca là vào)
+
+			INSERT INTO HR_TSScanTime(ScanTime,TimeCardNo,ReaderID,In1Out0,
+										WorkDate,IsOver,EmployeeID,IsOverF,ShiftCode,IsValid,RootScanTime, Sorting, SystemNote, CreatedBy)
+			SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,
+					CASE WHEN R.EmployeeID IS NOT NULL AND T.VaoSomNhat IS NOT NULL THEN
+							CASE WHEN T.ScanTime BETWEEN T.VaoSomNhat AND T.VaoTreNhat THEN 1 ELSE 0 END
+						else
+							CASE WHEN T.Ordinal = 1 THEN 1 ELSE 0 END END AS In1Out0,
+											T.WorkDate,0 AS IsOver,T.EmployeeID,0 AS IsOverF,T.ShiftCode,0 AS valid,T.ScanTime,
+											T.Ordinal, N'ko phan biet vao ra', @UserID
+			FROM (
+				SELECT T.ScanTime,T.TimeCardNo,T.ReaderID,T.In1Out0,
+						T.WorkDate,0 AS IsOver,T.EmployeeID,0 AS IsOverF,T.ShiftCode,0 AS valid,
+						ROW_NUMBER()OVER(PARTITION BY T.EmployeeID, T.WorkDate ORDER BY T.ScanTime ASC) AS Ordinal,
+						T.VaoSomNhat, T.VaoTreNhat
+				FROM #tmpScanTime T 
+				WHERE T.ScanTime IS NOT NULL 
+			) T LEFT JOIN #missing R ON R.EmployeeID = T.EmployeeID AND R.WorkDate = T.WorkDate
+		END
+	END
+	--select @IsScanTimeFistLast
+	if isnull(@IsScanTimeFistLast,0) = 1
+    BEGIN
+            exec HR_spDeleteScanTimeMidOnShiftsWithEmp @UserID ,
+                                                    @FunctionID ,
+                                                    @strEmpList ,
+                                                    @FromDate  ,
+                                                    @ToDate  ,	
+													@DowCode, @Err OUT
+ 
+    END 
+
+	IF EXISTS (SELECT TOP(1) 1 FROM dbo.HR_SysSettingsForCustomers WHERE Value=1 AND KeyCode='TS.ScanTimeDistance' AND ISNULL(Content,'') <> '')
+	BEGIN
+		DECLARE @ScanTimeDistance FLOAT
+		SELECT TOP(1) @ScanTimeDistance = Content 
+		FROM dbo.HR_SysSettingsForCustomers WHERE Value=1 AND KeyCode='TS.ScanTimeDistance'  AND ISNULL(Content,'') <> ''
+
+		IF ISNULL(@ScanTimeDistance,0) > 0
+		BEGIN
+			SELECT S.EmployeeID,S.WorkDate,MIN(S.ScanTime) AS RI, MAX(S.ScanTime) as RO
+			INTO #xlyxoa
+			FROM dbo.HR_TSScanTime S WITH(NOLOCK)
+			INNER JOIN #Split T ON T.EmployeeID = S.EmployeeID
+			CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(S.EmployeeID, @DowCode) P
+			WHERE (S.WorkDate BETWEEN @FromDate AND @ToDate and ISNULL(P.DowCode ,'') = '') OR (S.WorkDate BETWEEN P.BegDay AND P.EndDay and ISNULL(P.DowCode ,'') <> '')
+			GROUP BY S.EmployeeID,S.WorkDate
+			HAVING COUNT(1) > 1 AND DATEDIFF(SECOND, MIN(S.ScanTime), MAX(S.ScanTime))<@ScanTimeDistance
+
+			IF EXISTS (SELECT TOP(1) 1 FROM #xlyxoa)
+			BEGIN
+				SELECT S.EmployeeID,S.WorkDate,
+					CAST(CONVERT(NVARCHAR(10),DATEADD(DAY,L.SI_days-1,S.WorkDate),111) + ' ' + L.SI AS DATETIME) AS ShiftIn,
+					CAST(CONVERT(NVARCHAR(10),DATEADD(DAY,L.SO_days-1,S.WorkDate),111) + ' ' + L.SO AS DATETIME) AS ShiftOut
+				INTO #sEmpScanShift
+				FROM #EmployeeList S 
+				INNER JOIN HR_vwShiftDeatail_getInOut L WITH(NOLOCK) on S.ShiftCode = L.ShiftCode
+
+				SELECT S.EmployeeID,S.WorkDate,
+						CASE WHEN DATEDIFF(SECOND,S.ShiftIn,T.RI) > DATEDIFF(SECOND,T.RO,S.ShiftOut) THEN T.RI ELSE T.RO END AS ScanTime
+				INTO #sScanDel
+				FROM #sEmpScanShift S
+				INNER JOIN #xlyxoa T ON T.EmployeeID = S.EmployeeID AND T.WorkDate = S.WorkDate
+
+				IF EXISTS (SELECT TOP(1)1 FROM #sScanDel)
+				BEGIN
+					DELETE S FROM dbo.HR_TSScanTime S
+					INNER JOIN #sScanDel T ON T.EmployeeID = S.EmployeeID AND 
+						T.WorkDate = S.WorkDate AND T.ScanTime = S.ScanTime
+				END
+			END
+			
+
+		END
+	END
