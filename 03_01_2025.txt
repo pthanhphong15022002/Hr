@@ -1,0 +1,643 @@
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]    Script Date: 1/3/2025 5:47:14 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[HR_SpAutoInsertOrUpdateDataPrefixTableEmpTemplate]
+    @SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+    @strEmps VARCHAR(MAX)
+AS
+BEGIN
+BEGIN TRY
+    DECLARE @ExcelTemplateIDReplace NVARCHAR(50), @MainTable NVARCHAR(256), @MainTableReplace NVARCHAR(100), @FieldUpdate NVARCHAR(MAX), @query NVARCHAR(MAX), @FieldName NVARCHAR(50), @TableName NVARCHAR(50), @AlloCode NVARCHAR(20);
+    SET @ExcelTemplateIDReplace = CAST(REPLACE(@ExcelTemplateID, '-', '') AS NVARCHAR(50));
+    SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy + ']';
+    SET @MainTableReplace = @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @CreatedBy;
+
+    --SELECT 
+    --    CAST(data AS NVARCHAR(50)) AS EmployeeID,
+    --    T1.EmployeeID AS CurrentEmployeeID
+    --INTO #tblEmps
+    --FROM HR_FNSplitString(@strEmps, ',') AS T
+    --LEFT JOIN HR_Employees AS T1 WITH (NOLOCK) 
+    --    ON T.data = T1.EmployeeID;
+	
+	SELECT DISTINCT
+        CAST(data AS NVARCHAR(50)) AS EmployeeID,
+		T1.EmployeeID AS CurrentEmployeeID, T2.EmployeeID as HD_Employee, T3.EmployeeID as EA_Employee, T4.EmployeeID as BS_Employee, T5.EmployeeID as PP_Employee
+	INTO #tblEmps
+    FROM HR_FNSplitString(@strEmps, ',') AS T
+    LEFT JOIN HR_Employees AS T1 WITH (NOLOCK) ON T.data = T1.EmployeeID
+	LEFT JOIN HR_EmpContract AS T2 WITH (NOLOCK) ON T.data = T2.EmployeeID
+	LEFT JOIN HR_EmpAllowance AS T3 WITH (NOLOCK) ON T.data = T3.EmployeeID
+	LEFT JOIN HR_EmpBasicSalary AS T4 WITH (NOLOCK) ON T.data = T4.EmployeeID
+	LEFT JOIN HR_EmpPassport AS T5 WITH (NOLOCK) ON T.data = T5.EmployeeID
+
+    DECLARE @FieldList TABLE (
+        FieldName NVARCHAR(200),
+        TableName NVARCHAR(150)
+    );
+    INSERT INTO @FieldList (FieldName, TableName)
+    SELECT FieldName, TableName 
+    FROM HR_SysExcelTemplateEmpField
+    WHERE ExcelTemplateID = @ExcelTemplateID;
+	
+    DECLARE @AlloGradeList TABLE (
+        AlloGradeCode NVARCHAR(20)
+    );
+
+    INSERT INTO @AlloGradeList (AlloGradeCode)
+    SELECT AlloGradeCode
+    FROM HR_SysExcelTemplateEmpAlloGrade
+    WHERE ExcelTemplateID = @ExcelTemplateID;
+
+    SET @FieldUpdate = '';
+    DECLARE column_cursor CURSOR FOR
+    SELECT FieldName
+    FROM @FieldList
+    WHERE TableName = 'CV'; 
+
+    OPEN column_cursor;
+    FETCH NEXT FROM column_cursor INTO @FieldName;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @FieldUpdate = @FieldUpdate + @FieldName + ' = T.[CV.' + @FieldName + '], ';
+        FETCH NEXT FROM column_cursor INTO @FieldName;
+    END
+
+    CLOSE column_cursor;
+    DEALLOCATE column_cursor;
+
+    -- Xóa dấu phẩy cuối cùng của chuỗi
+    SET @FieldUpdate = LEFT(@FieldUpdate, LEN(@FieldUpdate) - 1);
+
+    SET @query = 'UPDATE HR_Employees SET ' + @FieldUpdate + 
+                 ' FROM HR_Employees AS E ' +
+                 ' INNER JOIN #tblEmps AS Emps ON E.EmployeeID = Emps.EmployeeID ' +
+                 ' INNER JOIN ' + @MainTable + ' AS T ON T.[CV.EmployeeID] = Emps.EmployeeID ' +
+                 ' WHERE Emps.CurrentEmployeeID IS NOT NULL';
+
+	EXEC sp_executesql @query;
+
+    SET @FieldUpdate = '';
+    DECLARE column_cursor_bs CURSOR FOR
+    SELECT FieldName 
+    FROM @FieldList
+    WHERE TableName = 'BS';
+
+	IF EXISTS (SELECT 1 FROM @FieldList WHERE TableName = 'BS')
+	BEGIN
+		OPEN column_cursor_bs;
+		FETCH NEXT FROM column_cursor_bs INTO @FieldName;
+
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			SET @FieldUpdate = @FieldUpdate + @FieldName + ' = T.[BS.' + @FieldName + ']' + ', ';
+			FETCH NEXT FROM column_cursor_bs INTO @FieldName;
+		END
+
+		CLOSE column_cursor_bs;
+		DEALLOCATE column_cursor_bs;
+
+		SET @FieldUpdate = LEFT(@FieldUpdate, LEN(@FieldUpdate) - 1);
+
+		SET @query = 'UPDATE HR_EmpBasicSalary SET ' + @FieldUpdate + 
+					 ' FROM HR_EmpBasicSalary AS BS ' +
+					 ' INNER JOIN #tblEmps AS Emps ON BS.EmployeeID = Emps.EmployeeID ' +
+					 ' INNER JOIN ' + @MainTable + ' AS T ON T.[CV.EmployeeID] = Emps.EmployeeID ' +
+					 ' WHERE Emps.CurrentEmployeeID IS NOT NULL';
+
+		EXEC sp_executesql @query;
+	END
+
+	SET @FieldUpdate = '';
+    DECLARE column_cursor CURSOR FOR
+    SELECT FieldName
+    FROM @FieldList
+    WHERE TableName = 'PP'; 
+
+	IF EXISTS (SELECT 1 FROM @FieldList WHERE TableName = 'PP')
+	BEGIN
+		OPEN column_cursor;
+		FETCH NEXT FROM column_cursor INTO @FieldName;
+
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			SET @FieldUpdate = @FieldUpdate + @FieldName + ' = T.[PP.' + @FieldName + '], ';
+			FETCH NEXT FROM column_cursor INTO @FieldName;
+		END
+
+		CLOSE column_cursor;
+		DEALLOCATE column_cursor;
+
+		-- Xóa dấu phẩy cuối cùng của chuỗi
+		SET @FieldUpdate = LEFT(@FieldUpdate, LEN(@FieldUpdate) - 1);
+
+		SET @query = 'UPDATE HR_EmpPassport SET ' + @FieldUpdate + 
+					 ' FROM HR_EmpPassport AS PP ' +
+					 ' INNER JOIN #tblEmps AS Emps ON PP.EmployeeID = Emps.EmployeeID ' +
+					 ' INNER JOIN ' + @MainTable + ' AS T ON T.[CV.EmployeeID] = Emps.EmployeeID ' +
+					 ' WHERE Emps.CurrentEmployeeID IS NOT NULL';
+
+		EXEC sp_executesql @query;
+	END
+
+    SET @FieldUpdate = '';
+    DECLARE column_cursor_hd CURSOR FOR
+    SELECT FieldName 
+    FROM @FieldList
+    WHERE TableName = 'HD'; 
+
+	IF EXISTS (SELECT 1 FROM @FieldList WHERE TableName = 'HD')
+	BEGIN
+		OPEN column_cursor_hd;
+		FETCH NEXT FROM column_cursor_hd INTO @FieldName;
+
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			SET @FieldUpdate = @FieldUpdate + @FieldName + ' = T.[HD.' + @FieldName + ']' + ', ';
+			FETCH NEXT FROM column_cursor_hd INTO @FieldName;
+		END
+
+		CLOSE column_cursor_hd;
+		DEALLOCATE column_cursor_hd;
+
+		SET @FieldUpdate = LEFT(@FieldUpdate, LEN(@FieldUpdate) - 1);
+
+		SET @query = 'UPDATE HR_EmpContract SET ' + @FieldUpdate + 
+					 ' FROM HR_EmpContract AS HD ' +
+					 ' INNER JOIN #tblEmps AS Emps ON HD.EmployeeID = Emps.EmployeeID ' +
+					 ' INNER JOIN ' + @MainTable + ' AS T ON T.[CV.EmployeeID] = Emps.EmployeeID ' +
+					 ' WHERE Emps.CurrentEmployeeID IS NOT NULL';
+
+		EXEC sp_executesql @query;
+	END
+
+	IF CURSOR_STATUS('global', 'allo_cursor') >= -1
+	BEGIN
+		DEALLOCATE allo_cursor;
+	END
+
+    DECLARE allo_cursor CURSOR FOR
+    SELECT AlloGradeCode FROM @AlloGradeList;
+
+    OPEN allo_cursor;
+    FETCH NEXT FROM allo_cursor INTO @AlloCode;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @FieldUpdate = '';
+        DECLARE column_cursor_ea CURSOR FOR
+        SELECT FieldName 
+        FROM @FieldList
+        WHERE TableName = 'EA'; 
+
+		IF EXISTS (SELECT 1 FROM @FieldList WHERE TableName = 'EA')
+		BEGIN
+			OPEN column_cursor_ea;
+			FETCH NEXT FROM column_cursor_ea INTO @FieldName;
+			WHILE @@FETCH_STATUS = 0
+			BEGIN
+				SET @FieldUpdate = @FieldUpdate + @FieldName + ' = T.[EA.' + @AlloCode + '.' + @FieldName + '], ';
+				FETCH NEXT FROM column_cursor_ea INTO @FieldName;
+			END
+
+			CLOSE column_cursor_ea;
+			DEALLOCATE column_cursor_ea;
+
+			SET @FieldUpdate = LEFT(@FieldUpdate, LEN(@FieldUpdate) - 1);
+
+			-- Cập nhật bảng HR_EmpAllowance
+			SET @query = 'UPDATE HR_EmpAllowance SET ' + @FieldUpdate + 
+						 ' FROM HR_EmpAllowance AS EA ' +
+						 ' INNER JOIN #tblEmps AS Emps ON EA.EmployeeID = Emps.EmployeeID ' +
+						 ' INNER JOIN ' + @MainTable + ' AS T ON T.[CV.EmployeeID] = Emps.EmployeeID ' +
+						 ' WHERE Emps.CurrentEmployeeID IS NOT NULL AND EA.AlloGradeCode = ''' + @AlloCode + '''';
+
+			EXEC sp_executesql @query;
+
+			FETCH NEXT FROM allo_cursor INTO @AlloCode;
+		END
+    END
+
+    CLOSE allo_cursor;
+    DEALLOCATE allo_cursor;
+
+	---- INSERT
+	DECLARE @insertEmps NVARCHAR(MAX);
+
+	SELECT @insertEmps = STUFF((
+		SELECT ',' + EmployeeID
+		FROM #tblEmps
+		WHERE CurrentEmployeeID is null and HD_Employee is null and EA_Employee is null and BS_Employee is null and PP_Employee is null
+		FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, '');
+
+	IF LEN(@insertEmps) > 0
+    BEGIN
+	print 'aaa'
+        -- Loại bỏ dấu phẩy đầu tiên
+        --SET @insertEmps = SUBSTRING(@insertEmps, 2, LEN(@insertEmps) - 1);
+		--print @insertEmps
+        EXEC HR_SpAutoInsertDataPrefixTableEmpTemplate 
+            @SchemaName = @SchemaName,
+            @PrefixTableName = @PrefixTableName,
+            @ExcelTemplateID = @ExcelTemplateID,
+            @CreatedBy = @CreatedBy,
+            @strEmps = @insertEmps;
+    END
+
+	---- INSERT từng bảng
+	DECLARE @FieldInsert NVARCHAR(MAX), @ValueInsert NVARCHAR(MAX), @FieldNames NVARCHAR(MAX), @sql NVARCHAR(MAX), @Conditions VARCHAR(MAX);
+	SET @ValueInsert = '';
+
+	-- 1. HR_EmpContract
+	DECLARE @insertHDEmps NVARCHAR(MAX);
+
+	SELECT @insertHDEmps = STUFF((
+		SELECT ',' + EmployeeID
+		FROM #tblEmps
+		WHERE CurrentEmployeeID is not null and HD_Employee is null
+		FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, '');
+
+	IF LEN(@insertHDEmps) > 0
+    BEGIN
+		SET @insertHDEmps = '''' + REPLACE(@insertHDEmps, ',', ''',''') + '''';
+		SET @Conditions = ' where [CV.EmployeeID] in (' + @insertHDEmps + ')'
+		SET @FieldInsert = '';
+		SET @FieldNames = '';
+    
+		SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'HD' 
+		AND ExcelTemplateID = @ExcelTemplateID;
+
+		SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'HD' 
+		AND ExcelTemplateID = @ExcelTemplateID;
+		IF @FieldInsert <> '' AND @FieldNames <> ''
+		BEGIN
+			SET @sql = 'INSERT INTO HR_EmpContract (EmployeeID' + @FieldInsert + ') ' +
+				   'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+				   'FROM ' + @MainTable + @Conditions;
+			EXEC sp_executesql @sql;
+		END
+    END
+
+	-- 2. HR_EmpAllowance
+	DECLARE @insertEAEmps NVARCHAR(MAX);
+
+	SELECT @insertEAEmps = STUFF((
+		SELECT ',' + EmployeeID
+		FROM #tblEmps
+		WHERE CurrentEmployeeID is not null and EA_Employee is null
+		FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, '');
+
+	IF LEN(@insertEAEmps) > 0
+    BEGIN
+		DECLARE @columns NVARCHAR(MAX);
+		DECLARE @insert NVARCHAR(MAX);
+		DECLARE @AlloGradeCode NVARCHAR(20);
+
+		SET @insertEAEmps = '''' + REPLACE(@insertEAEmps, ',', ''',''') + '''';
+		SET @Conditions = ' where [CV.EmployeeID] in (' + @insertEAEmps + ')'
+
+
+		SET @FieldInsert = '';
+		SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'EA'
+		AND ExcelTemplateID = @ExcelTemplateID;
+
+		DECLARE allo_cursor CURSOR FOR 
+		SELECT DISTINCT AlloGradeCode
+		FROM HR_SysExcelTemplateEmpAlloGrade
+		WHERE ExcelTemplateID = @ExcelTemplateID;
+
+		OPEN allo_cursor;
+
+		FETCH NEXT FROM allo_cursor INTO @AlloGradeCode;
+
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			SET @columns = '';
+
+			SELECT @columns = COALESCE(@columns + ', ', '') + '[' + A.TableName + '.' + @AlloGradeCode + '.' + A.FieldName + ']'
+			FROM HR_SysExcelTemplateEmpField AS A
+			WHERE A.ExcelTemplateID = @ExcelTemplateID
+			AND A.TableName = 'EA';
+
+			-- Tạo câu SELECT cho giá trị
+			SET @ValueInsert = 'SELECT [CV.EmployeeID], ' + @CreatedBy + ' as CreatedBy ' + @columns + ' FROM ' + @MainTable + @Conditions;
+
+			SET @insert = 'INSERT INTO HR_EmpAllowance (EmployeeID, CreatedBy' + @FieldInsert + ') ' + @ValueInsert;
+			EXEC sp_executesql @insert;
+
+			FETCH NEXT FROM allo_cursor INTO @AlloGradeCode;
+		END
+
+		CLOSE allo_cursor;
+		DEALLOCATE allo_cursor;
+    END
+
+	-- 3. HR_EmpBasicSalary
+	DECLARE @insertBSEmps NVARCHAR(MAX);
+
+	SELECT @insertBSEmps = STUFF((
+		SELECT ',' + EmployeeID
+		FROM #tblEmps
+		WHERE CurrentEmployeeID is not null and BS_Employee is null
+		FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, '');
+
+	IF LEN(@insertBSEmps) > 0
+    BEGIN
+		SET @FieldInsert = '';
+		SET @FieldNames = '';
+		SET @insertBSEmps = '''' + REPLACE(@insertBSEmps, ',', ''',''') + '''';
+		SET @Conditions = ' where [CV.EmployeeID] in (' + @insertBSEmps + ')';
+    
+		SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'BS' 
+		AND ExcelTemplateID = @ExcelTemplateID;
+
+		SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'BS' 
+		AND ExcelTemplateID = @ExcelTemplateID;
+
+		IF @FieldInsert <> '' AND @FieldNames <> ''
+		BEGIN
+			SET @sql = 'INSERT INTO HR_EmpBasicSalary (EmployeeID' + @FieldInsert + ') ' +
+				   'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+				   'FROM ' + @MainTable + @Conditions;
+			EXEC sp_executesql @sql;
+		END
+    END
+
+	-- 4. HR_EmpPassport
+	DECLARE @insertPPEmps NVARCHAR(MAX);
+
+	SELECT @insertPPEmps = STUFF((
+		SELECT ',' + EmployeeID
+		FROM #tblEmps
+		WHERE CurrentEmployeeID is not null and PP_Employee is null
+		FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, '');
+
+	IF LEN(@insertPPEmps) > 0
+    BEGIN
+		SET @FieldInsert = '';
+		SET @FieldNames = '';
+		SET @insertPPEmps = '''' + REPLACE(@insertPPEmps, ',', ''',''') + '''';
+		SET @Conditions = ' where [CV.EmployeeID] in (' + @insertPPEmps + ')'
+    
+		SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'PP' 
+		AND ExcelTemplateID = @ExcelTemplateID;
+
+		SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+		FROM HR_SysExcelTemplateEmpField
+		WHERE TableName = 'PP' 
+		AND ExcelTemplateID = @ExcelTemplateID;
+
+		IF @FieldInsert <> '' AND @FieldNames <> ''
+		BEGIN
+			SET @sql = 'INSERT INTO HR_EmpPassport (EmployeeID' + @FieldInsert + ') ' +
+					   'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+					   'FROM ' + @MainTable + @Conditions;
+			EXEC sp_executesql @sql;
+		END
+    END
+	END TRY
+	BEGIN CATCH
+	DECLARE @ErrorMessage NVARCHAR(4000);
+    DECLARE @ErrorSeverity INT;
+    DECLARE @ErrorState INT;
+    DECLARE @ErrorLine INT;
+    DECLARE @ErrorNumber INT;
+    DECLARE @ErrorProcedure NVARCHAR(200);
+
+    -- Lấy chi tiết lỗi
+    SET @ErrorMessage = ERROR_MESSAGE();
+    SET @ErrorSeverity = ERROR_SEVERITY();
+    SET @ErrorState = ERROR_STATE();
+    SET @ErrorLine = ERROR_LINE();
+    SET @ErrorNumber = ERROR_NUMBER();
+    SET @ErrorProcedure = ERROR_PROCEDURE();
+
+    -- In ra thông tin lỗi
+    PRINT 'Error Number: ' + CAST(@ErrorNumber AS NVARCHAR(10));
+    PRINT 'Error Severity: ' + CAST(@ErrorSeverity AS NVARCHAR(10));
+    PRINT 'Error State: ' + CAST(@ErrorState AS NVARCHAR(10));
+    PRINT 'Error Line: ' + CAST(@ErrorLine AS NVARCHAR(10));
+    PRINT 'Error Procedure: ' + ISNULL(@ErrorProcedure, 'N/A');
+    PRINT 'Error Message: ' + @ErrorMessage;
+	END CATCH
+END
+
+
+
+--2222222222222222222222222222222222222222222222222
+
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpAutoInsertDataPrefixTableEmpTemplate]    Script Date: 1/3/2025 5:47:41 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[HR_SpAutoInsertDataPrefixTableEmpTemplate]
+    @SchemaName VARCHAR(10),
+    @PrefixTableName VARCHAR(100),
+    @ExcelTemplateID UNIQUEIDENTIFIER,
+    @CreatedBy VARCHAR(50),
+	@strEmps VARCHAR(MAX)
+AS
+BEGIN
+    DECLARE @FieldInsert NVARCHAR(MAX), @ValueInsert NVARCHAR(MAX), @FieldNames NVARCHAR(MAX), @sql NVARCHAR(MAX), @sqlExt NVARCHAR(MAX), @MainTable VARCHAR(MAX), @Conditions VARCHAR(MAX);
+
+    SET @MainTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + CAST(REPLACE(@ExcelTemplateID, '-', '') AS VARCHAR(50)) + '_' + @CreatedBy + ']';
+	SET @strEmps = '''' + REPLACE(@strEmps, ',', ''',''') + '''';
+	SET @Conditions = ' where [CV.EmployeeID] in (' + @strEmps + ')'
+	SET @ValueInsert = '';
+
+    -- CV
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'CV' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'CV' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SET @sql = 'INSERT INTO HR_Employees (Status, CreatedOn, CreatedBy' + @FieldInsert + ') ' +
+               'SELECT 10 as Status, GETDATE() as CreatedOn, N''' + @CreatedBy + ''' as CreatedBy' + @FieldNames + ' ' +
+               'FROM ' + @MainTable + @Conditions;
+
+	EXEC sp_executesql @sql;
+
+	-- EX
+	SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'EX' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'EX' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+	IF @FieldInsert = '' AND @FieldNames = '' 
+	BEGIN
+		SET @sqlExt = 'INSERT INTO HR_EmployeeExt (EmployeeID, CreatedOn, CreatedBy) ' +
+					  'SELECT [CV.EmployeeID] as EmployeeID, GETDATE() as CreatedOn, N''' + @CreatedBy + ''' as CreatedBy ' +
+					  'FROM ' + @MainTable + @Conditions;
+    
+		EXEC sp_executesql @sqlExt;
+	END
+	ELSE
+	BEGIN
+		SET @sql = 'INSERT INTO HR_EmployeeExt (EmployeeID, CreatedOn, CreatedBy' + @FieldInsert + ') ' +
+				   'SELECT [CV.EmployeeID] as EmployeeID, GETDATE() as CreatedOn, N''' + @CreatedBy + ''' as CreatedBy' + @FieldNames + ' ' +
+				   'FROM ' + @MainTable + @Conditions;
+    
+		EXEC sp_executesql @sql;
+	END
+
+    -- HD
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'HD' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'HD' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+	IF @FieldInsert <> '' AND @FieldNames <> ''
+	BEGIN
+		SET @sql = 'INSERT INTO HR_EmpContract (EmployeeID' + @FieldInsert + ') ' +
+				   'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+				   'FROM ' + @MainTable + @Conditions;
+		EXEC sp_executesql @sql;
+	END
+    
+
+	-- PP
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'PP' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'PP' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+	IF @FieldInsert <> '' AND @FieldNames <> ''
+	BEGIN
+		SET @sql = 'INSERT INTO HR_EmpPassport (EmployeeID' + @FieldInsert + ') ' +
+				   'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+				   'FROM ' + @MainTable + @Conditions;
+		EXEC sp_executesql @sql;
+	END
+
+    -- BS
+    SET @FieldInsert = '';
+    SET @FieldNames = '';
+    
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'BS' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+    SELECT @FieldNames = COALESCE(@FieldNames + ', ', '') + '[' + TableName + '.' + FieldName + ']'
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'BS' 
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+	IF @FieldInsert <> '' AND @FieldNames <> ''
+	BEGIN
+		SET @sql = 'INSERT INTO HR_EmpBasicSalary (EmployeeID' + @FieldInsert + ') ' +
+				   'SELECT [CV.EmployeeID]' + @FieldNames + ' ' +
+				   'FROM ' + @MainTable + @Conditions;
+
+		EXEC sp_executesql @sql;
+	END
+
+    -- EA
+    DECLARE @columns NVARCHAR(MAX);
+    DECLARE @insert NVARCHAR(MAX);
+    DECLARE @AlloGradeCode NVARCHAR(20);
+
+	SET @FieldInsert = '';
+    SELECT @FieldInsert = COALESCE(@FieldInsert + ', ', '') + FieldName
+    FROM HR_SysExcelTemplateEmpField
+    WHERE TableName = 'EA'
+    AND ExcelTemplateID = @ExcelTemplateID;
+
+	IF @FieldInsert <> ''
+	BEGIN
+		DECLARE allo_cursor CURSOR FOR 
+		SELECT DISTINCT AlloGradeCode
+		FROM HR_SysExcelTemplateEmpAlloGrade
+		WHERE ExcelTemplateID = @ExcelTemplateID;
+
+		OPEN allo_cursor;
+
+		FETCH NEXT FROM allo_cursor INTO @AlloGradeCode;
+
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			SET @columns = NULL;
+
+			SELECT @columns = COALESCE(@columns + ', ', '') + '[' + A.TableName + '.' + @AlloGradeCode + '.' + A.FieldName + ']'
+			FROM HR_SysExcelTemplateEmpField AS A
+			WHERE A.ExcelTemplateID = @ExcelTemplateID
+			AND A.TableName = 'EA';
+
+			-- Tạo câu SELECT cho giá trị
+			SET @ValueInsert = 'SELECT [CV.EmployeeID], ' + @CreatedBy + ' as CreatedBy, ' + @columns + ' FROM ' + @MainTable + @Conditions;
+
+			SET @insert = 'INSERT INTO HR_EmpAllowance (EmployeeID, CreatedBy' + @FieldInsert + ') ' + @ValueInsert;
+			EXEC sp_executesql @insert;
+
+			FETCH NEXT FROM allo_cursor INTO @AlloGradeCode;
+		END
+
+		CLOSE allo_cursor;
+		DEALLOCATE allo_cursor;
+	END
+END
+
+
+--333333333333333333333333333333333333333333333333333333333333333
+		BEGIN CATCH
+			set @sql =N'insert into ' + @TableError + N' (EmployeeID,ErrorMsg,ErrorMsgCode) values('''+convert(nvarchar,@EmployeeID)+ N''',N''Lỗi khi cập nhật thông tin thu nhập nhân viên(HR_PayIncome) :'' , ''' + REPLACE(error_message(),'''','''''')  + ''' )'
+			EXEC (@sql)
+		END CATCH
