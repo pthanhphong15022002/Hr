@@ -1,0 +1,562 @@
+USE [ERM_HR]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spDeleteScanTimeMidOnShiftsWithEmp_nodowcode]    Script Date: 1/14/2025 11:38:46 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROC [dbo].[HR_spDeleteScanTimeMidOnShiftsWithEmp_nodowcode]
+(
+	@UserID nvarchar(100),
+	@FunctionID nvarchar(250),
+	@strEmpCode nvarchar(max),
+	@BegDate datetime,
+	@EndDate datetime,
+	@Error nvarchar(max) out
+)
+as
+begin
+	set @BegDate = convert(nvarchar(10),@BegDate,111)
+	set @EndDate = convert(nvarchar(10),@EndDate,111)
+
+	--lấy danh sách nhân viên cần xóa
+	SELECT S.data AS EmployeeCode, E.IsAltShift, E.ShiftCode 
+	INTO #slstOfEmpDel 
+	FROM dbo.HR_FNSplitString(@strEmpCode, ',') S
+	INNER JOIN dbo.HR_EmployeeExt E ON E.EmployeeID = S.data
+	option (maxrecursion 0)
+
+	set @Error = ''
+	select S.EmployeeCode, S.mDate as WorkDate, S.ShiftCode into #Emplist
+	from(
+		select F.EmployeeCode, D.mDate, CASE WHEN F.IsAltShift = 1 THEN S.ShiftCode ELSE F.ShiftCode END as ShiftCode
+		from #slstOfEmpDel F
+		cross APPLY dbo.HR_FNGet_SelectFromTODate(@BegDate, @EndDate) D
+		left join HR_TSAssignShift S WITH(NOLOCK) on S.EmployeeID = F.EmployeeCode and S.WorkDate = D.mDate
+	) S 
+
+	--Tap scantime co the xoa giua gio
+	select S.RecID,S.EmployeeID,S.WorkDate,S.ScanTime,row_number()OVER(PARTITION BY S.EmployeeCode, S.WorkDate ORDER BY S.ScanTime) as RowIn,
+						row_number()OVER(PARTITION BY S.EmployeeCode, S.WorkDate ORDER BY S.ScanTime DESC) as RowOut
+	into #HCSTS_ScanTime
+	from (select RecID, EmployeeID, WorkDate, cast(ScanTime as datetime) as ScanTime from HR_TSScanTime where WorkDate BETWEEN @BegDate and @EndDate) S
+	inner JOIN #Emplist E on E.EmployeeCode = S.EmployeeID and E.WorkDate = S.WorkDate
+
+	--lay nhung dong khong duoc xoa
+	select RecID into #NotDel
+	from #HCSTS_ScanTime where RowIn = 1
+	union
+	select RecID 
+	from #HCSTS_ScanTime where RowOut = 1
+
+	--Lay nhung dong can xoa
+	select S.RecID into #ScanDel
+	from #HCSTS_ScanTime S
+	left join #NotDel D on S.RecID = D.RecID
+	where D.RecID is NULL
+
+	--Xoa bang chinh
+	delete S FROM HR_TSScanTime S inner JOIN #ScanDel D ON D.RecID = S.RecID
+END
+
+
+
+
+
+
+2-------------------------------------
+USE [ERM_HR]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spDeleteScanTimeMidOnShiftsWithEmp]    Script Date: 1/14/2025 11:38:22 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROC [dbo].[HR_spDeleteScanTimeMidOnShiftsWithEmp]
+(
+	@UserID nvarchar(100),
+	@FunctionID nvarchar(250),
+	@strEmpCode nvarchar(max),
+	@BegDate datetime,
+	@EndDate datetime,
+	@DowCode varchar(7),
+	@Error nvarchar(max) out
+)
+as
+begin
+	SELECT S.data AS EmployeeID INTO #ssEmp FROM (SELECT * FROM dbo.HR_FNSplitString(@strEmpCode, ',')) S option (maxrecursion 0)
+
+	--lấy danh sách nhân viên cần xóa
+	SELECT S.EmployeeID AS EmployeeID, E.IsAltShift, E.ShiftCode 
+	INTO #slstOfEmpDel 
+	FROM #ssEmp S
+	INNER JOIN dbo.HR_EmployeeExt E ON E.EmployeeID = S.EmployeeID
+	option (maxrecursion 0)
+
+	set @Error = ''
+	select S.EmployeeID, S.mDate as WorkDate, S.ShiftCode into #Emplist
+	from(
+		select F.EmployeeID, D.mDate, CASE WHEN F.IsAltShift = 1 THEN S.ShiftCode ELSE F.ShiftCode END as ShiftCode
+		from #slstOfEmpDel F
+		CROSS APPLY dbo.HR_fnGetPayrolldowForEmpAndDow(F.EmployeeID, @DowCode) P
+		CROSS APPLY dbo.HR_FNGet_SelectFromTODate(case when isnull(@DowCode,'') = '' THEN @BegDate ELSE P.BegDay END,case when isnull(@DowCode,'') = '' THEN @EndDate ELSE P.EndDay END) D
+		left join HR_TSAssignShift S WITH(NOLOCK) on S.EmployeeID = F.EmployeeID and S.WorkDate = D.mDate
+	) S 
+
+	--Tap scantime co the xoa giua gio
+	select S.RecID,S.EmployeeID,S.WorkDate,S.ScanTime,row_number()OVER(PARTITION BY S.EmployeeID, S.WorkDate ORDER BY S.ScanTime) as RowIn,
+						row_number()OVER(PARTITION BY S.EmployeeID, S.WorkDate ORDER BY S.ScanTime DESC) as RowOut
+	into #HR_TSScanTime
+	from (
+	select E.RecID, E.EmployeeID, E.WorkDate, cast(E.ScanTime as datetime) as ScanTime 
+	from HR_TSScanTime  E
+	CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(E.EmployeeID, @DowCode) P
+	where (E.WorkDate BETWEEN @BegDate and @EndDate and ISNULL(P.DowCode,'') = '') OR (E.WorkDate BETWEEN P.BegDay and P.EndDay and ISNULL(P.DowCode,'') <> '')
+	) S
+	inner JOIN #Emplist E on E.EmployeeID = S.EmployeeID and E.WorkDate = S.WorkDate
+
+	--lay nhung dong khong duoc xoa
+	select RecID into #NotDel
+	from #HR_TSScanTime where RowIn = 1
+	union
+	select RecID 
+	from #HR_TSScanTime where RowOut = 1
+
+	--Lay nhung dong can xoa
+	select S.RecID into #ScanDel
+	from #HR_TSScanTime S
+	left join #NotDel D on S.RecID = D.RecID
+	where D.RecID is NULL
+
+	--Xoa bang chinh
+	delete S FROM HR_TSScanTime S inner JOIN #ScanDel D ON D.RecID = S.RecID
+END
+
+
+
+
+3------------------------------------------------------------------
+USE [ERM_HR]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spDeleteScanTimeMidOnShifts]    Script Date: 1/14/2025 11:39:56 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROC [dbo].[HR_spDeleteScanTimeMidOnShifts]
+(
+	@UserID nvarchar(100),
+	@FunctionID nvarchar(250),
+	@BegDate datetime,
+	@EndDate datetime,
+	@IsXoaTruNgayTangCa bit,
+	@strShiftID nvarchar(max),
+	@DowCode nvarchar(7),
+	@Error nvarchar(max) out
+)
+as
+begin
+	set @BegDate = convert(nvarchar(10),@BegDate,111)
+	set @EndDate = convert(nvarchar(10),@EndDate,111)
+
+	set @Error = ''
+	select S.EmployeeID, S.mDate as WorkDate, S.ShiftCode into #Emplist
+	from(
+		select F.EmployeeID, D.mDate, CASE WHEN F.IsAltShift = 1 THEN S.ShiftCode ELSE F.ShiftCode END as ShiftCode
+		from (
+			SELECT A1.UserID, FunctionID, A2.EmployeeID, Ordinal, A1.CreatedBy, A1.CreatedOn, A2.GroupSalCode, A2.OrgUnitID, A2.EmployeeName, A2.IDCardNo, IsAltShift, A2.ShiftCode
+			FROM     HR_SysFilterEmployee A1
+			LEFT JOIN HR_VwEmployees A2 ON A1.EmployeeID = A2.EmployeeID
+			WHERE A1.UserID = @UserID AND FunctionID  = @FunctionID		
+		) F
+		CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(F.EmployeeID, @DowCode) P
+		CROSS APPLY dbo.HR_FNGet_SelectFromTODate(case when isnull(@DowCode,'') = '' THEN @BegDate ELSE P.BegDay END,case when isnull(@DowCode,'') = '' THEN @EndDate ELSE P.EndDay END) D
+		left join HR_TSAssignShift S on S.EmployeeID = F.EmployeeID and S.WorkDate = D.mDate
+	) S 
+	inner JOIN dbo.HR_FNSplitString(@strShiftID, ',') L on L.data = S.ShiftCode
+	left JOIN HR_TSRegisterOT R on R.EmployeeID = S.EmployeeID and R.WorkDate = S.mDate and @IsXoaTruNgayTangCa = 1
+	where R.EmployeeID is NULL
+	option (maxrecursion 0)
+
+	--Tap scantime co the xoa giua gio
+	select S.RecID,S.EmployeeID,S.WorkDate,S.ScanTime,row_number()OVER(PARTITION BY S.EmployeeID, S.WorkDate ORDER BY S.ScanTime) as RowIn,
+						row_number()OVER(PARTITION BY S.EmployeeID, S.WorkDate ORDER BY S.ScanTime DESC) as RowOut
+	into #HCSTS_ScanTime
+	from (
+		select A.RecID, A.EmployeeID, A.WorkDate, cast(A.ScanTime as datetime) as ScanTime 
+		from HR_TSScanTime A 
+		CROSS APPLY HR_fnGetPayrolldowForEmpAndDow(A.EmployeeID, @DowCode) P
+		where (A.WorkDate BETWEEN @BegDate and @EndDate and ISNULL(P.DowCode,'') = '') OR (A.WorkDate BETWEEN P.BegDay and P.EndDay and ISNULL(P.DowCode,'') <> '')
+	) S
+	inner JOIN #Emplist E on E.EmployeeID = S.EmployeeID and E.WorkDate = S.WorkDate
+
+	--lay nhung dong khong duoc xoa
+	select RecID into #NotDel
+	from #HCSTS_ScanTime where RowIn = 1
+	union
+	select RecID 
+	from #HCSTS_ScanTime where RowOut = 1
+
+	--Lay nhung dong can xoa
+	select S.RecID into #ScanDel
+	from #HCSTS_ScanTime S
+	left join #NotDel D on S.RecID = D.RecID
+	where D.RecID is NULL
+
+	--Xoa bang chinh
+	delete S FROM HR_TSScanTime S inner JOIN #ScanDel D ON D.RecID = S.RecID
+END
+
+
+4-----------------------------------------------
+USE [ERM_HR]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spCreateDatetimeListOfEmp]    Script Date: 1/14/2025 11:41:12 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[HR_spCreateDatetimeListOfEmp]
+(
+	@DowCode VARCHAR(7) = '2018/09',
+	@strEmps NVARCHAR(MAX) = '0DBTC07343'
+)
+AS
+BEGIN
+	create TABLE #t(EmployeeCode NVARCHAR(20), fDate DATETIME, tDate DATETIME, 
+				MinSalary_BS FLOAT, RealSalary_BS FLOAT, CoeffSalary_BS FLOAT, PieceWage FLOAT, InsSalary FLOAT, UnitOT FLOAT,
+				MinSalary_JW FLOAT, RealSalary_JW FLOAT, CoeffSalary_JW FLOAT, fBeginDate datetime, fEndDate datetime,
+				DepartmentCode NVARCHAR(20), GroupSalCode VARCHAR(20), JobWCode VARCHAR(20), JobPosCode VARCHAR(20), EmpTypeCode VARCHAR(20), LabourType INT,
+				WorkCenterCode VARCHAR(20), AssignRegionCode VARCHAR(20), RouteCode VARCHAR(20))
+	DECLARE @fBeginDate DATETIME, @fEndDate DATETIME, @maxCurrDate DATETIME, @mToTime datetime, @mFromTime datetime
+	DECLARE @EmployeeCode NVARCHAR(20), @EmployeeCodeOld NVARCHAR(20), @idx INT
+	DECLARE @EffectDate datetime, @MinSalary_BS FLOAT, @RealSalary_BS FLOAT, @CoeffSalary_BS FLOAT
+	DECLARE @PieceWage FLOAT, @InsSalary FLOAT, @UnitOT FLOAT
+	DECLARE @MinSalary_JW FLOAT, @RealSalary_JW FLOAT, @CoeffSalary_JW FLOAT
+	DECLARE @DepartmentCode NVARCHAR(20), @GroupSalCode VARCHAR(20), @JobWCode VARCHAR(20), @JobPosCode VARCHAR(20), @EmpTypeCode VARCHAR(20), @LabourType INT, @WorkCenterCode VARCHAR(20), @AssignRegionCode VARCHAR(20), @RouteCode VARCHAR(20)
+	DECLARE @JoinDate DATETIME 
+
+	-- Lấy kỳ tính lương
+	SELECT TOP(1) @fEndDate = ToDate, @fBeginDate = FromDate 
+	FROM HR_ConfigTSEmpStandardWD AS T WITH (NOLOCK) 
+		INNER JOIN HR_FNSplitString(@strEmps, ',') AS T1 ON T.EmployeeID = T1.[data]
+	WHERE T.DowCode = @DowCode
+
+
+	-- initc
+	SET @EmployeeCodeOld = N''
+
+	DECLARE @tbl_Emps TABLE(EmployeeCode NVARCHAR(20), DepartmentCode NVARCHAR(20), GroupSalCode VARCHAR(20), JobWCode VARCHAR(20), JobPosCode VARCHAR(20), EmpTypeCode VARCHAR(20), LabourType int, JoinDate datetime, FromTime datetime, ToTime DATETIME, 
+		WorkCenterCode VARCHAR(20), AssignRegionCode VARCHAR(20), RouteCode VARCHAR(20))
+	DECLARE @tbl_mFields TABLE(data nvarchar(200))
+	-- Dùng trong trường hợp tách phiếu lương theo bộ phận làm việc thực tế (không thực hiện nghiệp vụ điều chuyển) theo khoảng thời gian [A, B]
+	DECLARE @tblEmpTrackingException TABLE(EmployeeCode NVARCHAR(20), TableName nvarchar(200), FieldName nvarchar(100), EffectDate datetime, Value nvarchar(300), ValueOld nvarchar(300), GenDate datetime)
+
+	-- Table chứa danh sách nhân viên cần xét.
+	insert into @tbl_Emps 
+	select A.EmployeeCode, E.OrgUnitID, E.GroupSalCode, E.PositionID, E.JobLevel, E.EmployeeTypeID, E.LabourType, E.JoinedOn, FromTime, ToTime, 
+		E.WorkCenterCode, E.AssignRegionCode, null as RouteCode
+	from (
+		select CAST(data AS NVARCHAR(20)) as EmployeeCode, @fBeginDate as FromTime, @fEndDate as ToTime from HR_FNSplitString(@strEmps, ',')
+	) as A left outer join HR_Employees as E with (nolock) on A.EmployeeCode = E.EmployeeID 
+	OPTION(MAXRECURSION 0)
+	--select * from @tbl_Emps
+	-- Table chứa danh sách các fields cần xét.
+		insert into @tbl_mFields select data from HR_FNSplitString(N'DepartmentCode,GroupSalCode,JobWCode,JobPosCode,EmpTypeCode,LabourType,WorkCenterCode,AssignRegionCode,RouteCode', ',')
+
+	-- Bảng chứa dữ liệu tách phiếu lương trong trường hợp: tính chính xác công của nhân viên theo phòng ban
+	-- VD: Nhân viên A làm ở BP SX1, từ ngày 01- 05/03/2016 nhân viên đi làm ở SX1, từ ngày 06-07/03/2016 làm ở SX2, từ ngày 08-16/03/2016 làm ở SX3 và các ngày còn lại làm ở SX1.
+	-- Khi tính lương cho nhân viên A có 3 dòng tương tứng cho 3 bộ phận: SX1, SX2, SX3
+	--insert into @tblEmpTrackingException(EmployeeCode, TableName, FieldName, EffectDate, Value, ValueOld, GenDate)
+	--select A.EmployeeCode, A.TableName, A.FieldName, EffectDate, Value, ValueOld, GenDate
+	--from HCSEM_EmpTrackingException as A inner join @tbl_Emps as E on A.EmployeeCode = E.EmployeeCode
+	--where A.EffectDate between @fBeginDate and @fEndDate
+
+	-- Nếu App_IsSolar_CalSalaryLevel = 1 --> lấy theo dương lịch, ngược lại, lấy theo kỳ tính lương
+
+		--SELECT z.EffectDate, z.EmployeeID, z.MinSalary, z.CoeffSalary, z.RealSalary, z.PieceWage, z.InsSalary, z.UnitOT, z.FromTime, z.ToTime,
+		--		ROW_NUMBER() OVER(PARTITION BY z.EmployeeID, z.EffectDate ORDER BY rowOnEffectDate desc) as RowID
+		--	FROM (
+		--		select case when BS.EffectDate < E.JoinDate then E.JoinDate else BS.EffectDate end as EffectDate, BS.EmployeeID, BS.MinSalary, BS.CoeffSalary, 
+		--			BS.RealSalary, BS.PieceWage, BS.InsSalary, BS.UnitOT, 
+		--			E.FromTime, E.ToTime, BS.EffectDate AS rowOnEffectDate
+		--		from dbo.HR_EmpBasicSalary as BS with (nolock) 
+		--		inner join @tbl_Emps as E on BS.EmployeeID = E.EmployeeCode
+		--		WHERE (BS.EndDate IS NULL OR bs.EndDate >= @fBeginDate)
+		--	) AS z
+
+	DECLARE employee_cursor CURSOR FOR  
+		with mBasicSalaries as (
+			SELECT z.EffectDate, z.EmployeeID, z.MinSalary, z.CoeffSalary, z.RealSalary, z.PieceWage, z.InsSalary, z.UnitOT, z.FromTime, z.ToTime,
+				ROW_NUMBER() OVER(PARTITION BY z.EmployeeID, z.EffectDate ORDER BY rowOnEffectDate desc) as RowID
+			FROM (
+				select case when BS.EffectDate < E.JoinDate then E.JoinDate else BS.EffectDate end as EffectDate, BS.EmployeeID, BS.MinSalary, BS.CoeffSalary, 
+					BS.RealSalary, BS.PieceWage, BS.InsSalary, BS.UnitOT, 
+					E.FromTime, E.ToTime, BS.EffectDate AS rowOnEffectDate
+				from dbo.HR_EmpBasicSalary as BS with (nolock) 
+				inner join @tbl_Emps as E on BS.EmployeeID = E.EmployeeCode
+				WHERE (BS.EndDate IS NULL OR bs.EndDate >= @fBeginDate)
+			) AS z
+		), mJWSalaries as (
+			--SELECT z.EffectDate, z., z.MinSalary, z.CoeffSalary, z.RealSalary, z.FromTime, z.ToTime,
+			--	ROW_NUMBER() OVER(PARTITION BY z.EmployeeCode, z.EffectDate ORDER BY rowOnEffectDate desc) as RowID
+			--FROM (
+			--	select case when JW.EffectDate < TE.JoinDate then TE.JoinDate else JW.EffectDate end as EffectDate, JW.EmployeeID, JW.MinSalary, JW.CoeffSalary, 
+			--		JW.RealSalary, TE.FromTime, TE.ToTime, JW.EffectDate AS rowOnEffectDate
+			--	from HR_EmpJWSalary as JW with (nolock) --inner join mUsingJWSalaries as E on JW.EmployeeCode = E.EmployeeCode
+			--		inner join @tbl_Emps as TE on JW.EmployeeID = TE.EmployeeCode
+			--	WHERE (jw.EndDate IS NULL OR jw.EndDate >= @fBeginDate)
+			--) AS z
+
+				SELECT z.EffectDate, z.EmployeeID, z.MinSalary, z.CoeffSalary, z.RealSalary, z.FromTime, z.ToTime,
+				ROW_NUMBER() OVER(PARTITION BY z.EmployeeID, z.EffectDate ORDER BY rowOnEffectDate desc) as RowID
+			FROM (
+				select case when JW.EffectDate < TE.JoinDate then TE.JoinDate else JW.EffectDate end as EffectDate, JW.EmployeeID, JW.MinSalary, JW.CoeffSalary, 
+					JW.RealSalary, TE.FromTime, TE.ToTime, JW.EffectDate AS rowOnEffectDate
+				from HR_EmpJWSalary as JW with (nolock) --inner join mUsingJWSalaries as E on JW.EmployeeCode = E.EmployeeCode
+					inner join @tbl_Emps as TE on JW.EmployeeID = TE.EmployeeCode
+				WHERE (jw.EndDate IS NULL OR jw.EndDate >= @fBeginDate)
+			) AS z
+		), tblTrackingInFuture as (
+			-- Lấy những nhân viên có khai báo bắt đầu tracking xảy ra trong tương lai.
+			select TableName, FieldName, ValueOld as Value, ValueOld, EffectDate, EmployeeID, FromTime, ToTime
+			from (
+				select T.TableName, T.FieldName, Value, ValueOld, CASE when @fBeginDate < E.JoinDate THEN E.JoinDate ELSE @fBeginDate end as EffectDate, 
+					T.EmployeeID, @fBeginDate as FromTime, @fEndDate as ToTime,
+					T.EffectDate as mEffectDate,
+					ROW_NUMBER() OVER(PARTITION BY T.EmployeeID, T.TableName, T.FieldName, EffectDate ORDER BY EffectDate asc, T.CreatedOn asc) as Row_ID
+				FROM dbo.HR_EmpTracking as T with (nolock) inner join @tbl_Emps as E on T.EmployeeID = E.EmployeeCode	
+					--inner join (
+					--	-- Danh sách column cần tách phiếu lương
+					--	select TableName, FieldName FROM HCSSYS_TrackingValue as TV with (nolock) inner join @tbl_mFields as mFields on TV.FieldName = mFields.data 
+					--	WHERE IsTracking = 1 and IsSplit = 1
+					--) as R on T.TableName = R.TableName and T.FieldName = R.FieldName
+			) as X where Row_ID = 1 and mEffectDate > @fEndDate
+			---- SPC
+			--union all
+			--select TableName, FieldName, ValueOld as Value, ValueOld, EffectDate, EmployeeCode, FromTime, ToTime
+			--from (
+			--	select T.TableName, T.FieldName, Value, ValueOld, CASE when @fBeginDate < E.JoinDate THEN E.JoinDate ELSE @fBeginDate end as EffectDate, 
+			--		T.EmployeeCode, @fBeginDate as FromTime, @fEndDate as ToTime, T.EffectDate as mEffectDate,
+			--		ROW_NUMBER() OVER(PARTITION BY T.EmployeeCode, T.TableName, T.FieldName, EffectDate ORDER BY EffectDate asc, GenDate asc) as Row_ID
+			--	from @tblEmpTrackingException as T INNER JOIN @tbl_Emps AS E ON T.EmployeeCode = E.EmployeeCode
+			--) as X where Row_ID = 1 and mEffectDate > @fEndDate
+		), ETracking as (
+			-- Danh sách các field cần tracking để tách phiếu lương.
+			select T.TableName, T.FieldName, Value, ValueOld, EffectDate, T.EmployeeID, @fBeginDate as FromTime, @fEndDate as ToTime, T.CreatedOn
+			from HR_EmpTracking as T with (nolock) inner join @tbl_Emps as E on T.EmployeeID = E.EmployeeCode	
+				--inner join (
+				--	-- Danh sách column cần tách phiếu lương
+				--	select TableName, FieldName from HCSSYS_TrackingValue as TV with (nolock) inner join @tbl_mFields as mFields on TV.FieldName = mFields.data 
+				--	WHERE IsTracking = 1 and IsSplit = 1
+				--) as R on T.TableName = R.TableName and T.FieldName = R.FieldName
+			where T.EffectDate <= @fEndDate
+			-- SPC
+			union all
+			select T.TableName, T.FieldName, Value, ValueOld, EffectDate, T.EmployeeCode, @fBeginDate as FromTime, @fEndDate as ToTime, GenDate
+			from @tblEmpTrackingException as T
+			where T.EffectDate <= @fEndDate
+		), tblResult as (
+			select ETracking.TableName, ETracking.EmployeeID, ETracking.FieldName, Value, ValueOld, tmp_EffectDate, EffectDate, FromTime, ToTime
+			from (
+				-- Danh sách column có dữ liệu thay đổi trong khoảng thời gian @FromTime to @ToTime
+				select TableName, FieldName, Value, ValueOld, tmp_EffectDate, EffectDate, EmployeeID, FromTime, ToTime
+				from (
+					select TableName, FieldName, Value, ValueOld, EffectDate as tmp_EffectDate, EmployeeID,
+						ROW_NUMBER() OVER(PARTITION BY EmployeeID, TableName, FieldName, EffectDate ORDER BY EffectDate desc, ETracking.CreatedOn desc) as Row_ID,
+						case when EffectDate <= FromTime then FromTime else EffectDate end EffectDate, FromTime, ToTime
+					from ETracking where EffectDate between FromTime and ToTime
+				) as R where Row_ID = 1
+				union all
+				-- Danh sach column co dữ liệu thay đổi trong khoảng thời gian trước @FromTime.
+				select TableName, FieldName, Value, ValueOld, tmp_EffectDate, EffectDate, EmployeeID, FromTime, ToTime
+				from (
+					select TableName, FieldName, Value, ValueOld, EffectDate as tmp_EffectDate, EmployeeID,
+						ROW_NUMBER() OVER(PARTITION BY EmployeeID, TableName, FieldName ORDER BY EffectDate desc, ETracking.CreatedOn desc) as Row_ID,
+						case when EffectDate <= FromTime then FromTime else EffectDate end EffectDate, FromTime, ToTime
+					from ETracking where EffectDate < FromTime
+				) as R where Row_ID = 1
+				union all
+				select TableName, FieldName, Value, ValueOld, EffectDate as tmp_EffectDate, EffectDate, EmployeeID, FromTime, ToTime from tblTrackingInFuture
+			) as ETracking
+		), tblEmployeeTrackingNotData as (
+			select PT.EmployeeCode, R.[DepartmentCode], R.[GroupSalCode], R.[JobWCode], R.[JobPosCode], R.[EmpTypeCode], R.[LabourType], 
+				case when R.JoinDate < @fBeginDate then @fBeginDate else R.JoinDate end as EffectDate, 
+				case when R.JoinDate < @fBeginDate then @fBeginDate else R.JoinDate end as FromTime, @fEndDate as ToTime,
+				R.[WorkCenterCode], R.[AssignRegionCode], R.[RouteCode]
+			from (
+				-- Nhan vien không tồn tại dữ liệu trong bảng tracking.
+				select F.EmployeeCode, F.FieldName, cast(null as NVARCHAR(20)) as Value
+				from (
+					select EmployeeCode, data as FieldName 
+					from @tbl_Emps 
+					cross join @tbl_mFields as mFields
+				) as F left outer join ETracking as E on F.EmployeeCode = E.EmployeeID and F.FieldName = E.FieldName where E.FieldName is null	
+			) AS X 
+				PIVOT( max(Value) FOR FieldName IN ([DepartmentCode], [GroupSalCode], [JobWCode], [JobPosCode], [EmpTypeCode], [LabourType], [WorkCenterCode], 
+					[AssignRegionCode], [RouteCode]) 
+			) AS PT left outer join @tbl_Emps as R on PT.EmployeeCode = R.EmployeeCode
+		)
+		
+		-- Lay ve danh sach nhan vien co luong lcb va lcd theo yc
+		SELECT RE.EmployeeCode, RE.EffectDate, RE.MinSalary_BS * R.RateMainSal as MinSalary_BS,
+				RE.RealSalary_BS * R.RateMainSal as RealSalary_BS, RE.CompaRatio_BS * R.RateMainSal as CompaRatio_BS,
+				RE.PieceWage * R.RateMainSal as PieceWage, RE.InsSalary * R.RateMainSal as InsSalary, 
+				RE.UnitOT * R.RateMainSal as UnitOT,
+				RE.MinSalary_JW * R.RateSoftSal as MinSalary_JW, RE.RealSalary_JW * R.RateSoftSal as RealSalary_JW, 
+				RE.CompaRatio_JW * R.RateSoftSal as CompaRatio_JW, FromTime, ToTime,
+				DepartmentCode, GroupSalCode, JobWCode, JobPosCode, EmpTypeCode, LabourType, JoinDate, WorkCenterCode, AssignRegionCode, RouteCode
+		FROM
+		(
+			SELECT case when ESalInfo.EmployeeCode is null then ETrackingInfo.EmployeeCode else ESalInfo.EmployeeCode end as EmployeeCode,
+					case when ESalInfo.EffectDate is null then ETrackingInfo.EffectDate else ESalInfo.EffectDate end as EffectDate,
+					case when ESalInfo.tmp_EffectDate is null then ETrackingInfo.tmp_EffectDate else ESalInfo.tmp_EffectDate end as tmp_EffectDate,
+					MinSalary_BS, RealSalary_BS, CompaRatio_BS, PieceWage, InsSalary, UnitOT,
+					MinSalary_JW, RealSalary_JW, CompaRatio_JW, 
+					case when ESalInfo.ToTime is null then ETrackingInfo.ToTime else ESalInfo.ToTime end as ToTime, 
+					case when ESalInfo.FromTime is null then ETrackingInfo.FromTime else ESalInfo.FromTime end as FromTime,
+					DepartmentCode, GroupSalCode, JobWCode, JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, AssignRegionCode, RouteCode
+			FROM (
+				SELECT
+					case when A.EmployeeID is null then B.EmployeeID else A.EmployeeID end as EmployeeCode,
+					case when A.EffectDate is null then B.EffectDate else A.EffectDate end as EffectDate,
+					case when A.tmp_EffectDate is null then B.tmp_EffectDate else A.tmp_EffectDate end as tmp_EffectDate,
+					A.MinSalary as MinSalary_BS, A.RealSalary as RealSalary_BS, A.CoeffSalary as CompaRatio_BS,
+					A.PieceWage, A.InsSalary, A.UnitOT,
+					B.MinSalary as MinSalary_JW, B.RealSalary as RealSalary_JW, B.CoeffSalary as CompaRatio_JW, 
+					case when A.ToTime is null then B.ToTime else A.ToTime end as ToTime, 
+					case when A.FromTime is null then B.FromTime else A.FromTime end as FromTime
+				FROM (						
+					SELECT EffectDate as tmp_EffectDate, case when BS.EffectDate <= FromTime then FromTime else BS.EffectDate end EffectDate, BS.EmployeeID, BS.MinSalary, BS.CoeffSalary, BS.RealSalary, BS.PieceWage, BS.InsSalary, BS.UnitOT, ToTime, FromTime
+					FROM mBasicSalaries as BS 
+					WHERE BS.RowID = 1 and BS.EffectDate between BS.FromTime and BS.ToTime
+					UNION ALL
+					select EffectDate as tmp_EffectDate, case when EffectDate <= FromTime then FromTime else EffectDate end as EffectDate, BS.EmployeeID, BS.MinSalary, BS.CoeffSalary, BS.RealSalary, BS.PieceWage, BS.InsSalary, BS.UnitOT, ToTime, FromTime
+					from (
+						SELECT Bs.FromTime, BS.EffectDate, BS.EmployeeID, BS.MinSalary, BS.CoeffSalary, BS.RealSalary, BS.PieceWage, BS.InsSalary, BS.UnitOT,
+							ROW_NUMBER() OVER (PARTITION BY BS.EmployeeID ORDER BY EmployeeID, EffectDate desc) AS Row, ToTime
+						FROM mBasicSalaries as BS
+						Where BS.RowID = 1 and EffectDate < BS.FromTime
+					) as BS where Row = 1
+				) as A
+				FULL OUTER JOIN
+				(				
+					SELECT EffectDate as tmp_EffectDate, case when JW.EffectDate <= FromTime then FromTime else JW.EffectDate end as EffectDate, JW.EmployeeID, JW.MinSalary, JW.CoeffSalary, JW.RealSalary, FromTime, ToTime
+					FROM mJWSalaries as JW Where JW.RowID = 1 and JW.EffectDate between jw.FromTime and jw.ToTime
+					UNION ALL
+					select EffectDate as tmp_EffectDate, case when EffectDate <= FromTime then FromTime else EffectDate end as EffectDate, JW.EmployeeID, JW.MinSalary, JW.CoeffSalary, JW.RealSalary, FromTime, ToTime
+					from (
+						SELECT JW.FromTime, JW.EffectDate, JW.EmployeeID, JW.MinSalary, JW.CoeffSalary, JW.RealSalary,
+							ROW_NUMBER() OVER (PARTITION BY JW.EmployeeID ORDER BY EmployeeID, EffectDate desc) AS Row, ToTime
+						FROM mJWSalaries as JW
+						Where JW.RowID = 1 and EffectDate < JW.FromTime
+					) as JW where Row = 1
+				) as B ON A.EmployeeID = B.EmployeeID And A.EffectDate = B.EffectDate
+			) as ESalInfo
+			FULL OUTER JOIN
+			(
+				select 
+					isnull(R1.EmployeeID, R2.EmployeeCode) as EmployeeCode,
+					isnull(R1.tmp_EffectDate, R2.tmp_EffectDate) as tmp_EffectDate,
+					isnull(R1.EffectDate, R2.EffectDate) as EffectDate,
+					isnull(R1.[DepartmentCode], R2.[DepartmentCode]) as [DepartmentCode],
+					isnull(R1.[GroupSalCode], R2.[GroupSalCode]) as [GroupSalCode],
+					isnull(R1.[JobWCode], R2.[JobWCode]) as [JobWCode],
+					isnull(R1.[JobPosCode], R2.[JobPosCode]) as [JobPosCode],
+					isnull(R1.[EmpTypeCode], R2.[EmpTypeCode]) as [EmpTypeCode],
+					isnull(R1.[LabourType], R2.[LabourType]) as [LabourType],
+					isnull(R1.FromTime, R2.FromTime) as FromTime,
+					isnull(R1.ToTime, R2.ToTime) as ToTime,
+					ISNULL(R1.[WorkCenterCode], R2.[WorkCenterCode]) AS [WorkCenterCode],
+					ISNULL(R1.[AssignRegionCode], R2.[AssignRegionCode]) AS [AssignRegionCode],
+					ISNULL(R1.[RouteCode], R2.[RouteCode]) AS [RouteCode]
+				from (
+					SELECT EmployeeID, EffectDate as tmp_EffectDate, EffectDate, [DepartmentCode], [GroupSalCode] AS [GroupSalCode], [JobWCode], [JobPosCode], [EmpTypeCode], [LabourType], 
+						FromTime, ToTime, WorkCenterCode, AssignRegionCode, RouteCode
+					FROM
+					(
+						select EmployeeID, FieldName, cast(Value as NVARCHAR(20)) as Value, EffectDate, FromTime, ToTime,
+							ROW_NUMBER() OVER(PARTITION BY EmployeeID, FieldName, EffectDate ORDER BY tmp_EffectDate desc) as RowID
+						from (
+							select ETracking.EmployeeID, ETracking.FieldName, Value, tmp_EffectDate, EffectDate, FromTime, ToTime
+							from tblResult as ETracking
+							union all
+							select EmployeeID, FieldName, ValueOld, @fBeginDate as EffectDate, tmp_EffectDate, FromTime, ToTime
+							from (
+								select EmployeeID, FieldName, ValueOld, EffectDate, tmp_EffectDate, FromTime, ToTime, 
+									ROW_NUMBER() OVER(PARTITION BY EmployeeID, TableName, FieldName ORDER BY EffectDate asc) as Row_ID
+								from tblResult
+							) as T where Row_ID = 1 and EffectDate > @fBeginDate
+						) as RR
+					) AS R
+					PIVOT(
+						max(Value) FOR FieldName IN ([DepartmentCode], [GroupSalCode], [JobWCode], [JobPosCode], [EmpTypeCode], [LabourType], [WorkCenterCode], 
+							[AssignRegionCode], [RouteCode])
+					) AS PT
+					where RowID = 1
+				) as R1
+				full outer join
+				(
+					select EmployeeCode, EffectDate as tmp_EffectDate, EffectDate, [DepartmentCode], [GroupSalCode], [JobWCode], [JobPosCode], [EmpTypeCode], [LabourType], 
+						FromTime, ToTime, WorkCenterCode, AssignRegionCode, RouteCode
+					from tblEmployeeTrackingNotData
+				) as R2 on R1.EmpTypeCode = R2.EmployeeCode and R1.EffectDate = R2.EffectDate
+			) as ETrackingInfo on ESalInfo.EmployeeCode = ETrackingInfo.EmployeeCode and ESalInfo.EffectDate = ETrackingInfo.EffectDate
+		) as RE INNER JOIN
+		(
+			select EmployeeCode, RateMainSal, RateSoftSal, JoinDate
+			from (
+				select SS.EmployeeCode, 1.0 as RateMainSal, 1.0 as RateSoftSal, ss.JoinDate
+				from @tbl_Emps as SS INNER JOIN HR_LSEmployeeType as ET WITH (NOLOCK) ON SS.EmpTypeCode = ET.EmpTypeCode
+			) as K
+		) as R ON RE.EmployeeCode = R.EmployeeCode 
+		ORDER BY EmployeeCode, EffectDate DESC, tmp_EffectDate DESC
+		OPTION (MAXRECURSION 0)
+
+	
+	OPEN employee_cursor
+
+	WHILE 1 = 1  
+	BEGIN   
+		FETCH NEXT FROM employee_cursor INTO @EmployeeCode, @EffectDate,@MinSalary_BS,@RealSalary_BS,@CoeffSalary_BS, @PieceWage, @InsSalary, @UnitOT,
+											@MinSalary_JW,@RealSalary_JW,@CoeffSalary_JW, @mFromTime, @mToTime,
+											@DepartmentCode, @GroupSalCode, @JobWCode, @JobPosCode, @EmpTypeCode, @LabourType, @JoinDate, @WorkCenterCode, 
+											@AssignRegionCode, @RouteCode
+		IF @@FETCH_STATUS != 0
+			BREAK;
+
+		IF @EmployeeCodeOld <> @EmployeeCode
+		BEGIN
+			SET @EmployeeCodeOld = @EmployeeCode
+			SET @idx = 0
+			SET @maxCurrDate = @mToTime		
+		END
+		ELSE
+		BEGIN
+			SET @idx = @idx + 1
+		END
+
+		IF DATEDIFF(day, @mFromTime, @EffectDate) >= 0 And DATEDIFF(day, @EffectDate, @maxCurrDate) >= 0 AND @EffectDate >= @JoinDate
+		BEGIN
+			INSERT INTO #t VALUES(@EmployeeCode, @EffectDate, @maxCurrDate, @MinSalary_BS, @RealSalary_BS, @CoeffSalary_BS,
+						@PieceWage, @InsSalary, @UnitOT, @MinSalary_JW, @RealSalary_JW, @CoeffSalary_JW, @mFromTime, @mToTime,
+						@DepartmentCode, @GroupSalCode, @JobWCode, @JobPosCode, @EmpTypeCode, @LabourType, @WorkCenterCode, @AssignRegionCode, @RouteCode)
+			SET @maxCurrDate = DateAdd(day, -1, @EffectDate)
+		END
+		ELSE
+		BEGIN
+			IF @idx > 0 And Datediff(day, @mFromTime, @maxCurrDate) >= 0 AND @EffectDate >= @JoinDate
+				INSERT INTO #t VALUES(@EmployeeCode, @mFromTime, @maxCurrDate, @MinSalary_BS, @RealSalary_BS, @CoeffSalary_BS,
+						@PieceWage, @InsSalary, @UnitOT, @MinSalary_JW, @RealSalary_JW, @CoeffSalary_JW, @mFromTime, @mToTime,
+						@DepartmentCode, @GroupSalCode, @JobWCode, @JobPosCode, @EmpTypeCode, @LabourType, @WorkCenterCode, @AssignRegionCode, @RouteCode)
+			IF @idx = 0  AND @EffectDate >= @JoinDate
+				INSERT INTO #t VALUES(@EmployeeCode, @mFromTime, @maxCurrDate, @MinSalary_BS, @RealSalary_BS, @CoeffSalary_BS,
+						@PieceWage, @InsSalary, @UnitOT, @MinSalary_JW, @RealSalary_JW, @CoeffSalary_JW, @mFromTime, @mToTime,
+						@DepartmentCode, @GroupSalCode, @JobWCode, @JobPosCode, @EmpTypeCode, @LabourType, @WorkCenterCode, @AssignRegionCode, @RouteCode)
+		END
+	END
+
+	CLOSE employee_cursor  	
+	DEALLOCATE employee_cursor
+	SELECT * FROM #t
+END
