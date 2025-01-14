@@ -560,3 +560,101 @@ BEGIN
 	DEALLOCATE employee_cursor
 	SELECT * FROM #t
 END
+
+
+
+5---------------------------------------------------
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpSyncSysVacation_update]    Script Date: 1/14/2025 11:47:15 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+--select * from TblSysAdmin_Table  where TableNameHCS = 'HCSSYS_ConfigTSEmp'
+--select * from TblSysAdmin_Column  where TableNameHCS = 'HCSSYS_ConfigTSEmp' and ColumnNameHCS='TSSysVacationTypeCode'
+
+--select * from HR_LSSysHoliday
+
+--CodxHR: sd chung table HR_LSSysHoliday, với IsExtraHoliday=1: là ngày nghỉ bù lễ
+ALTER Proc [dbo].[HR_SpSyncSysVacation_update]
+	@DateID datetime,
+	@OldDate datetime,
+	@SysHolidayCode varchar(20)
+AS
+BEGIN
+	DECLARE @Now DATETIME SET @Now = CONVERT(NVARCHAR(10),GETDATE(),111)
+	SELECT I.SysHolidayCode, I.DateID, I.Note,I.IsExtraHoliday
+	INTO #Inserted
+	FROM HR_LSSysHoliday I WITH(NOLOCK) 
+	where I.DateID = @DateID and SysHolidayCode = @SysHolidayCode
+
+	
+	IF EXISTS (SELECT TOP(1) 1 FROM #Inserted)
+	BEGIN
+		--tap NV cần update
+		SELECT DISTINCT E.EmployeeID, E.TSSysHolidayCode AS SysVacationCode INTO #lstOfemp
+		FROM (
+			SELECT SysHolidayCode FROM #Inserted GROUP BY SysHolidayCode
+		) S INNER JOIN dbo.HR_ConfigTSEmp E ON E.TSSysHolidayCode = S.SysHolidayCode
+
+		if @OldDate is not null 
+		begin 
+			delete T 
+			FROM dbo.HR_ConfigTSEmpSysHoliday T
+			INNER JOIN #lstOfemp E ON E.EmployeeID = T.EmployeeID
+			INNER JOIN #Inserted I ON I.SysHolidayCode = E.SysVacationCode AND T.DateID = @OldDate
+			WHERE T.DateID >= @Now
+		end
+
+		SELECT E.EmployeeID,I.SysHolidayCode,I.DateID, I.Note,I.IsExtraHoliday INTO #ssUpdateData
+		from #lstOfemp E
+		INNER JOIN #Inserted I ON I.SysHolidayCode = E.SysVacationCode
+		INNER JOIN dbo.HR_VwEmployees F WITH(NOLOCK) ON F.EmployeeID = E.EmployeeID
+		WHERE I.DateID >= @Now and I.DateID >= F.JoinedOn AND (F.StoppedOn IS NULL OR (F.StoppedOn IS NOT NULL AND F.StoppedOn > I.DateID))
+
+		
+		IF EXISTS (SELECT 1 FROM #ssUpdateData)
+		BEGIN
+			INSERT INTO HR_ConfigTSEmpSysHoliday(EmployeeID, DateID, IsSubstitue, Note, CreatedBy)
+			SELECT DISTINCT V.EmployeeID,V.DateID, IsExtraHoliday AS IsSubstitue, V.Note, 'admin'
+			FROM #ssUpdateData V
+			LEFT JOIN HR_ConfigTSEmpSysHoliday T ON T.EmployeeID = V.EmployeeID AND T.DateID = V.DateID
+			WHERE T.DateID IS NULL
+		END
+		--END
+	END
+END
+
+
+6-------------------------------------------------
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_SpSyncSysVacation_delete]    Script Date: 1/14/2025 11:54:12 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER Proc [dbo].[HR_SpSyncSysVacation_delete]
+	@OldDate datetime,
+	@SysHolidayCode varchar(20)
+AS
+BEGIN
+	DECLARE @Now DATETIME SET @Now = CONVERT(NVARCHAR(10),GETDATE(),111)
+	--SELECT I.SysHolidayCode, I.DateID
+	--INTO #Deleted
+	--FROM dbo.HR_ConfigTSEmpSysHoliday I WITH(NOLOCK)
+	--WHERE I.DateID IS NULL --la nghi le
+	--		AND I.DateID >= @Now and DateID = @OldDate
+
+
+	SELECT DISTINCT E.EmployeeID, E.TSSysHolidayCode AS SysVacationCode INTO #lstOfemp
+	from dbo.HR_ConfigTSEmp E 
+	where TSSysHolidayCode = @SysHolidayCode
+
+	delete T 
+			FROM dbo.HR_ConfigTSEmpSysHoliday T
+			INNER JOIN #lstOfemp E ON E.EmployeeID = T.EmployeeID
+			--INNER JOIN #Deleted I ON I.SysHolidayCode = E.SysVacationCode AND I.DateID = T.DateID
+			WHERE T.DateID >= @Now and DateID = @OldDate
+END
