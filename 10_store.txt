@@ -1,0 +1,1437 @@
+-------------------------------------1
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateCleanTable]    Script Date: 1/17/2025 10:19:02 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateCleanTable]
+(
+	@SchemaName NVARCHAR(100),
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier,
+	@UserID NVARCHAR(20)
+)
+AS	
+BEGIN
+	SET NOCOUNT ON;
+
+	DECLARE @query nvarchar(max), @TableName VARCHAR(200), @ObjectName VARCHAR(MAX),@TemplateIDReplace VARCHAR(50)
+	SET @TemplateIDReplace = CAST(REPLACE(@ExcelTemplateID,'-','') AS VARCHAR(50))
+	-- ToTable
+	SET @TableName = @PrefixTableName + '_' + @TemplateIDReplace + '_' + @UserID + '%'
+
+	DECLARE cursor_1 CURSOR FOR  
+		SELECT '[' + SCHEMA_NAME(schema_id) + '].[' + [name] + ']'
+		from sys.tables WHERE SCHEMA_NAME(schema_id) = @SchemaName AND [name] LIKE @TableName
+	OPEN cursor_1 
+	WHILE 1 = 1  
+	BEGIN   
+		FETCH NEXT FROM cursor_1 INTO @ObjectName
+		IF @@FETCH_STATUS != 0
+			BREAK;
+
+		IF EXISTS(SELECT TOP(1) 1 FROM HR_SysExcelTemplate WHERE TemplateID = @ExcelTemplateID AND TemplateType = @PrefixTableName)
+		begin
+			-- Drop bảng cũ	
+			SET @query = 'drop table ' + @ObjectName
+			EXECUTE(@query)
+		end
+	END
+	CLOSE cursor_1   
+	DEALLOCATE cursor_1
+	
+	 -------------------
+	DECLARE @FromTable VARCHAR(200),@TableName2 VARCHAR(200),@query2 nvarchar(max)
+	
+	-- FromTable
+	SET @FromTable = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @TemplateIDReplace + '_' + ']'
+	-- ToTable
+	SET @TableName2 = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @TemplateIDReplace + '_' + @UserID + ']'
+
+	-- Drop bảng cũ	
+	SET @query2 = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+		'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName2 + ''') drop table ' + @TableName2
+	-- 
+	EXECUTE(@query2)
+
+	set @query2 = 'select ce.* into ' + @TableName2 + ' from ' + @FromTable + ' as ce'
+	
+	EXECUTE(@query2)
+	RETURN
+
+END
+
+
+------------------------------------------------------2
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateCreateTable]    Script Date: 1/17/2025 10:20:18 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateCreateTable]
+(
+	@SchemaName NVARCHAR(100),
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier
+)
+AS	
+BEGIN	
+	DECLARE @query varchar(max), @TableName VARCHAR(200), @listOfColumns VARCHAR(MAX), @ExtColumn VARCHAR(MAX),@SurFixID varchar(32)
+	
+	SET @SurFixID = REPLACE(@ExcelTemplateID,'-','')
+	
+	-- TableName
+	SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @SurFixID + '_]'
+
+	-- Drop bảng cũ	
+	SET @query = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+		'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName + ''') drop table ' + @TableName
+	-- 
+	EXECUTE(@query)
+	SELECT @listOfColumns = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(100), D.FieldName)
+		FROM (
+			SELECT '[' + A.TableName + '.' + FieldName + '] ' + CASE WHEN A.TableName = 'VEL' THEN ' [nvarchar] (200) ' else ISNULL(B.DataType, 'decimal(18,4)') end AS FieldName
+			FROM HR_SysExcelTemplateField AS A LEFT JOIN HR_SysCategoryExcelTemplateDetail AS B
+				ON A.TableName = B.FCategoryCode AND A.FieldName = B.FactorCode				
+			WHERE A.ExcelTemplateID = @ExcelTemplateID
+		) AS D FOR XML PATH (''), TYPE).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+
+	--SELECT @ExtColumn = STUFF((
+	--	SELECT ',' + CONVERT(NVARCHAR(100), D.FieldName)
+	--	FROM (
+	--		SELECT '[fn.' + B.FieldName + '] ' + B.DataType AS FieldName
+	--		FROM HCSSYS_ExcelTemplateExtFunction AS A
+	--			INNER JOIN HCSSYS_CategoryExcelTemplateExtFunction AS B ON A.FunctionName = B.FactorCode
+	--		WHERE A.ExcelTemplateID = @ExcelTemplateID AND ISNULL(A.IsDynamic, 0) = 0
+	--	) AS D FOR XML PATH (''), TYPE).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0))
+
+	IF @listOfColumns IS NOT NULL AND @listOfColumns <> ''
+		SET @listOfColumns = @listOfColumns + ISNULL(',' + @ExtColumn, '')
+	ELSE
+		SET @listOfColumns = ISNULL(@listOfColumns, '') + ISNULL(',' + @ExtColumn, '')
+
+	--SET @listOfColumns = @listOfColumns + ', [GroupIdx] [varchar](200)'
+	SET @listOfColumns = @listOfColumns
+	set @query = 'CREATE TABLE ' + @TableName + '(' + @listOfColumns + ')'
+	EXECUTE(@query)
+	select 0
+	RETURN
+END
+
+
+
+-------------------------------------------------------3
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateCreateTableHSNV]    Script Date: 1/17/2025 10:20:42 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateCreateTableHSNV]
+(
+	@SchemaName NVARCHAR(100),
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier,
+	@UserID VARCHAR(20)
+)
+AS	
+BEGIN	
+	DECLARE @query varchar(max), @TableName VARCHAR(200), @listOfColumns VARCHAR(MAX), @ExtColumn VARCHAR(MAX),@SurFixID varchar(32)
+	
+	SET @SurFixID = REPLACE(@ExcelTemplateID,'-','')
+	
+	-- TableName
+	SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @SurFixID + '_' + @UserID +']'
+
+	-- Drop bảng cũ	
+	SET @query = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+		'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName + ''') drop table ' + @TableName
+	-- 
+	EXECUTE(@query)
+	SELECT @listOfColumns = STUFF((
+		SELECT ',' + CONVERT(NVARCHAR(100), D.FieldName)
+		FROM (
+			SELECT 
+				CASE 
+					WHEN A.TableName = 'EA' THEN '[' + A.TableName + '.' + C.AlloGradeCode + '.' + A.FieldName + '] ' 
+					ELSE '[' + A.TableName + '.' + A.FieldName + '] ' 
+				END 
+				+ CASE 
+					WHEN A.TableName = 'VEL' THEN ' [nvarchar] (200) ' 
+					ELSE ISNULL(B.DataType, 'decimal(18,4)') 
+				  END AS FieldName
+			FROM HR_SysExcelTemplateEmpField AS A 
+			LEFT JOIN HR_SysCategoryExcelTemplateEmpDetail AS B
+				ON A.TableName = B.FCategoryCode 
+				AND A.FieldName = B.FactorCode
+			LEFT JOIN HR_SysExcelTemplateEmpAlloGrade AS C
+				ON A.ExcelTemplateID = C.ExcelTemplateID 
+				AND A.TableName = 'EA'
+			WHERE A.ExcelTemplateID = @ExcelTemplateID
+		) AS D 
+		FOR XML PATH(''), TYPE).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0));
+
+	IF @listOfColumns IS NOT NULL AND @listOfColumns <> ''
+		SET @listOfColumns = @listOfColumns + ISNULL(',' + @ExtColumn, '')
+	ELSE
+		SET @listOfColumns = ISNULL(@listOfColumns, '') + ISNULL(',' + @ExtColumn, '')
+
+	SET @listOfColumns = @listOfColumns
+
+	set @query = 'CREATE TABLE ' + @TableName + '(' + @listOfColumns + ')'
+
+	EXECUTE(@query)
+	--select 0
+	RETURN
+END
+
+--------------------------------------------------------4
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateGetData]    Script Date: 1/17/2025 10:21:08 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateGetData]
+(
+	@SchemaName NVARCHAR(100), 
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier,
+	@UserID NVARCHAR(20),
+	@strEmps NVARCHAR(MAX),
+	@FromTime DATETIME,
+	@ToTime DATETIME 
+)
+AS
+BEGIN
+	DECLARE @query nvarchar(max), @TableName VARCHAR(200), @FieldNames VARCHAR(MAX), @Object VARCHAR(200), @ExportEmpWMultiRows BIT, @TemplateType VARCHAR(20)
+	DECLARE @IsPayThroughBank BIT,@ExcelTemplateIDReplace varchar(50)
+	set @ExcelTemplateIDReplace = CAST(Replace(@ExcelTemplateID,'-','') AS VARCHAR(50))
+	SET @ExportEmpWMultiRows = 0
+	SELECT TOP(1) @ExportEmpWMultiRows = ExportEmpWMultiRows, @TemplateType = TemplateType, @IsPayThroughBank = IsPayThroughBank FROM HR_SYSExcelTemplate WITH (NOLOCK) WHERE TemplateID = @ExcelTemplateID
+	-- Lấy danh sách nhan vien
+	SELECT ce.* INTO #TMP_EMP FROM (SELECT [data] AS EmployeeID FROM HR_FNSplitString(@strEmps, ',')) AS ce
+
+	-- danh sach kỳ công
+	SELECT ce.* INTO #HR_LSPayrollDow FROM (
+		SELECT DowCode FROM HR_LSPayrollDow WITH (NOLOCK) WHERE @FromTime <= EndDay AND BegDay <= @ToTime
+	) AS ce
+
+	create table #HR_Employee (
+		EmployeeID NVARCHAR(20),
+		FromTime DATETIME,
+		ToTime DATETIME
+	)
+	
+	INSERT INTO #HR_Employee(EmployeeID, FromTime, ToTime)
+	SELECT EmployeeID, @FromTime, @ToTime FROM #TMP_EMP
+   
+
+	SELECT ce.* INTO #HR_SYSExcelTemplateField FROM (
+		SELECT FieldName, ID, TableName
+		FROM HR_SYSExcelTemplateField AS T WITH (NOLOCK)
+		WHERE ExcelTemplateID = @ExcelTemplateID
+	) AS ce
+
+	DECLARE cursor_1 CURSOR FOR  
+		SELECT TableName FROM HR_SYSExcelTemplateField WITH (NOLOCK) 
+		WHERE ExcelTemplateID = @ExcelTemplateID AND TableName NOT IN ('CV', 'VEL', 'FN')
+		GROUP BY TableName
+	OPEN cursor_1
+	WHILE 1 = 1  
+	BEGIN   
+		FETCH NEXT FROM cursor_1 INTO @Object
+		IF @@FETCH_STATUS != 0
+			BREAK;
+  
+		-- ToTable
+		SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_' + @Object + ']'
+		SET @FieldNames = NULL
+		SET @query = NULL
+
+		-- Tạo bảng mới
+		SELECT @FieldNames = STUFF((
+			SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+			FROM (
+				SELECT '[' + T.FieldName + ']' AS FieldName, ID
+				FROM #HR_SYSExcelTemplateField AS T
+				WHERE T.TableName = @Object
+			) AS D ORDER BY ID
+			FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+
+		IF @Object = 'AAG'
+		BEGIN
+			-- 1. Lấy số tiền phụ cấp sau khi tính lương (TAllowances). Sum all đưa về quyết định đầu
+			SELECT ce.* INTO #Data_AAG FROM (
+				SELECT T.EmployeeID, T.AlloGradeCode AS Code, @FromTime AS FromTime, @ToTime AS ToTime, 
+					SUM(T.Amount) AS Amount
+				FROM HR_PayAllowance AS T WITH (NOLOCK) 
+					INNER JOIN #TMP_EMP AS T1 ON T.EmployeeID = T1.EmployeeID
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.AlloGradeCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.AlloGradeCode
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_AAG) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+
+        end
+		ELSE IF @Object = 'AKW'
+		BEGIN
+			-- 1. Lấy tiền lương theo công (TSalaries)
+			SELECT ce.* INTO #Data_AKW FROM (
+				SELECT T.EmployeeID, T.KowCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.Amount) AS Amount
+				FROM HR_PaySalary AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.FromTime <= T1.ToTime AND T1.FromTime <= T.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.KowCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.KowCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_AKW) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'ATE'
+		BEGIN
+			-- 1. Lấy số tiền từ TExcepts
+			SELECT ce.* INTO #Data_ATE FROM (
+				SELECT T.EmployeeID, T.ExceptCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.Amount) AS Amount
+				FROM HR_PayTExcept AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.GenDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.ExceptCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.ExceptCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_ATE) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+		ELSE IF @Object = 'ATA'
+		BEGIN
+			-- 1. Lấy số tiền từ TExcepts
+			SELECT ce.* INTO #Data_ATA FROM (
+				SELECT T.EmployeeID, T.ExceptCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.AmountTax) AS AmountTax
+				FROM HR_PayTExcept AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.GenDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.ExceptCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.ExceptCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_ATA) AS S PIVOT ('
+				+ '		SUM(AmountTax) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'DKW'
+		BEGIN
+			-- 1. Lấy số công làm việc từ bảng KowDs
+			SELECT ce.* INTO #Data_DKW FROM (
+				SELECT T.EmployeeID, T.KowCode AS Code, @FromTime AS FromTime, @ToTime AS ToTime, 
+					SUM(T.DayNum) AS Amount
+				FROM HR_TSKowDs AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.WorkDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.KowCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.KowCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_DKW) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'DSC'
+		BEGIN
+			-- 1. Lấy thông tin hệ số lương thưởng
+			SELECT ce.* INTO #Data_DSC FROM (
+				SELECT T.EmployeeID, T.CoeffCode AS Code, @FromTime AS FromTime, @FromTime AS ToTime, 
+					SUM(T.Coefficient) AS Amount
+				FROM HR_PRSalCoeffEmp AS T WITH (NOLOCK) 
+					INNER JOIN #HR_Employee AS T1 ON T.EmployeeID = T1.EmployeeID --AND T.WorkDate between T1.FromTime AND T1.ToTime
+					INNER JOIN #HR_LSPayrollDow AS T2 ON T.DowCode = T2.DowCode
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 ON T.CoeffCode = T3.FieldName
+				GROUP BY T.EmployeeID, T.CoeffCode--, T1.FromTime
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_DSC) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'EA'
+		BEGIN
+			-- 1. Lấy thông tin phụ cấp (mới nhất <= @ToTime) nằm bên HSNV (những giá trị constant)
+			DECLARE @PRIsMinSalByInsList BIT, @MinSalary money
+			SELECT TOP(1) @PRIsMinSalByInsList = case when PRIsSalGradeSISal = 1 and PRIsMinSalByInsList = 1 then 1 else 0 END FROM HR_ConfigPR WITH (NOLOCK)	
+			SELECT top(1) @MinSalary = MinSalary from HRSI_fnGetInsuranceTypeByTime(@ToTime) WHERE InsType = 1
+
+			SELECT ce.* INTO #HR_LSAlloGrade FROM (
+				SELECT T.AlloGradeCode, T.IsFixAmount, T.SalaryType
+				FROM HR_LSAlloGrade AS T WITH (NOLOCK) 
+					INNER JOIN (SELECT FieldName FROM #HR_SYSExcelTemplateField WHERE TableName = @Object) AS T3 
+						ON T.AlloGradeCode = T3.FieldName
+			) AS ce
+
+			SELECT EmployeeID, Code, Amount, @FromTime AS FromTime, @ToTime AS ToTime INTO #Data_EA FROM (
+				-- PC theo số tiền cố định
+				SELECT EmployeeID, AlloGradeCode AS Code, Amount
+				FROM (
+					SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, EAllo.FixAmount as Amount,
+						ROW_NUMBER() OVER(PARTITION BY EAllo.EmployeeID, EAllo.AlloGradeCode ORDER BY EAllo.EffectDate desc) as RowID
+					FROM HR_EmpAllowance as EAllo with (nolock)
+						INNER JOIN #HR_Employee as F on EAllo.EmployeeID = F.EmployeeID
+						inner join #HR_LSAlloGrade as AG ON EAllo.AlloGradeCode = AG.AlloGradeCode				
+					WHERE (AG.IsFixAmount = 1) AND (EffectDate <= @ToTime and (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime)) 
+				) AS R WHERE RowID = 1
+				-- PC theo % được hưởng
+				UNION ALL
+				SELECT EmployeeID, AlloGradeCode AS Code,
+					case SalaryType 
+						when 1 then case when @PRIsMinSalByInsList = 1 then @MinSalary else Amount end
+						when 2 then case when @PRIsMinSalByInsList = 1 then @MinSalary * Amount else Amount end
+						when 3 then case when @PRIsMinSalByInsList = 1 then @MinSalary else Amount end
+						when 4 then case when @PRIsMinSalByInsList = 1 then @MinSalary * Amount else Amount end
+						when 5 then Amount
+						when 6 then Amount
+						when 7 then Amount 
+						when 8 then Amount
+					END * EA_SalaryRate / 100.0 as Amount
+				FROM (
+					SELECT EmployeeID, AlloGradeCode, SalaryRate as EA_SalaryRate, SalaryType, 
+						dbo.HRSI_fnGetSalaryByLevel(EmployeeID, @ToTime, 
+							CASE WHEN SalaryType = 2 AND @PRIsMinSalByInsList = 1 THEN -2
+								WHEN SalaryType = 4 AND @PRIsMinSalByInsList = 1 THEN -4
+								ELSE SalaryType end) AS Amount
+					FROM (
+						SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, EAllo.SalaryRate, AG.SalaryType, 
+							ROW_NUMBER() OVER(PARTITION BY EAllo.EmployeeID, EAllo.AlloGradeCode ORDER BY EAllo.EffectDate desc) as RowID
+						FROM HR_EmpAllowance as EAllo with (nolock)
+							INNER JOIN #HR_Employee as F on EAllo.EmployeeID = F.EmployeeID
+							inner join #HR_LSAlloGrade as AG ON EAllo.AlloGradeCode = AG.AlloGradeCode 
+						WHERE  (AG.IsFixAmount = 0) AND (EffectDate <= @ToTime and (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime))
+					) AS RR WHERE RowID = 1
+				) AS Result
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM (SELECT * FROM #Data_EA) AS S PIVOT ('
+				+ '		SUM(Amount) FOR Code IN (' + @FieldNames + ')'
+				+ ') AS P'
+        END
+        ELSE IF @Object = 'IC'
+		BEGIN
+			-- 1. Lấy thông tin từ table Income
+			select ce.* into #HR_PayIncome from (
+				select I.EmployeeID, I.DowCode, DowNum, ExRate, I.FromTime, I.ToTime, ExRateSI, OrgUnitID, EmpTypeCode, 
+					PositionID, JobLevel, GroupSalCode, BasicSalaryMin, BasicSalary, CoeffBasicSal, UnitOT, MainSal, 
+					JobWSalary, JobWSalaryMin, CoeffJobWSal, PieceWage, InsSalary,
+					ROW_NUMBER() OVER(PARTITION BY I.EmployeeID ORDER BY I.FromTime desc) as RowID,					 				  
+					HIAmountE, SIAmountE, HIAmountC, SIAmountC, TUnionAmountC, UIAmountE, UIAmountC, 
+					TotalAllowance, LawSal, TotalKowSal, TotalOTSal, AddToSal, SubToSal, AdvanceSal, RiceAllowance, 
+					GrossSal, GrossSalVND, TaxableIncome, TaxIncome, TaxAmount, NetSal, NetSalVND, UnitSal, GrossOfNetSal, 
+					ProductSal, TUnionAmountE, PartyAmount, YUnionAmount, ServiceAmount, TaxService, OTSalTax, OTSalNonTax, 
+					TotalIncome, AddToSalVND, AdvanceSalVND, SubToSalVND, CompanyPay, SocialPay, CompanyPayVND, SocialPayVND,
+					CurrDayOff, FamilyTaxFree, FamilyTaxFreeUnit, FamilyTaxFreeOwn, TotalCoeff, MainSalary, OutTaxIncome, 
+					OutTaxAmount, TaxableIncomeYTD, TaxIncomeYTD, TaxAmountYTD, NumMonthYTD, TaxPayableYTD, FamilyTaxYTD, SocialInsPayableYTD
+				from HR_PayIncome as I with (nolock) 
+					INNER JOIN #HR_Employee as E on I.EmployeeID = E.EmployeeID
+					INNER JOIN #HR_LSPayrollDow AS T2 ON I.DowCode = T2.DowCode
+			) as ce
+
+			SELECT ce.* INTO #Data_IC FROM (
+				SELECT T.EmployeeID, DowCode, DowNum, ExRate, T.FromTime, T.ToTime, ExRateSI, OrgUnitID, EmpTypeCode, 
+						PositionID, JobLevel, GroupSalCode, BasicSalaryMin, BasicSalary, CoeffBasicSal, UnitOT, MainSal, 
+						JobWSalary, JobWSalaryMin, CoeffJobWSal, PieceWage, InsSalary,
+						-- 					 				  
+						HIAmountE, SIAmountE, HIAmountC, SIAmountC, TUnionAmountC, UIAmountE, UIAmountC, 
+						TotalAllowance, LawSal, TotalKowSal, TotalOTSal, AddToSal, SubToSal, AdvanceSal, RiceAllowance, 
+						GrossSal, GrossSalVND, TaxableIncome, TaxIncome, TaxAmount, NetSal, NetSalVND, UnitSal, GrossOfNetSal, 
+						ProductSal, TUnionAmountE, PartyAmount, YUnionAmount, ServiceAmount, TaxService, OTSalTax, OTSalNonTax, 
+						TotalIncome, AddToSalVND, AdvanceSalVND, SubToSalVND, CompanyPay, SocialPay, CompanyPayVND, SocialPayVND,
+						CurrDayOff, FamilyTaxFree, FamilyTaxFreeUnit, FamilyTaxFreeOwn, TotalCoeff, MainSalary, OutTaxIncome, 
+						OutTaxAmount, TaxableIncomeYTD, TaxIncomeYTD, TaxAmountYTD, NumMonthYTD, TaxPayableYTD, FamilyTaxYTD, SocialInsPayableYTD
+				FROM (
+					SELECT EmployeeID, DowCode, DowNum, ExRate, FromTime, ToTime, ExRateSI, OrgUnitID, EmpTypeCode, 
+						PositionID, JobLevel, GroupSalCode, BasicSalaryMin, BasicSalary, CoeffBasicSal, UnitOT, MainSal, 
+						JobWSalary, JobWSalaryMin, CoeffJobWSal, PieceWage, InsSalary
+					FROM #HR_PayIncome WHERE RowID = 1
+				) AS T INNER JOIN (
+					SELECT EmployeeID, Sum(HIAmountE) AS HIAmountE, Sum(SIAmountE) AS SIAmountE, Sum(HIAmountC) AS HIAmountC, Sum(SIAmountC) AS SIAmountC, Sum(TUnionAmountC) AS TUnionAmountC, 
+						SUM(UIAmountE) AS UIAmountE, Sum(UIAmountC) AS UIAmountC, Sum(TotalAllowance) AS TotalAllowance, Sum(LawSal) AS LawSal, Sum(TotalKowSal) AS TotalKowSal, Sum(TotalOTSal) AS TotalOTSal, 
+						SUM(AddToSal) AS AddToSal, Sum(SubToSal) AS SubToSal, Sum(AdvanceSal) AS AdvanceSal, Sum(RiceAllowance) AS RiceAllowance, Sum(GrossSal) AS GrossSal, Sum(GrossSalVND) AS GrossSalVND, 
+						SUM(TaxableIncome) AS TaxableIncome, Sum(TaxIncome) AS TaxIncome, Sum(TaxAmount) AS TaxAmount, Sum(NetSal) AS NetSal, Sum(NetSalVND) AS NetSalVND, Sum(UnitSal) AS UnitSal, Sum(GrossOfNetSal) AS GrossOfNetSal, 
+						SUM(ProductSal) AS ProductSal, Sum(TUnionAmountE) AS TUnionAmountE, Sum(PartyAmount) AS PartyAmount, Sum(YUnionAmount) AS YUnionAmount, Sum(ServiceAmount) AS ServiceAmount, Sum(TaxService) AS TaxService, 
+						SUM(OTSalTax) AS OTSalTax, Sum(OTSalNonTax) AS OTSalNonTax, Sum(TotalIncome) AS TotalIncome, Sum(AddToSalVND) AS AddToSalVND, Sum(AdvanceSalVND) AS AdvanceSalVND, Sum(SubToSalVND) AS SubToSalVND, 
+						SUM(CompanyPay) AS CompanyPay, Sum(SocialPay) AS SocialPay, Sum(CompanyPayVND) AS CompanyPayVND, Sum(SocialPayVND) AS SocialPayVND, SUM(CurrDayOff) AS CurrDayOff, Sum(FamilyTaxFree) AS FamilyTaxFree, 
+						SUM(FamilyTaxFreeUnit) AS FamilyTaxFreeUnit, SUM(FamilyTaxFreeOwn) AS FamilyTaxFreeOwn, Sum(TotalCoeff) AS TotalCoeff, Sum(MainSalary) AS MainSalary, Sum(OutTaxIncome) AS OutTaxIncome, Sum(OutTaxAmount) AS OutTaxAmount, 
+						SUM(TaxableIncomeYTD) AS TaxableIncomeYTD, Sum(TaxIncomeYTD) AS TaxIncomeYTD, Sum(TaxAmountYTD) AS TaxAmountYTD,
+						SUM(NumMonthYTD) AS NumMonthYTD, SUM(TaxPayableYTD) AS TaxPayableYTD, SUM(FamilyTaxYTD) AS FamilyTaxYTD, SUM(SocialInsPayableYTD) AS SocialInsPayableYTD
+					FROM #HR_PayIncome
+					GROUP BY EmployeeID
+				) AS T1 ON T.EmployeeID = T1.EmployeeID
+			) AS ce
+
+			SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+				+ ' SELECT EmployeeID, FromTime, ToTime, ' + @FieldNames
+				+ ' FROM #Data_IC AS P'
+			
+        END
+		ELSE IF @Object = 'BK'
+		BEGIN
+
+			SELECT A.*, ROW_NUMBER() OVER (PARTITION BY A.EmployeeID ORDER BY A.EmployeeID, Ordinal) AS Row_ID into #CTE
+			FROM HR_EmpBank AS A WITH (NOLOCK)
+
+			SELECT Banks.EmployeeID, Banks.AccountNo, Banks.Amount, Banks.PercentSal, 
+				Banks.MinAmount, Banks.AccountName, Banks.IsPaymentCurr, Banks.BankCode, 
+				HCSLS_Bank.BankName, 
+				Banks.Ordinal, Banks.Note, Banks.CurrencyForPay into #HCSEM_VWEmpBanksTop1
+			FROM (
+				SELECT * FROM #CTE WHERE Row_ID = 1
+			) AS Banks INNER JOIN BS_Banks HCSLS_Bank WITH (NOLOCK) ON Banks.BankCode = HCSLS_Bank.BankID
+
+			-- 1. Lấy thông tin hệ số lương thưởng
+			IF @IsPayThroughBank = 0
+			begin
+				SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+					+ ' SELECT EmployeeID, ' + CONVERT(VARCHAR(10), @FromTime, 111) + ' AS FromTime, '
+					+ CONVERT(VARCHAR(10), @ToTime, 111) + ' AS ToTime, ' + @FieldNames
+					+ ' FROM (SELECT T.* FROM #HCSEM_VWEmpBanksTop1 AS T INNER JOIN #HR_Employee AS E ON T.EmployeeID = E.EmployeeID) AS P'
+			END
+            ELSE 
+			BEGIN
+				SET @query = 'INSERT INTO ' + @TableName + '(EmployeeID, FromTime, ToTime, ' + @FieldNames + ')'
+					+ ' SELECT EmployeeID, ' + CONVERT(VARCHAR(10), @FromTime, 111) + ' AS FromTime, '
+					+ CONVERT(VARCHAR(10), @ToTime, 111) + ' AS ToTime, ' + @FieldNames
+					+ ' FROM (SELECT T.* FROM #HCSEM_VWEmpBanksTop1 AS T INNER JOIN #HR_Employee AS E ON T.EmployeeID = E.EmployeeID) AS P'
+			END
+        END
+		IF @query IS NOT NULL
+			EXEC(@query)
+	END
+	CLOSE cursor_1   
+	DEALLOCATE cursor_1
+	IF @TemplateType = 'TimeSheetTemplate'
+	BEGIN
+		EXEC HR_spExcelTemplateGetTSKowDs @SchemaName, @PrefixTableName, @ExcelTemplateID, @UserID, @strEmps, @FromTime, @ToTime
+    END
+    
+	IF @TemplateType = 'AssignShiftTemplate'
+	BEGIN
+		EXEC HR_spExcelTemplateGetAssignShift @SchemaName, @PrefixTableName, @ExcelTemplateID, @UserID, @strEmps, @FromTime, @ToTime
+    end
+	
+END
+
+
+
+
+--------------------------------------------------------5
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateGetAssignShift]    Script Date: 1/17/2025 10:22:01 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+/*
+	exec [HR_spExcelTemplateGetAssignShift] 'dbo', 'AssignShiftTemplate', newid(), 'admin', '164DSR024', '2017/11/01', '2017/11/30'
+*/
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateGetAssignShift]
+(
+	@SchemaName NVARCHAR(100),
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier,
+	@UserID NVARCHAR(20),
+	@strEmps NVARCHAR(MAX),
+	@FromTime DATETIME,
+	@ToTime DATETIME 
+)
+AS
+BEGIN
+	SET NOCOUNT ON;
+	DECLARE @query nvarchar(max), @TableName VARCHAR(200), @FieldNames VARCHAR(MAX), @Object VARCHAR(200),@ExcelTemplateIDReplace varchar(50)
+	set @ExcelTemplateIDReplace = CAST(Replace(@ExcelTemplateID,'-','') AS VARCHAR(50))
+	-- Lấy danh sách nhan vien
+	SELECT ce.* INTO #TMP_EMP FROM (SELECT [data] AS EmployeeID FROM HR_FNSplitString(@strEmps, ',')) AS ce
+
+	-- danh sach kỳ công
+	SELECT ce.* INTO #HR_LSPayrollDow FROM (
+		SELECT DowCode FROM HR_LSPayrollDow WITH (NOLOCK) WHERE @FromTime <= EndDay AND BegDay <= @ToTime
+	) AS ce
+
+	-- ToTable
+	SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_TM_AssignShift]'
+	
+	-- 
+	SELECT ce.* INTO #AssignShift FROM (
+		SELECT T.EmployeeID, WorkDate, T.ShiftCode AS ShiftCode
+		FROM HR_TSAssignShift AS T WITH (NOLOCK) INNER JOIN #TMP_EMP AS T1 ON T.EmployeeID = T1.EmployeeID
+		WHERE T.WorkDate BETWEEN @FromTime AND @ToTime
+	) AS ce
+
+	SELECT ce.* INTO #TMP FROM (
+		SELECT G.EmployeeID, R.ShiftCode, REPLACE(CONVERT(VARCHAR(10), WorkDate, 111), '/', '_') AS mDay
+		FROM 
+		(
+			SELECT DISTINCT WorkDate, EmployeeID FROM #AssignShift
+		) AS G
+		CROSS APPLY
+		(
+			-- Concatenate in required order, returns XML
+			SELECT ';' + D.ShiftCode
+			FROM #AssignShift AS D WHERE D.WorkDate = G.WorkDate and D.EmployeeID = G.EmployeeID
+			FOR XML PATH (''), TYPE
+			) AS GC (ShiftCode)
+		CROSS APPLY
+		(
+			-- Convert to VARCHAR from XML and remove leading delimiter
+			SELECT STUFF(GC.ShiftCode.value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+		) AS R (ShiftCode)
+	) AS ce
+
+	;WITH supnodes(Date_ID)
+	AS( 
+		SELECT @FromTime as Date_ID where @FromTime <= @ToTime
+		UNION ALL 
+		SELECT DATEADD(day, 1, Date_ID) from supnodes where Date_ID < @ToTime
+	)
+	SELECT @FieldNames = STUFF((
+		SELECT ',[' + Date_ID + ']'
+		FROM (
+			SELECT REPLACE(CONVERT(VARCHAR(10), Date_ID, 111), '/', '_') AS Date_ID
+			FROM supnodes 
+		) AS D order by Date_ID FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0)) 
+	SET @query = 'insert into ' + @TableName + ' (EmployeeID, ' + @FieldNames + ')'
+	+ 'SELECT EmployeeID, ' + @FieldNames 
+	+ ' FROM (SELECT * FROM #TMP) AS SourceTable '
+	+ ' PIVOT ( MAX(ShiftCode) '
+	+ ' FOR mDay IN (' + @FieldNames 
+	+ ') ) AS PivotTable'
+	EXEC(@query)
+END
+
+
+
+-------------------------------------------6
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spExcelTemplateGetEmployee]    Script Date: 1/17/2025 10:23:02 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[HR_spExcelTemplateGetEmployee]
+(
+	@SchemaName NVARCHAR(100),
+	@PrefixTableName VARCHAR(200),
+	@ExcelTemplateID uniqueidentifier,
+	@UserID NVARCHAR(20),
+	@FromTime DATETIME, -- gioi han danh sach nhan vien co ngay vao lam >= MinTime va ngay nghi viec >= MinTime
+	@ToTime DATETIME,
+	@GroupSalCode VARCHAR(10)
+)
+AS	
+BEGIN
+	SET NOCOUNT ON;
+
+	------------------------------------------------------------
+	-- 1. Tạo cấu trúc các table Emp = CV + VEL
+	------------------------------------------------------------
+	DECLARE @query nvarchar(max), @TableName VARCHAR(200), @WhereExpression NVARCHAR(MAX), @FieldNames VARCHAR(MAX),@ExcelTemplateIDReplace varchar(50)
+	set @ExcelTemplateIDReplace = CAST(Replace(@ExcelTemplateID,'-','') AS VARCHAR(50))
+	-- ToTable
+	SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_CV' + ']'
+
+	-- Drop bảng cũ	
+	SET @query = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+		'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName + ''') drop table ' + @TableName
+	EXECUTE(@query)
+
+
+	-- Tạo bảng mới
+	SELECT @FieldNames = STUFF((
+		SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+		FROM (
+			SELECT '[' + T.FieldName + '] ' + ISNULL(T1.DataType, '[nvarchar] (250)') AS FieldName, ID
+			FROM HR_SysExcelTemplateField AS T WITH (NOLOCK)
+				LEFT JOIN HR_SysCategoryExcelTemplateDetail AS T1 WITH (NOLOCK) ON T.TableName = T1.FCategoryCode AND T.FieldName = T1.FactorCode
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName IN ('CV', 'VEL')
+		) AS D ORDER BY ID
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+	--
+	set @query = 'CREATE TABLE ' + @TableName + '( '
+				+ @FieldNames
+				+ ') ON [PRIMARY]'
+	EXECUTE(@query)
+
+	-- reset value
+	SET @FieldNames = NULL
+
+	-- Lấy điều kiện where
+	SELECT TOP(1) @WhereExpression = WhereExpression FROM HR_SYSExcelTemplateDetail WITH (NOLOCK) WHERE UserID = @UserID and ExcelTemplateID = @ExcelTemplateID
+	
+	-- Thông tin nhân viên
+	SELECT @FieldNames = STUFF((
+		SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+		FROM (
+			SELECT TableName + '.[' + 
+				CASE WHEN TableName = 'CV' 
+				THEN FieldName 
+				ELSE
+					CASE WHEN CHARINDEX('CAPName_', FieldName, 0) > 0
+					then 
+						REPLACE(LEFT(FieldName, LEN(FieldName) - 1), 'CAPName_', '') + 'CAP' + RIGHT(FieldName, 1) + '_Name' 
+					ELSE FieldName END
+				end
+				+ ']' AS FieldName, ID FROM HR_SysExcelTemplateField WITH (NOLOCK) 
+			WHERE ExcelTemplateID = @ExcelTemplateID AND TableName IN ('CV', 'VEL')
+		) AS D ORDER BY ID
+		FOR XML PATH (''), TYPE
+	).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+
+	SELECT ce.* INTO #UDA FROM (
+		SELECT DISTINCT T1.EmployeeID 
+		FROM HR_Employees T1
+		LEFT JOIN HR_EmployeeExt T2
+		ON T1.EmployeeID = T2.EmployeeID
+		WHERE JoinedOn <= @ToTime AND (StoppedOn IS NULL OR StoppedOn >= @FromTime)
+		AND (
+			@GroupSalCode IS NULL 
+			OR LEN(@GroupSalCode) = 0
+			OR T2.GroupSalCode = @GroupSalCode)
+	) AS ce	
+
+	SET @query = null
+	SET @query = 'INSERT INTO ' + @TableName
+	SET @query = @query + ' SELECT ' + @FieldNames + ' FROM HR_VwEmployees AS CV WITH (NOLOCK) '
+		+ ' INNER JOIN HR_OrganizationUnits AS VEL WITH (NOLOCK) ON CV.OrgUnitID = VEL.OrgUnitID '
+		+ ' INNER JOIN #UDA AS T ON CV.EmployeeID = T.EmployeeID'
+	SET @query = @query --+ ISNULL(' Where ' + @WhereExpression, '')
+	EXEC(@query)
+
+	------------------------------------------------------------
+	-- 2. Tạo cấu trúc các table tạm khác table Emp
+	------------------------------------------------------------
+	DECLARE @Object VARCHAR(250)
+	DECLARE cursor_1 CURSOR FOR  
+		SELECT TableName FROM HR_SysExcelTemplateField WITH (NOLOCK) 
+		WHERE ExcelTemplateID = @ExcelTemplateID AND TableName NOT IN ('CV', 'VEL') AND LTRIM(RTRIM(TableName)) <> '' -- Kiểm tra giá trị không rỗng
+		GROUP BY TableName
+	OPEN cursor_1
+	WHILE 1 = 1  
+	BEGIN   
+		FETCH NEXT FROM cursor_1 INTO @Object
+		IF @@FETCH_STATUS != 0
+			BREAK;
+  
+		-- get TableName
+		SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_' + @Object + ']'
+		-- Drop bảng cũ	
+		SET @query = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+			'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName + ''') drop table ' + @TableName
+		EXECUTE(@query)
+
+		-- Tạo bảng mới
+		SELECT @FieldNames = STUFF((
+			SELECT ',' + CONVERT(VARCHAR(150), D.FieldName)
+			FROM (
+				SELECT '[' + T.FieldName + '] ' +
+					CASE WHEN T2.IsField = 1 THEN T2.DataType ELSE ISNULL(T1.DataType, '[nvarchar] (250)') END AS FieldName, ID
+				FROM HR_SYSExcelTemplateField AS T WITH (NOLOCK)
+					LEFT JOIN HR_SysCategoryExcelTemplateDetail AS T1 WITH (NOLOCK) ON T.TableName = T1.FCategoryCode AND T.FieldName = T1.FactorCode
+					LEFT JOIN HR_SysCategoryExcelTemplate AS T2 WITH (NOLOCK) ON T.TableName = T2.FCategoryCode
+				WHERE ExcelTemplateID = @ExcelTemplateID AND T.TableName = @Object
+			) AS D ORDER BY ID
+			FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0))
+		
+		--
+		IF CHARINDEX('FromTime', @FieldNames, 0) > 0
+		BEGIN
+			SET @FieldNames = ' [EmployeeID] [nvarchar] (20)' + ISNULL(',' + @FieldNames, '')
+			set @query = 'CREATE TABLE ' + @TableName + '( '
+						+ @FieldNames
+						+ ') ON [PRIMARY]'
+        END
+        ELSE
+        begin
+			SET @FieldNames = ' [EmployeeID] [nvarchar] (20), [FromTime] [datetime], [ToTime] [datetime]' + ISNULL(',' + @FieldNames, '')
+			set @query = 'CREATE TABLE ' + @TableName + '( '
+						+ @FieldNames
+						+ ') ON [PRIMARY]'
+		end
+		--PRINT (@query)
+		EXECUTE(@query)
+
+		
+	END
+	CLOSE cursor_1   
+	DEALLOCATE cursor_1
+
+	DECLARE @TemplateType VARCHAR(20)
+	SELECT TOP(1) @TemplateType = TemplateType FROM HR_SysExcelTemplate WITH (NOLOCK) WHERE TemplateID = @ExcelTemplateID
+
+	IF @TemplateType = 'TimeSheetTemplate'
+	begin
+		-- ToTable
+		SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + @ExcelTemplateIDReplace + '_' + @UserID + '_TM_KowDs]'
+		-- Drop bảng cũ	
+		SET @query = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+			'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName + ''') drop table ' + @TableName
+		EXECUTE(@query)
+
+		;WITH supnodes(Date_ID)
+		AS( 
+			SELECT @FromTime as Date_ID where @FromTime <= @ToTime
+			UNION ALL 
+			SELECT DATEADD(day, 1, Date_ID) from supnodes where Date_ID < @ToTime
+		)
+		SELECT @FieldNames = STUFF((
+			SELECT ',[' + Date_ID + '] [varchar] (200)'
+			FROM (
+				SELECT REPLACE(CONVERT(VARCHAR(10), Date_ID, 111), '/', '_') AS Date_ID
+				FROM supnodes 
+			) AS D order by Date_ID FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0)) 
+
+		SET @FieldNames = ' [EmployeeID] [nvarchar] (20), [IsNoon] [bit], ' + @FieldNames
+		set @query = 'CREATE TABLE ' + @TableName + '( '
+					+ @FieldNames
+					+ ') ON [PRIMARY]'
+		EXECUTE(@query)
+	END
+    
+	IF @TemplateType = 'AssignShiftTemplate'
+	begin
+		-- ToTable
+		SET @TableName = '[' + @SchemaName + '].[' + @PrefixTableName + '_' + CAST(@ExcelTemplateID AS VARCHAR) + '_' + @UserID + '_TM_AssignShift]'
+		-- Drop bảng cũ	
+		SET @query = 'if exists (select TOP(1) 1 from sys.tables WHERE ''' + '['' + ' + 'SCHEMA_NAME(schema_id) + ''' +
+			'].[''' + ' + name + ''' + ']' + ''' = N''' + @TableName + ''') drop table ' + @TableName
+		EXECUTE(@query)
+
+		;WITH supnodes(Date_ID)
+		AS( 
+			SELECT @FromTime as Date_ID where @FromTime <= @ToTime
+			UNION ALL 
+			SELECT DATEADD(day, 1, Date_ID) from supnodes where Date_ID < @ToTime
+		)
+		SELECT @FieldNames = STUFF((
+			SELECT ',[' + Date_ID + '] [varchar] (200)'
+			FROM (
+				SELECT REPLACE(CONVERT(VARCHAR(10), Date_ID, 111), '/', '_') AS Date_ID
+				FROM supnodes 
+			) AS D order by Date_ID FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 1, SPACE(0)) 
+
+		SET @FieldNames = ' [EmployeeID] [nvarchar] (20), ' + @FieldNames
+		set @query = 'CREATE TABLE ' + @TableName + '( '
+					+ @FieldNames
+					+ ') ON [PRIMARY]'
+		EXECUTE(@query)
+	end
+	RETURN
+END
+
+
+
+---------------------------------------7
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spBuildFormula4KowOrAllo]    Script Date: 1/17/2025 10:25:57 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER proc [dbo].[HR_spBuildFormula4KowOrAllo] (
+	@EmployeeCode NVARCHAR(20) = N'__NV001__',
+	@DowCode VARCHAR(7) = '2016/01',
+	@ListCode VARCHAR(20) = 'BPLV',
+	@MinSiSalary float = 1000000, -- muc luong toi thieu dong bhxh
+	@MaxSiSalary float = 16000000, -- muc luong toi da dong bhxh
+	@ListType varchar(150) = 'HCSLS_AlloGrade',
+	@bsRealSalary money = 0, 
+	@bsMinSalary money = 0, 
+	@bsCoeffSalary money = 0, 
+	@bsPieceWage money = 0, -- 10
+	@jwRealSalary money = 0, 
+	@jwMinSalary money = 0,
+	@jwCoeffSalary money = 0,
+	@bsUnitOT money = 0,
+	@IsDynamic bit = 0, -- = 0: trong 1 ky luong hok co nhieu quyet dinh luong, 1: trong 1 ky luong co nhieu quyet dinh luong
+	@GroupSalCode VARCHAR(20) = 'GrossSal',
+	@FixAmount money = 1000000,
+	@SalaryRate float = 1,
+	@Fromtime datetime = '2013/09/26',
+	@ToTime datetime = '2013/10/25', -- 20
+	@DowNum float = 24,
+	@ExRate float = 1.0, 
+	@InsSalary money = 1000000, 
+	@ProductSal money = 1000000,
+	@UnitOutput money = 1,--25
+	@DepartmentCode_REF NVARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@JobWCode_REF VARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@Amount money = 0 output)
+AS 
+BEGIN
+	SET NOCOUNT ON;
+
+	select ce.* into #4KowOrAllo_TMPGetValues from (
+		select cast('' as varchar(200)) as ParaName, cast(N'' as nvarchar(50)) ParaValue where 1 = 0
+	) as ce
+
+	DECLARE @TMP_Table VARCHAR(100)
+	SET @TMP_Table = '#4KowOrAllo_TMPGetValues'
+
+	EXEC HR_spFormula4KowOrAlloGetValue 
+		@EmployeeCode, @DowCode, @ListCode, @MinSiSalary, @MaxSiSalary, 
+		@ListType, @bsRealSalary, @bsMinSalary, @bsCoeffSalary, @bsPieceWage,
+		@jwRealSalary, @jwMinSalary, @jwCoeffSalary, @bsUnitOT, @IsDynamic,
+		@GroupSalCode, @FixAmount, @SalaryRate, @Fromtime, @ToTime,
+		@DowNum, @ExRate, @InsSalary, @ProductSal, @UnitOutput, 
+		@DepartmentCode_REF, @JobWCode_REF, @TMP_Table
+
+	-- Lấy công thức công đã biên dịch
+	select ce.* into #HCSPR_spBuildFormula4KowOrAllo_TMP from (
+		select RecID, FParam, FValue, FType, LTRIM(FParam) AS tmpFParam
+		from HR_SysFormula WITH (NOLOCK)
+		where ListCode = @ListCode and GroupSalCode = @GroupSalCode and ListType = @ListType
+	) as ce
+
+	update T set T.FValue = ' ' + ISNULL(T.FValue,'') + ISNULL(Z.ParaValue, '')
+	from #HCSPR_spBuildFormula4KowOrAllo_TMP as T 
+		inner join #4KowOrAllo_TMPGetValues as Z on T.tmpFParam = Z.ParaName
+
+	update T set T.FValue = ' ' + ISNULL(T.FParam,'')
+	from #HCSPR_spBuildFormula4KowOrAllo_TMP as T 
+	WHERE FType = 1 AND T.FValue IS NULL -- Xử lý cho các trường hợp value năm trong cau lenh select
+
+	--select *from #HCSPR_spBuildFormula4KowOrAllo_TMP ORDER BY RecID
+	BEGIN TRY
+
+		DECLARE @strSelect nvarchar(max)
+		SELECT @strSelect = STUFF((
+			SELECT CONVERT(NVARCHAR(200), D.mValue)
+			FROM (
+				--select newid() as RecID, 'SELECT @Amount = ' as mValue
+				SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RecID, 'SELECT @Amount = ' AS mValue
+				union all
+				select RecID, isnull(FValue, '') as mValue from #HCSPR_spBuildFormula4KowOrAllo_TMP
+			) AS D order by RecID FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 0, SPACE(0)) --+ ' OPTION (RECOMPILE) '
+
+		--SELECT @strSelect = STUFF((
+		--	SELECT CONVERT(NVARCHAR(200), D.mValue)
+		--	FROM (
+		--		SELECT 1 AS RecID, 'SELECT @Amount = ' AS mValue
+		--		UNION ALL
+		--		SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) + 1 AS RecID, ISNULL(FValue, '') AS mValue
+		--		FROM #HCSPR_spBuildFormula4KowOrAllo_TMP
+		--	) AS D
+		--	ORDER BY RecID
+		--	FOR XML PATH(''), TYPE
+		--).value('.', 'NVARCHAR(MAX)'), 1, 0, SPACE(0));
+
+
+		SET @strSelect = REPLACE(@strSelect,'= ((','in (select DepartmentCode from HR_FNGetChildDepartments(')
+		SET @strSelect = REPLACE(@strSelect, '~?~) (', ',')
+		SET @strSelect = REPLACE(@strSelect, '~?~)(', ',')
+		SET @strSelect = @strSelect + ' from #ASFactors as CV '
+		
+		--SELECT @ListType as ListType, @ListCode as ListCode, @strSelect
+		EXEC sp_executesql @strSelect, N'@Amount money output', @Amount OUTPUT
+        --SELECT @ListType, @ListCode, @strSelect, @Amount
+		
+	END TRY
+	BEGIN CATCH
+		print ERROR_MESSAGE()
+		SET @Amount = 0
+	END CATCH
+END
+
+
+----------------------------------------------------------8
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spBuildFormula4Except]    Script Date: 1/17/2025 10:26:38 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER proc [dbo].[HR_spBuildFormula4Except] (
+	@EmployeeCode NVARCHAR(20) = N'__00000__',
+	@DowCode VARCHAR(7) = '2016/12',
+	@ListCode VARCHAR(20) = 'LHT',
+	@MinSiSalary float = 1000000, -- muc luong toi thieu dong bhxh
+	@MaxSiSalary float = 16000000, -- muc luong toi da dong bhxh
+	@TSHoursPerWD float = 8, -- số giờ 1 công
+	@TSIsOTByHour bit = 1, -- Ngoai gio tinh theo gio
+	@ListType varchar(200) = 'HCSLS_Exception',
+	@UserID NVARCHAR(20) = 'admin',
+	@UnitOutput money = 1, -- 10
+	@BonusUnitOutput money = 1,
+	@GroupSalCode VARCHAR(20) = 'GrossSal',
+	@GenDate datetime = '2016/12/21',
+	@bsRealSalary money = 0, 
+	@bsMinSalary money = 0, 
+	@bsCoeffSalary money = 0, 
+	@bsPieceWage money = 0,
+	@InsSalary money = 1000000, 
+	@jwRealSalary money = 0, 
+	@jwMinSalary money = 0, -- 20
+	@jwCoeffSalary money = 0,
+	@bsUnitOT money = 0,
+	@ctFromTime datetime = '2016/12/01',
+	@ctToTime datetime = '2016/12/31',
+	@DepartmentCode_REF NVARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@Amount money = 0 output)
+AS 
+BEGIN
+	SET NOCOUNT ON;
+
+	select ce.* into #4Except_TMPGetValues from (
+		select cast('' as varchar(200)) as ParaName, cast(N'' as nvarchar(50)) ParaValue where 1 = 0
+	) as ce
+
+	DECLARE @TMP_Table VARCHAR(100)
+	SET @TMP_Table = '#4Except_TMPGetValues'
+
+	EXEC HR_spFormula4ExceptGetValue
+		@EmployeeCode, @DowCode, @ListCode, @MinSiSalary, @MaxSiSalary, 
+		@ListType, @bsRealSalary, @bsMinSalary, @bsCoeffSalary, @bsPieceWage,
+		@jwRealSalary, @jwMinSalary, @jwCoeffSalary, @bsUnitOT, 0,
+		@GroupSalCode, 0, 0, @ctFromTime, @ctToTime,
+		0, 1, @InsSalary, 0, @UnitOutput, 
+		@DepartmentCode_REF, -1, @TMP_Table, @GenDate
+
+	select ce.* into #HCSPR_spBuildFormula4Except_TMP from (
+		select RecID, FParam, FValue, FType, [Source], FSpecialCase, LTRIM(FParam) AS tmpFParam
+		from HR_SysFormula WITH (NOLOCK)
+		where ListCode = @ListCode and GroupSalCode = @GroupSalCode and ListType = @ListType
+	) as ce
+
+	--
+	update T set T.FValue = ' ' + ISNULL(T.FValue,'') + ISNULL(Z.ParaValue, '')
+	from #HCSPR_spBuildFormula4Except_TMP as T 
+		inner join #4Except_TMPGetValues as Z on T.tmpFParam = Z.ParaName
+
+	-- update para ngaybatdau, ngayketthuc runtime
+	select ce.* into #HCSLS_FomulaSystemDetail from (
+		select RecID, FParam, FValue
+		from HR_SysFormulaDetail WITH (NOLOCK)
+		where ListCode = @ListCode and GroupSalCode = @GroupSalCode and ListType = @ListType
+	) as ce
+
+	update T set T.FValue = ' ''' + ISNULL(CONVERT(VARCHAR(10),T1.FValue, 111), '') + ''''
+	from #HCSPR_spBuildFormula4Except_TMP as T INNER JOIN #HCSLS_FomulaSystemDetail AS T1 ON T.tmpFParam = T1.FParam
+
+
+	update T set T.FValue = ' ' + ISNULL(T.FParam,'')
+	from #HCSPR_spBuildFormula4Except_TMP as T 
+	WHERE FType = 1 AND T.FValue IS NULL -- Xử lý cho các trường hợp value năm trong cau lenh select
+
+
+	-- Processing hàm Sum(), AVG()
+	SELECT ce.* INTO #FSpecialCase_TMP FROM (
+		SELECT RecID, CASE WHEN LEN(ISNULL(LTRIM(RTRIM([Source])),'')) = 0 THEN '' ELSE LTRIM(RTRIM([Source])) + '.' end + LTRIM(RTRIM(FValue)) AS Expression, 
+			FSpecialCase,
+			CASE WHEN LEN(ISNULL(LTRIM(RTRIM([Source])),'')) = 0 
+				THEN LTRIM(RTRIM(FValue)) 
+				ELSE 'isnull(' + LTRIM(RTRIM([Source])) + '.' + LTRIM(RTRIM(FValue)) + ',0)' 
+				END AS Expression2
+		FROM #HCSPR_spBuildFormula4Except_TMP
+		WHERE FSpecialCase > 0
+	) AS ce
+
+
+	SELECT ce.* INTO #FSpecialCase_TMP_TMP FROM (
+		SELECT G.RecID, G.FSpecialCase, R.Expression2, CAST(0 AS FLOAT) AS mValue
+		FROM (
+			SELECT FSpecialCase, MIN(RecID) AS RecID FROM #FSpecialCase_TMP GROUP BY FSpecialCase
+		) AS G CROSS APPLY (
+			SELECT N' ' + CONVERT(NVARCHAR(200), D.Expression2)
+			FROM #FSpecialCase_TMP AS D WHERE D.FSpecialCase = G.FSpecialCase
+			FOR XML PATH (''), TYPE
+		) AS GC (Expression2) CROSS APPLY (
+			SELECT STUFF(GC.Expression2.value('./text()[1]', 'VARCHAR(MAX)'), 1, 1, SPACE(0)) AS A
+		) AS R (Expression2)
+	) AS ce
+
+	-- Completing xử lý hàm Sum(), Avg()
+	UPDATE #HCSPR_spBuildFormula4Except_TMP SET FParam = '', FValue = '' WHERE FSpecialCase > 0
+
+	-- xử lý case by case
+	DECLARE @Expression NVARCHAR(max), @tmpAmount FLOAT, @RecID bigint
+	DECLARE cursor_BuildFormula4Except CURSOR FOR
+		SELECT RecID, LTRIM(Expression2) AS Expression FROM #FSpecialCase_TMP_TMP
+	OPEN cursor_BuildFormula4Except 
+	WHILE 1 = 1  
+	BEGIN   
+		FETCH NEXT FROM cursor_BuildFormula4Except INTO @RecID, @Expression
+		IF @@FETCH_STATUS != 0
+			BREAK;
+
+		SET @tmpAmount = 0
+		IF LEFT(@Expression,3) in (N'Sum', N'Avg')
+			EXEC HR_spCalcSumOrAvg @EmployeeCode, @Expression, @tmpAmount OUTPUT
+
+		-- update data
+		SET @tmpAmount = ISNULL(@tmpAmount, 0)
+		UPDATE #FSpecialCase_TMP_TMP SET mValue = @tmpAmount WHERE CURRENT OF cursor_BuildFormula4Except
+	END
+	CLOSE cursor_BuildFormula4Except   
+	DEALLOCATE cursor_BuildFormula4Except
+
+	UPDATE T SET T.FValue = z.mValue
+	FROM #HCSPR_spBuildFormula4Except_TMP AS T INNER JOIN #FSpecialCase_TMP_TMP AS Z ON T.RecID = Z.RecID
+
+
+-- 
+	BEGIN TRY
+
+		DECLARE @strSelect nvarchar(max)
+		SELECT @strSelect = STUFF((
+			SELECT CONVERT(NVARCHAR(200), D.mValue)
+			FROM (
+				select CAST('0' AS bigint) as RecID, 'SELECT @Amount = ' as mValue
+				union all
+				select RecID, isnull(FValue, '') as mValue from #HCSPR_spBuildFormula4Except_TMP
+			) AS D order by RecID FOR XML PATH (''), TYPE
+		).value('./text()[1]', 'NVARCHAR(MAX)'), 1, 0, SPACE(0)) --+ ' OPTION (RECOMPILE) '
+
+		SET @strSelect = REPLACE(@strSelect,'= ((','in (select DepartmentCode from HCSSYS_FNGetChildDepartments(')
+		SET @strSelect = REPLACE(@strSelect, '~?~) (', ',')
+		SET @strSelect = REPLACE(@strSelect, '~?~)(', ',')
+		SET @strSelect = @strSelect + ' from #ASFactors as CV '
+--SELECT @strSelect, @ListCode
+		EXEC sp_executesql @strSelect, N'@Amount money output', @Amount OUTPUT
+--SELECT @strSelect, @Amount
+	END TRY
+	BEGIN CATCH
+		print ERROR_MESSAGE()
+		SET @Amount = 0
+	END CATCH
+END
+
+-------------------------------------9
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spFormula4KowOrAlloGetValue]    Script Date: 1/17/2025 10:28:12 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER proc [dbo].[HR_spFormula4KowOrAlloGetValue] (
+	@EmployeeCode NVARCHAR(20) = '__NV001__',
+	@DowCode VARCHAR(7) = '2016/01',
+	@ListCode VARCHAR(20) = 'BPLV',
+	@MinSiSalary float = 1000000, -- muc luong toi thieu dong bhxh
+	@MaxSiSalary float = 16000000, -- muc luong toi da dong bhxh
+	@ListType varchar(150) = 'HCSLS_AlloGrade',
+	@bsRealSalary money = 0, 
+	@bsMinSalary money = 0, 
+	@bsCoeffSalary money = 0, 
+	@bsPieceWage money = 0, -- 10
+	@jwRealSalary money = 0, 
+	@jwMinSalary money = 0,
+	@jwCoeffSalary money = 0,
+	@bsUnitOT money = 0,
+	@IsDynamic bit = 0, -- = 0: trong 1 ky luong hok co nhieu quyet dinh luong, 1: trong 1 ky luong co nhieu quyet dinh luong
+	@GroupSalCode VARCHAR(20) = 1,
+	@FixAmount money = 1000000,
+	@SalaryRate float = 1,
+	@Fromtime datetime = '2013/09/26',
+	@ToTime datetime = '2013/10/25', -- 20
+	@DowNum float = 24,
+	@ExRate float = 1.0, 
+	@InsSalary money = 1000000, 
+	@ProductSal money = 1000000,
+	@UnitOutput money = 1,--25
+	@DepartmentCode_REF NVARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@JobWCode_REF VARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@TMP_Table varchar(200) = 'abc'
+)
+AS 
+BEGIN
+
+	SET NOCOUNT ON;
+
+	DECLARE @BegDay DATETIME, @EndDay DATETIME, @FirstDayOfMonth DATETIME, @LastDayOfMonth DATETIME
+	SELECT TOP(1) @BegDay = FromDate, @EndDay = ToDate FROM HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeCode AND DowCode = @DowCode
+	SET @FirstDayOfMonth = @DowCode + '/01'
+	SET @LastDayOfMonth = DateAdd(day, -1, DateAdd(month, DateDiff(month, 0, @FirstDayOfMonth)+1, 0) )
+
+	select ce.* into #MyTableVar_GetValues from (
+		select cast('' as varchar(200)) as ParaName, cast(N'' as nvarchar(200)) ParaValue where 1 = 0
+	) as ce
+
+	insert into #MyTableVar_GetValues(ParaName, ParaValue)
+	select ParaName, ParaValue
+	from (
+		select cast('CV.SoTienCoDinh' as varchar(200)) as ParaName, cast(cast(@FixAmount as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.TyLeLuong' as varchar(200)) as ParaName, cast(cast(@SalaryRate as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.DonGiaTienLuong' as varchar(200)) as ParaName, cast(cast(@UnitOutput as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.BoPhanLamViec' as varchar(200)) as ParaName, @DepartmentCode_REF as ParaValue WHERE @DepartmentCode_REF <> '-1'
+		union all
+		select cast('CV.JobWCode_REF' as varchar(200)) as ParaName, @JobWCode_REF as ParaValue WHERE @JobWCode_REF <> '-1'
+		union all
+		select cast('CV.LuongDongBHXH' as varchar(200)) as ParaName, cast(cast(@InsSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongCoBan' as varchar(200)) as ParaName, cast(cast(@bsRealSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongCoBan_ToiThieu' as varchar(200)) as ParaName, cast(cast(@bsMinSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.HeSo_LuongCoBan' as varchar(200)) as ParaName, cast(cast(@bsCoeffSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongKhoan' as varchar(200)) as ParaName, cast(cast(@bsPieceWage as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.DonGia_LuongNgoaiGio' as varchar(200)) as ParaName, cast(cast(@bsUnitOT as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.LuongChucDanh' as varchar(200)) as ParaName, cast(cast(@jwRealSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongChucDanh_ToiThieu' as varchar(200)) as ParaName, cast(cast(@jwMinSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.HeSo_LuongChucDanh' as varchar(200)) as ParaName, cast(cast(@jwCoeffSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		UNION ALL
+        select TOP(1) cast('CV.DonGiaQuyTienLuong' as varchar(200)) as ParaName, cast(cast(isnull(Sum(ESalaryUnit),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #tmp_tbl_kow_f_1_row
+		union all
+		select 'SC.' + cast(CoeffCode as varchar) as ParaName, cast(cast(isnull(Sum(Coefficient),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #AFDE group by CoeffCode
+		union all
+		select 'TE.' + cast(ExceptCode as varchar) as ParaName, cast(cast(isnull(Sum(AmountF),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #ATExcept group by ExceptCode
+		union all
+		select 'AG.' + cast(AlloGradeCode as varchar) as ParaName, cast(cast(isnull(Sum(AmountF),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #AALLO group by AlloGradeCode
+		union all
+		select 'EA.' + cast(AlloGradeCode as varchar) as ParaName, cast(cast(isnull(Sum(FixAmount),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #AEALLO group by AlloGradeCode
+		union all
+		select cast('''.DowCode.'',''.FromTime.'',''.ToTime.''),0)' as varchar(200)) as ParaName, 
+			'''' + @DowCode + ''',''' + convert(varchar(10), @Fromtime, 111) + ''',''' + convert(varchar(10), @ToTime, 111) + '''),0)' as ParaValue
+		union all
+		select cast('''.FromTime.'',''.ToTime.''),0)' as varchar(200)) as ParaName, 
+			'''' + convert(varchar(10), @Fromtime, 111) + ''',''' + convert(varchar(10), @ToTime, 111) + '''),0)' as ParaValue
+		union all
+		select cast('CV.MucLuongToiThieuVung.' as varchar(200)) as ParaName, cast(cast(@MinSiSalary as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.MucTranDongBHXH' as varchar(200)) as ParaName, cast(cast(@MaxSiSalary as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select 'GS.' + cast(GroupSalCode as varchar) as ParaName, cast(cast(isnull(Sum(SalaryUnit),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #HCSPR_FundSalaryUnit group by GroupSalCode
+		union all
+		select cast('KQDanhGia_Thang' as varchar(200)) as ParaName, 'M' + RIGHT(@DowCode, 2) as ParaValue
+		union all
+		select cast('KQDanhGia_Quy' as varchar(200)) as ParaName, 'Q' + RIGHT(@DowCode, 2) as ParaValue
+		union all
+		select cast('KQDanhGia_NuaNam' as varchar(200)) as ParaName, 'H' + RIGHT(@DowCode, 2) as ParaValue
+		union all
+		select cast('NgayBatDau_QDLuong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @Fromtime, 111) + '''' as ParaValue
+		union all
+		select cast('NgayKetThuc_QDLuong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @ToTime, 111) + '''' as ParaValue
+		union all
+		select cast('NgayBatDau_KyCong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @BegDay, 111) + '''' as ParaValue
+		union all
+		select cast('NgayKetThuc_KyCong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @EndDay, 111) + '''' as ParaValue
+		union all
+		select cast('NgayBatDau_DuongLich' as varchar(200)) as ParaName, '''' + convert(varchar(10), @FirstDayOfMonth, 111) + '''' as ParaValue
+		union all
+		select cast('NgayKetThuc_DuongLich' as varchar(200)) as ParaName, '''' + convert(varchar(10), @LastDayOfMonth, 111) + '''' as ParaValue
+		union all
+		select cast('''.DowCode.'')' as varchar(200)) as ParaName, '''' + @DowCode + ''')' as ParaValue
+		union all
+		select cast('''.DowCode.'', EmployeeCode)' as varchar(200)) as ParaName, '''' + @DowCode + ''', EmployeeCode)' as ParaValue
+		union all
+		select cast('''.DowCode.''~?~)' as varchar(200)) as ParaName, '''' + @DowCode + '''~?~)' as ParaValue
+		union all
+		select cast('''.DowCode.'',''.FromTime.'',''.ToTime.''),0)' as varchar(200)) as ParaName, 
+			'''' + @DowCode + ''',''' + convert(varchar(10), @Fromtime, 111) + ''',''' + convert(varchar(10), @ToTime, 111) + '''~?~)' as ParaValue
+	) as R
+
+	declare @query nvarchar(max)
+	set @query = 'insert into ' + @TMP_Table + '(ParaName, ParaValue) select ParaName, ParaValue from #MyTableVar_GetValues'
+	EXEC (@query)
+
+end
+
+---------------------------------------------------------------10
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spFormula4ExceptGetValue]    Script Date: 1/17/2025 10:29:08 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER proc [dbo].[HR_spFormula4ExceptGetValue] (
+	@EmployeeCode NVARCHAR(20) = '__NV001__',
+	@DowCode VARCHAR(7) = '2016/01',
+	@ListCode VARCHAR(20) = 'BPLV',
+	@MinSiSalary float = 1000000, -- muc luong toi thieu dong bhxh
+	@MaxSiSalary float = 16000000, -- muc luong toi da dong bhxh
+	@ListType varchar(150) = 'HCSLS_AlloGrade',
+	@bsRealSalary money = 0, 
+	@bsMinSalary money = 0, 
+	@bsCoeffSalary money = 0, 
+	@bsPieceWage money = 0, -- 10
+	@jwRealSalary money = 0, 
+	@jwMinSalary money = 0,
+	@jwCoeffSalary money = 0,
+	@bsUnitOT money = 0,
+	@IsDynamic bit = 0, -- = 0: trong 1 ky luong hok co nhieu quyet dinh luong, 1: trong 1 ky luong co nhieu quyet dinh luong
+	@GroupSalCode VARCHAR(20) = 1,
+	@FixAmount money = 1000000,
+	@SalaryRate float = 1,
+	@Fromtime datetime = '2013/09/26',
+	@ToTime datetime = '2013/10/25', -- 20
+	@DowNum float = 24,
+	@ExRate float = 1.0, 
+	@InsSalary money = 1000000, 
+	@ProductSal money = 1000000,
+	@UnitOutput money = 1,--25
+	@DepartmentCode_REF NVARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@JobWCode_REF VARCHAR(20) = -1, -- Nếu là -1 ==> Khong co quyết định thuyên chuyển, bổ sung, điều động
+	@TMP_Table varchar(200) = 'abc',
+	@GenDate datetime = '2016/12/21'
+)
+AS 
+BEGIN
+
+	SET NOCOUNT ON;
+
+	DECLARE @BegDay DATETIME, @EndDay datetime, @FirstDayOfMonth DATETIME, @LastDayOfMonth DATETIME
+	SELECT TOP(1) @BegDay = FromDate, @EndDay = ToDate FROM HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeCode AND DowCode = @DowCode
+	SET @FirstDayOfMonth = @DowCode + '/01'
+	SET @LastDayOfMonth = DateAdd(day, -1, DateAdd(month, DateDiff(month, 0, @FirstDayOfMonth)+1, 0) )
+
+	select ce.* into #MyTableVar_GetValues from (
+		select cast('' as varchar(200)) as ParaName, cast(N'' as nvarchar(200)) ParaValue where 1 = 0
+	) as ce
+
+	insert into #MyTableVar_GetValues(ParaName, ParaValue)
+	select ParaName, ParaValue
+	from (
+		select cast('CV.SoTienCoDinh' as varchar(200)) as ParaName, cast(cast(@FixAmount as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.TyLeLuong' as varchar(200)) as ParaName, cast(cast(@SalaryRate as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.DonGiaTienLuong' as varchar(200)) as ParaName, cast(cast(@UnitOutput as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.BoPhanLamViec' as varchar(200)) as ParaName, @DepartmentCode_REF as ParaValue WHERE @DepartmentCode_REF <> '-1'
+		union all
+		select cast('CV.JobWCode_REF' as varchar(200)) as ParaName, @JobWCode_REF as ParaValue WHERE @JobWCode_REF <> '-1'
+		union all
+		select cast('CV.LuongDongBHXH' as varchar(200)) as ParaName, cast(cast(@InsSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongCoBan' as varchar(200)) as ParaName, cast(cast(@bsRealSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongCoBan_ToiThieu' as varchar(200)) as ParaName, cast(cast(@bsMinSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.HeSo_LuongCoBan' as varchar(200)) as ParaName, cast(cast(@bsCoeffSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongKhoan' as varchar(200)) as ParaName, cast(cast(@bsPieceWage as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.DonGia_LuongNgoaiGio' as varchar(200)) as ParaName, cast(cast(@bsUnitOT as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.LuongChucDanh' as varchar(200)) as ParaName, cast(cast(@jwRealSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.LuongChucDanh_ToiThieu' as varchar(200)) as ParaName, cast(cast(@jwMinSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		union all
+		select cast('CV.HeSo_LuongChucDanh' as varchar(200)) as ParaName, cast(cast(@jwCoeffSalary as decimal(18,5)) as varchar(100)) as ParaValue WHERE @IsDynamic = 1
+		UNION ALL
+        select TOP(1) cast('CV.DonGiaQuyTienLuong' as varchar(200)) as ParaName, cast(cast(isnull(Sum(ESalaryUnit),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #tmp_tbl_kow_f_1_row
+		union all
+		select 'SC.' + cast(CoeffCode as varchar) as ParaName, cast(cast(isnull(Sum(Coefficient),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #AFDE group by CoeffCode
+		union all
+		select 'TE.' + cast(ExceptCode as varchar) as ParaName, cast(cast(isnull(Sum(AmountF),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #ATExcept group by ExceptCode
+		union all
+		select 'AG.' + cast(AlloGradeCode as varchar) as ParaName, cast(cast(isnull(Sum(AmountF),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #AALLO group by AlloGradeCode
+		union all
+		select 'EA.' + cast(AlloGradeCode as varchar) as ParaName, cast(cast(isnull(Sum(FixAmount),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #AEALLO group by AlloGradeCode
+		union all
+		select cast('''.DowCode.'',''.FromTime.'',''.ToTime.''),0)' as varchar(200)) as ParaName, 
+			'''' + @DowCode + ''',''' + convert(varchar(10), @Fromtime, 111) + ''',''' + convert(varchar(10), @ToTime, 111) + '''),0)' as ParaValue
+		union all
+		select cast('''.FromTime.'',''.ToTime.''),0)' as varchar(200)) as ParaName, 
+			'''' + convert(varchar(10), @Fromtime, 111) + ''',''' + convert(varchar(10), @ToTime, 111) + '''),0)' as ParaValue
+		union all
+		select cast('CV.MucLuongToiThieuVung.' as varchar(200)) as ParaName, cast(cast(@MinSiSalary as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select cast('CV.MucTranDongBHXH' as varchar(200)) as ParaName, cast(cast(@MaxSiSalary as decimal(18,5)) as varchar(100)) as ParaValue
+		union all
+		select 'GS.' + cast(GroupSalCode as varchar) as ParaName, cast(cast(isnull(Sum(SalaryUnit),0) as decimal(18,5)) as varchar(100)) as ParaValue 
+		from #HCSPR_FundSalaryUnit group by GroupSalCode
+		union all
+		select cast('KQDanhGia_Thang' as varchar(200)) as ParaName, 'M' + RIGHT(@DowCode, 2) as ParaValue
+		union all
+		select cast('KQDanhGia_Quy' as varchar(200)) as ParaName, 'Q' + RIGHT(@DowCode, 2) as ParaValue
+		union all
+		select cast('KQDanhGia_NuaNam' as varchar(200)) as ParaName, 'H' + RIGHT(@DowCode, 2) as ParaValue
+		union all
+		select cast('NgayBatDau_QDLuong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @Fromtime, 111) + '''' as ParaValue
+		union all
+		select cast('NgayKetThuc_QDLuong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @ToTime, 111) + '''' as ParaValue
+		union all
+		select cast('NgayBatDau_KyCong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @BegDay, 111) + '''' as ParaValue
+		union all
+		select cast('NgayKetThuc_KyCong' as varchar(200)) as ParaName, '''' + convert(varchar(10), @EndDay, 111) + '''' as ParaValue
+		union all
+		select cast('NgayBatDau_DuongLich' as varchar(200)) as ParaName, '''' + convert(varchar(10), @FirstDayOfMonth, 111) + '''' as ParaValue
+		union all
+		select cast('NgayKetThuc_DuongLich' as varchar(200)) as ParaName, '''' + convert(varchar(10), @LastDayOfMonth, 111) + '''' as ParaValue
+		union all
+		select cast('''.DowCode.'')' as varchar(200)) as ParaName, '''' + @DowCode + ''')' as ParaValue
+		union all
+		select cast('''.DowCode.'', EmployeeCode)' as varchar(200)) as ParaName, '''' + @DowCode + ''', EmployeeCode)' as ParaValue
+		union all
+		select cast('''.DowCode.''~?~)' as varchar(200)) as ParaName, '''' + @DowCode + '''~?~)' as ParaValue
+		union all
+		select cast('''.DowCode.'',''.FromTime.'',''.ToTime.''),0)' as varchar(200)) as ParaName, 
+			'''' + @DowCode + ''',''' + convert(varchar(10), @Fromtime, 111) + ''',''' + convert(varchar(10), @ToTime, 111) + '''~?~)' as ParaValue
+		union all
+		select cast('NgayPhatSinh' as varchar(200)) as ParaName, '''' + convert(varchar(10), @GenDate, 111) + '''' as ParaValue
+	) as R
+
+	declare @query nvarchar(max)
+	set @query = 'insert into ' + @TMP_Table + '(ParaName, ParaValue) select ParaName, ParaValue from #MyTableVar_GetValues'
+	EXEC (@query)
+
+end
+
