@@ -1,0 +1,982 @@
+------------------------------------------------1
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spCalcAlloGradeFormulaLawSal]    Script Date: 1/21/2025 5:29:35 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER procedure [dbo].[HR_spCalcAlloGradeFormulaLawSal]
+(
+	@EmployeeID NVARCHAR(20) = 5141,
+	@E_CurrencyCode varchar(3) = 'VND',
+	@DowCode VARCHAR(7) = 2,
+	@BUCode NVARCHAR(20),
+	@App_BaseAmtDec int = 0,
+	@App_ForgCurrAmtDec int = 0,	
+	@E_RateToVND money = 1,
+	@GroupSalCode VARCHAR(20) = 4,
+	@DowNum float = 24,
+	@InsSalary money = 0, 
+	@ProductSal money = 0,
+	@AlloGradeCode VARCHAR(20),
+	@AlloAmount float output
+)
+AS
+
+	DECLARE @TotalAllF money, @Amount MONEY, @AmountTT MONEY 
+	DECLARE @UICurrencyCode varchar(3), @SI_MaxSalary money, @SI_MinSalary money
+	DECLARE @FixAmount money, @SalaryRate float
+	DECLARE @FromTime datetime, @ToTime datetime, @IsMonthAmount bit, @CurDate datetime, @Amount2 money, @AmountTemp money
+	DECLARE @UnitOutput money, @soluot int, @AmountNoTax money
+	DECLARE @mEmpID NVARCHAR(20), @BeginDate datetime, @EndDate datetime, @DepartmentCode NVARCHAR(20), @JobWCode VARCHAR(20)
+	DECLARE @tempTime datetime, @t1 datetime, @t2 datetime, @IsInPayroll bit
+	DECLARE @Allo_EffectDate datetime
+	DECLARE @E_RateToVNDAllo FLOAT, @PRIsMinSalByInsList BIT, @PRCurrencyForCal nvarchar(3), @PRCurrencyForPay nvarchar(3)
+    
+
+	set @E_RateToVNDAllo = 1
+	set @soluot = 0
+	SET @TotalAllF = 0
+	SET @SI_MaxSalary = 0
+	SET @SI_MinSalary = 0
+	SET @Amount = 0
+	SET @AmountTT = 0
+	SET @AmountNoTax =0
+
+	-- Lay ve dau ki luong, cuoi ki luong
+	SELECT TOP(1) @FromTime = FromDate, @ToTime = ToDate FROM HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode
+
+	-- Lay ve muc dong bhxh toi da, toi thieu theo ky tinh luong.	
+	SELECT TOP(1) @SI_MaxSalary = SI_MaxSalary, @SI_MinSalary = SI_MinSalary FROM HR_fnGetRateDeductions(@DowCode + '/01') 
+	WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+
+	SELECT TOP(1) @PRCurrencyForCal = PRCurrencyForCal, @PRCurrencyForPay = PRCurrencyForPay, @PRIsMinSalByInsList = case when PRIsSalGradeSISal = 1 and PRIsMinSalByInsList = 1 then 1 else 0 end
+	FROM HR_ConfigPR WITH (NOLOCK)
+	WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+
+	select ce.* into #Insurance from (
+		select SI.EmployeeID, SIRateE as SIRateE, SIRateC as SIRateC, HIRateC as HIRateC, 
+			HIRateE as HIRateE, UIRateC as UIRateC, UIRateE as UIRateE,
+			@SI_MinSalary as MinimumSalary, @SI_MaxSalary as MaximumSalary
+		from HR_SocialIns as SI  WITH (NOLOCK)
+		where SI.DowCode = @DowCode and SI.EmployeeID = @EmployeeID
+	) as ce
+		
+	-- Tao bang tam lay ve danh sach cac biet le cua 1 nhan vien theo tháng
+	select CE.ExceptCode, Sum(CE.AmountF) as AmountF into #ATExcept from HR_PayTExcept CE WITH (NOLOCK) where DowCode = @DowCode and EmployeeID = @EmployeeID Group By ExceptCode
+		
+	-- Tao bang tam lay ve danh sach cac phu cap cua 1 nhan vien theo tháng
+	select ALLO.AlloGradeCode, Sum(ALLO.AmountF) as AmountF into #AALLO from HR_PayAllowance ALLO WITH (NOLOCK) where DowCode = @DowCode and EmployeeID = @EmployeeID Group By AlloGradeCode
+		
+	-- Tra ve so phut di tre, ve som, so lan di tre, ve som theo tháng
+	SELECT EarLateWorks.* into #EarLateWorks from (
+		select EmployeeID, SUM(TimeInLate) as SoPhut_VaoTre, SUM(TimeOutEarly) as SoPhut_VeSom, 
+			SUM(case when TimeInLate > 0 then 1 else 0 end) as SoLan_VaoTre, 
+			SUM(case when TimeOutEarly > 0 then 1 else 0 end) as SoLan_VeSom
+		from HR_TSKowLateEarly WITH (NOLOCK) where DowCode = @DowCode And EmployeeID = @EmployeeID 
+		group by EmployeeID
+	) as EarLateWorks
+
+	-- Lay quyet dinh phu cap hien tai		
+	SELECT EALLO.* into #AEALLO from 
+	(
+		SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, EAllo.FixAmount, EAllo.SalaryRate,
+			EAllo.EffectDate, case when EndDate is null then @ToTime else EndDate end as EndDate
+		FROM HR_EmpAllowance as EAllo WITH (NOLOCK) 
+		inner join HR_LSAlloGrade AS AG WITH (NOLOCK) ON EAllo.AlloGradeCode = AG.AlloGradeCode
+		WHERE EAllo.EmployeeID = @EmployeeID and (AG.IsFixAmount = 1) AND (EffectDate <= @ToTime 
+			AND (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime)) 
+			
+		UNION ALL
+		SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, 
+			dbo.HR_fnGetSalaryByLevel(EAllo.EmployeeID, @ToTime, 
+				CASE WHEN AG.SalaryType = 2 AND @PRIsMinSalByInsList = 1 THEN -2
+					WHEN AG.SalaryType = 4 AND @PRIsMinSalByInsList = 1 THEN -4
+					ELSE AG.SalaryType end) * EAllo.SalaryRate / 100 AS FixAmount,
+			EAllo.SalaryRate, EAllo.EffectDate, case when EndDate is null then @ToTime else EndDate end as EndDate
+		FROM HR_EmpAllowance as EAllo WITH (NOLOCK) inner join HR_LSAlloGrade AS AG WITH (NOLOCK) ON EAllo.AlloGradeCode = AG.AlloGradeCode
+		WHERE  EAllo.EmployeeID = @EmployeeID AND (AG.IsFixAmount = 0) AND (EffectDate <= @ToTime and (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime))
+	) as EALLO
+		
+	-- Lay danh sach nhan vien cho phép điều động, bổ sung, thuyên chuyển
+	SELECT EWork.* into #EWork from (			
+		select EmployeeID, 
+			case when BeginDate < @FromTime then @FromTime else BeginDate end as FromTime,
+			case when EndDate IS null then @ToTime when EndDate > @ToTime then @ToTime else EndDate end as ToTime, 
+			OrgUnitID, PositionID 
+		from (
+			SELECT EmployeeID, BeginDate, EndDate, OrgUnitID, PositionID,
+				ROW_NUMBER() OVER (PARTITION BY EmployeeID ORDER BY EmployeeID, [BeginDate] desc) AS Row
+			FROM HR_EmpWorking WITH (NOLOCK) where EmployeeID = @EmployeeID
+		) as R where Row = 1
+	) as EWork
+		
+	--select CE.* into #EPerApps from (
+	--	SELECT HCSEM_EmpAppraisal.EmployeeID, RankM01 AS M01, RankM02 AS M02, RankM03 AS M03, RankM04 AS M04, RankM05 AS M05, 
+	--		RankM06 AS M06, RankM07 AS M07, RankM08 AS M08, RankM09 AS M09, RankM10 AS M10, RankM11 AS M11, RankM12 AS M12, 
+	--		RankQ01 AS Q01, RankQ02 AS Q02, RankQ03 AS Q03, RankQ04 AS Q04, RankH01 AS H01, RankH02 AS H02, RankYear AS AppYear
+	--	FROM HCSEM_EmpAppraisal WITH (NOLOCK)
+	--	Where EmployeeID = @EmployeeID
+	--) as CE
+					
+	-- Lay ve cac yeu to
+	select ce.*
+	into #ASFactors from (
+		SELECT BsSalary.EmployeeID, isnull(BsSalary.RealSalary,0) as LuongCoBan, isnull(BsSalary.MinSalary,0) as LuongCoBan_ToiThieu, 
+			isnull(BsSalary.CoeffSalary,0) as HeSo_LuongCoBan, isnull(BsSalary.PieceWage,0) as LuongKhoan, 
+			isnull(JwSalary.RealSalary,0) as LuongChucDanh, isnull(JwSalary.MinSalary,0) as LuongChucDanh_ToiThieu, isnull(UnitOT, 0) as DonGia_LuongNgoaiGio,
+			PRTUnionAmount AS CongDoanPhi, PRSIStandardWD AS NgayCongChuan_BHXH, TSMaxOTHourPerY AS SoGioNgoaiGio_QD1Nam, 
+			TSStandardWDOfOT AS NgayCongChuan_TinhNgoaiGio, PRPITFamilyTaxFreeOwn AS TruGiaCanh_BanThan, PRPITFamilyTaxFreeUnit AS TruGiaCanh_1PhuThuoc, 
+			ConTypeCode_REF AS LoaiHDLD, CV.EmpTypeCode_REF AS LoaiNhanVien, CV.DepartmentCode_REF AS BoPhanLamViec, cv.JobWCode_REF AS ChucDanhCV,
+		--	M01, M02, M03, M04, M05, M06, M07, M08, M09, M10, M11, M12, Q01, Q02, Q03, Q04, H01, H02, AppYear,
+			EDow_Num AS NgayCongChuan, IsServiceFee AS CoPhiDichVu,
+			JoinedOn AS NgayVaoLam, EndDate AS NgayThoiViec, CareerDate AS NgayVaoNganh, PersonnelDate AS NgayVaoBienChe, 
+			HiredOn AS NgayThanhNVChinhThuc, IsTUnion AS LaCongDoanVien, CV.TUnionDate AS NgayVaoCongDoan, 
+			IsHI AS CoThamGiaBHYT, IsSI AS CoThamGiaBHXH, IsUI AS CoThamGiaBHTN,
+			AdvanceSal AS MucLuongTamUng, [HCSEM.GioiTinh_Val] AS GioiTinh, TUnionFee AS MucDongCongDoanPhi, AssignRegionCode_REF AS VungLamViec, 
+			CAP3 AS BoPhanCap3, CAP2 AS BoPhanCap2
+		FROM(
+			select EmployeeID, ConTypeCode_REF, EmpTypeCode_REF, DepartmentCode_REF, JobWCode_REF, IsServiceFee,
+				JoinedOn, case when StoppedOn is not null then DATEADD(day, -1, StoppedOn) else StoppedOn end as EndDate, CareerDate, PersonnelDate, HiredOn,
+				IsHI, IsSI, IsUI, AdvanceSal, [HCSEM.GioiTinh_Val], AssignRegionCode_REF,
+				CAP3, CAP2, TUnionDate, IsTUnion, TUnionFee
+			from HR_VWEmpCurriculumViateCV 
+			left join HR_VMDepartmentFullLevel ON HR_VMDepartmentFullLevel.OrgUnitID = HR_VWEmpCurriculumViateCV.OrgUnitID
+			where EmployeeID = @EmployeeID 
+			
+		)as CV left outer JOIN (
+			select EmployeeID, RealSalary, MinSalary, CoeffSalary, PieceWage, UnitOT
+			from HR_EmpBasicSalary where IsCurrent = 1 and EmployeeID = @EmployeeID
+		) as BsSalary on CV.EmployeeID = BsSalary.EmployeeID
+		LEFT OUTER JOIN (
+			SELECT EmployeeID, RealSalary, MinSalary
+			from HR_EmpJWSalary where IsCurrent = 1 and EmployeeID = @EmployeeID
+		) as JwSalary
+		ON BsSalary.EmployeeID = JwSalary.EmployeeID
+		LEFT OUTER JOIN (
+			select @EmployeeID as EmployeeID, PRTUnionAmount, PRSIStandardWD, PRPITFamilyTaxFreeOwn, PRPITFamilyTaxFreeUnit
+			from HR_ConfigPR WITH (NOLOCK)
+			WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+		) as SC ON CV.EmployeeID = SC.EmployeeID LEFT OUTER JOIN (
+			SELECT @EmployeeID AS EmployeeID, TSMaxOTHourPerY, TSStandardWDOfOT
+			FROM HR_ConfigTS WITH (NOLOCK)
+			WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+		) AS TS ON CV.EmployeeID = TS.EmployeeID
+	--	left outer join #EPerApps as EPA on CV.EmployeeID = EPA.EmployeeID
+		LEFT OUTER JOIN
+		(
+			SELECT EmployeeID, StandardWD AS EDow_Num FROM HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode
+		) as PRD on CV.EmployeeID = PRD.EmployeeID
+		--LEFT OUTER JOIN (
+		--	select EmployeeID, IsTUnion, TUnionDate, TUnionFee from HCSEM_EmpInfoUnion WITH (NOLOCK) where EmployeeID = @EmployeeID
+		--) as EParty on CV.EmployeeID = EParty.EmployeeID
+	) as CE
+	
+	-- Lấy tổng quỹ tiền lương group by theo GroupSalCode
+	select ce.* into #HCSPR_FundSalaryUnit from (
+		select GroupSalCode, Sum(TotalFund) as SalaryUnit from HR_PRFundSalaryUnit with (nolock) where DowCode = @DowCode AND 1 = 0 group by GroupSalCode
+	) as ce
+
+	-- Lay ve don gia Tổng quỹ tiền lương
+	SET @UnitOutput = 0
+	Exec HR_spGetSalaryUnit @DowCode, @EmployeeID, @Fromtime, @ToTime, @GroupSalCode, @UnitOutput output
+	
+	select ce.* into #tmp_tbl_kow_f_1_row from (
+		select 0 as ESalaryUnit
+	) as ce
+
+	-- Lay ve he so luong-thuong 
+    select AFDE.* into #AFDE from ( 
+        select R.CoeffCode, Sum( 
+				case when IsSplit = 0 then Coefficient 
+						when IsSplit = 1 and Row_ID = 1 then Coefficient else 0 end) as Coefficient   
+		from (
+			select FDE.CoeffCode, FDE.Coefficient, SC.IsSplit, ROW_NUMBER() OVER(PARTITION BY FDE.EmployeeID, FDE.CoeffCode ORDER BY FDE.EmployeeID, FromTime desc) as Row_ID
+			FROM HR_PRSalCoeffEmp as FDE WITH (NOLOCK) left outer join HR_LSSalCoeff as SC WITH (NOLOCK) on FDE.CoeffCode = SC.CoeffCode 
+			Where EmployeeID = @EmployeeID and FromTime<=@ToTime and @FromTime<=ToTime 
+		) as R
+		Group By R.CoeffCode 
+    ) as AFDE
+
+	-- Lay ve danh sach phu cap cua nhan vien tinh cho 1 thang, hu?ng 1 lan trong thang
+	DECLARE EAllowance_Cursor CURSOR FOR
+		select EmployeeID, Allo.AlloGradeCode, Allo.CurrencyCode, IsMonthAmount, AmountNoTax, AG.IsInPayroll
+		from HR_EmpAllowance as Allo WITH (NOLOCK) inner join HR_LSAlloGrade as AG WITH (NOLOCK) on Allo.AlloGradeCode = AG.AlloGradeCode
+		where IsUserFormula = 1 and (EffectDate <= @ToTime and (EndDate = '' OR EndDate IS NULL OR EndDate > @FromTime)) 
+			AND EmployeeID = @EmployeeID and IsManual <> 1
+			AND IsLawSalary = 1 and Allo.AlloGradeCode = @AlloGradeCode
+		ORDER BY AG.SalaryInclude
+	OPEN EAllowance_Cursor
+	WHILE 1 = 1
+	BEGIN
+		FETCH NEXT FROM EAllowance_Cursor INTO @EmployeeID, @AlloGradeCode, @UICurrencyCode, @IsMonthAmount,@AmountNoTax, @IsInPayroll
+		IF @@FETCH_STATUS != 0
+			BREAK;
+
+		IF @UICurrencyCode ='' OR @UICurrencyCode IS NULL OR LEN(@UICurrencyCode)= 0	-- Neu trong DM PC ko chon nguyen te tinh PC thi gan nguyen te tinh PC = nguyen te tinh luong cua NV
+			SET @UICurrencyCode = @E_CurrencyCode
+	
+		IF @UICurrencyCode <> @E_CurrencyCode	-- Neu nguyen te PC <> nguyen te tinh luong cua NV thi tim ty gia cua nguyen te PC
+			SELECT TOP(1) @E_RateToVNDAllo = RateToVND FROM HR_fnGetPayExchangeRate(@BUCode, @DowCode, @UICurrencyCode)
+		ELSE 
+			SET @E_RateToVNDAllo = @E_RateToVND
+
+		SET @E_RateToVNDAllo = ISNULL(@E_RateToVNDAllo, 1)		
+		SET @AmountTemp = 0
+		SET @FixAmount = 0
+		SET @SalaryRate = 0
+		SET @EndDate = @ToTime
+
+		select @FixAmount = FixAmount, @SalaryRate = SalaryRate, @EndDate = EndDate, @Allo_EffectDate = case when EffectDate > @FromTime then EffectDate else @FromTime end
+		from #AEALLO Where AlloGradeCode = @AlloGradeCode
+		SET @EndDate = case when @EndDate IS null then @ToTime else @EndDate end
+		-- Lay mốc thời gian tạm (from_time)
+		--SET @tempTime = DATEADD(DAY,-1,@FromTime)
+		SET @tempTime = DATEADD(DAY,-1, @Allo_EffectDate)
+		
+		if @IsMonthAmount = 1
+		begin			
+			IF not exists (select TOP(1) 1 from #EWork) -- Trong thang nhân viên khong co quyet dinh thuyên chuyển nào
+			BEGIN
+				
+				exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+				'HR_LSAlloGrade', 0, 0, 0, 0, 
+				0, 0, 0, 0, 0, 
+				@GroupSalCode, @FixAmount, @SalaryRate, @Allo_EffectDate, @EndDate, 
+				@DowNum, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+				-1, -1, @AmountTemp output
+
+				SET @AmountTemp = case when @AmountTemp is null then 0 else @AmountTemp end
+			end
+			ELSE
+			begin
+				if not exists ( 
+					SELECT top(1) 1 from HR_SysFormula 
+					where ListType = 'HR_LSAlloGrade' and ListCode = @AlloGradeCode and GroupSalCode = @GroupSalCode
+						and (Atom = 'DepartmentCode_REF' Or Atom = 'JobWCode_REF'))
+				begin
+					-- Phan ra cong thuc, tinh tung phu cap 1				
+					exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+					'HR_LSAlloGrade', 0, 0, 0, 0, 
+					0, 0, 0, 0, 0, 
+					@GroupSalCode, @FixAmount, @SalaryRate, @Allo_EffectDate, @EndDate, 
+					@DowNum, @E_RateToVND, @InsSalary, @ProductSal,@UnitOutput,
+					-1, -1, @AmountTemp OUTPUT
+                    
+					SET @AmountTemp = case when @AmountTemp is null then 0 else @AmountTemp end
+				end
+				else
+				begin
+					SET @AmountTemp = 0
+					SET @Amount2 = 0
+					DECLARE Cursor_1 CURSOR FOR
+						select EmployeeID, FromTime, ToTime, OrgUnitID, PositionID from #EWork
+						Order By FromTime 
+					OPEN Cursor_1
+					WHILE 1 = 1
+					BEGIN
+						FETCH NEXT FROM Cursor_1 INTO @mEmpID, @BeginDate, @EndDate, @DepartmentCode, @JobWCode
+						IF @@FETCH_STATUS != 0
+							BREAK;
+						IF DATEDIFF(day, @tempTime, @BeginDate) >= 2
+						begin
+							SET @t1 = DATEADD(DAY,1,@tempTime)
+							SET @t2 = DATEADD(DAY,-1,@BeginDate)
+
+							-- Phan ra cong thuc, tinh tung phu cap 1				
+							exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+							'HR_LSAlloGrade', 0, 0, 0, 0, 
+							0, 0, 0, 0, 0, 
+							@GroupSalCode, @FixAmount, @SalaryRate, @t1, @t2, 
+							@DowNum, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+							-1, -1, @Amount2 output
+							
+							SET @AmountTemp = (case when @Amount2 is null then 0 else @Amount2 end) + @AmountTemp
+						end	
+						SET @tempTime = @EndDate
+						
+						set @JobWCode = case when @JobWCode is null then -1 else @JobWCode end
+						-- Phan ra cong thuc, tinh tung phu cap 1				
+						exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+						'HR_LSAlloGrade', 0, 0, 0, 0, 
+						0, 0, 0, 0, 0, 
+						@GroupSalCode, @FixAmount, @SalaryRate, @BeginDate, @EndDate, 
+						@DowNum, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+						-1, -1, @Amount2 OUTPUT
+                        
+						set @AmountTemp = (case when @Amount2 is null then 0 else @Amount2 end) + @AmountTemp
+						
+					END
+					CLOSE Cursor_1  
+					DEALLOCATE Cursor_1
+				end
+			end
+
+		end
+		else	
+		begin
+			--SET @CurDate = @FromTime
+			SET @CurDate = @Allo_EffectDate
+			While DATEDIFF(DAY, @CurDate, @ToTime) >= 0
+			BEGIN	
+				set @Amount2 = 0
+				
+				If exists(select TOP(1) 1 from #EWork where @CurDate between FromTime and ToTime) 
+				begin
+					Select top(1) @DepartmentCode = OrgUnitID, @JobWCode = PositionID from #EWork where @CurDate between FromTime and ToTime
+					set @JobWCode = case when @JobWCode is null then -1 else @JobWCode end
+					
+					-- Xet tu ngay @fBeginDay , den ngay @ToTime cua ky tinh luong
+					exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+						'HR_LSAlloGrade', 0, 0, 0, 0, 
+						0, 0, 0, 0, 0, 
+						@GroupSalCode, @FixAmount, @SalaryRate, @CurDate, @CurDate, 
+						@DowNum, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+						@DepartmentCode, @JobWCode, @Amount2 output
+				end
+				Else
+				begin 
+					-- Xet tu ngay @fBeginDay , den ngay @ToTime cua ky tinh luong
+					exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+						'HR_LSAlloGrade', 0, 0, 0, 0, 
+						0, 0, 0, 0, 0, 
+						@GroupSalCode, @FixAmount, @SalaryRate, @CurDate, @CurDate, 
+						@DowNum, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+						-1, -1, @Amount2 output
+				end
+				
+				--print 'PC ' + cast(@CurDate as varchar) + 'Tien tinh duoc ' + cast(case when @Amount2 is null then 0 else @Amount2 end as varchar)
+				set @AmountTemp = (case when @Amount2 is null then 0 else @Amount2 end) + @AmountTemp
+				if @Amount2>0 
+				set @soluot=@soluot+1
+				SET @CurDate = DATEADD(day, 1, @CurDate)
+			END
+		end
+		
+		IF @AmountTemp != 0
+		BEGIN
+			
+			SET @Amount = @AmountTemp
+			SET @AmountTT = 0
+
+			if isnull(@UICurrencyCode, '') = ''
+			begin
+				if @PRCurrencyForPay = @E_CurrencyCode
+				begin
+					set @AmountTT = @Amount * @E_RateToVND
+				end
+				else
+				begin
+					set @AmountTT = @Amount / @E_RateToVND
+				END
+			end
+			else
+			begin
+				-- Nếu N.Tệ phát sinh = N.Tệ thanh toán
+				if @UICurrencyCode = @PRCurrencyForPay
+				begin
+					-- Nếu N.Tệ phát sinh = N.Tệ tính lương của nv
+					if @PRCurrencyForPay = @E_CurrencyCode
+					begin
+						set @AmountTT = @Amount * @E_RateToVND
+					end
+					else -- Nguyên tệ tính lương nv khác N.Tệ phát sinh
+					begin
+						set @AmountTT = @Amount
+						set @Amount = @Amount / @E_RateToVND
+					end
+				end
+				else if @UICurrencyCode <> @PRCurrencyForPay -- N.Tệ phát sinh khác N.Tệ thanh toán
+				begin
+					if @PRCurrencyForPay = @E_CurrencyCode
+					begin
+						set @AmountTT = @Amount * @E_RateToVND
+						set @Amount = @AmountTT 
+					end
+					else
+					begin
+						if @UICurrencyCode = @E_CurrencyCode
+						begin
+							set @AmountTT = @Amount * @E_RateToVND
+						end
+						else
+						BEGIN
+							
+							set @AmountTT = @Amount * @E_RateToVNDAllo
+							SET @Amount = (@AmountTT / @E_RateToVND)
+						end
+					end
+				end
+				else
+					continue;
+			END
+			
+			if (@AmountNoTax >0 and @AmountTemp * @E_RateToVNDAllo < @AmountNoTax)
+			begin
+				if (@AmountTemp * @E_RateToVNDAllo) < 0	
+					SET @AmountNoTax= 0 
+				else 
+					SET @AmountNoTax = @AmountTemp * @E_RateToVNDAllo
+			end
+			
+			-- cap nhật lại danh sach phu cap
+			if not exists(select TOP(1)1 from #AALLO Where AlloGradeCode = @AlloGradeCode)
+				Insert into #AALLO(AlloGradeCode, AmountF) values(@AlloGradeCode, Round(case when @UICurrencyCode = @E_CurrencyCode then @AmountTemp else @AmountTemp / @E_RateToVNDAllo end, @App_BaseAmtDec))
+			ELSE
+				Update #AALLO set AmountF = AmountF + @AmountTemp Where AlloGradeCode = @AlloGradeCode
+
+			If @IsInPayroll = 1
+				SET @TotalAllF = @TotalAllF + @AmountTemp				
+		END
+	END
+	CLOSE EAllowance_Cursor  
+	DEALLOCATE EAllowance_Cursor
+
+	set @AlloAmount = @TotalAllF
+	
+	RETURN
+
+
+-------------------------------------------------------------2
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spCalcAlloGradeFormula]    Script Date: 1/21/2025 5:30:24 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[HR_spCalcAlloGradeFormula]
+(
+	@EmployeeID NVARCHAR(20) = '01993',
+	@E_CurrencyCode varchar(3) = 'VND',
+	@DowCode VARCHAR(7) = '2020/01',
+	@MMYYYY varchar(7) = '2020/01',
+	@BUCode NVARCHAR(20) = NULL,
+	@App_BaseAmtDec int = 0,
+	@App_ForgCurrAmtDec int = 0,	
+	@E_RateToVND money = 1,
+	@GroupSalCode VARCHAR(20) = '1',
+	@Dow_Num float = 24,
+	@InsSalary money = 0, 
+	@ProductSal money = 0,
+	@IsLawSalary bit = 0 -- Nếu @IsLawSalary = 1 --> PC này chạy trước khi tính công (PC thâm niên cộng vào lương), ngược lại, PC chạy sau khi tính công
+)
+AS
+
+	DECLARE @AlloGradeCode VARCHAR(20), @TotalAllF money, @Amount MONEY, @AmountTT MONEY, @ID uniqueidentifier
+	DECLARE @UICurrencyCode varchar(3), @SI_MaxSalary money, @SI_MinSalary money
+	DECLARE @FixAmount money, @SalaryRate float
+	DECLARE @FromTime datetime, @ToTime datetime, @IsMonthAmount bit, @CurDate datetime, @Amount2 money, @AmountTemp money
+	DECLARE @UnitOutput money, @soluot int, @AmountNonTax money
+	DECLARE @mEmpID NVARCHAR(20), @BeginDate datetime, @EndDate datetime, @DepartmentCode NVARCHAR(20), @JobWCode VARCHAR(20)
+	DECLARE @tempTime datetime, @t1 datetime, @t2 datetime, @IsInPayroll bit
+	DECLARE @Allo_EffectDate datetime
+	DECLARE @E_RateToVNDAllo FLOAT, @PRIsMinSalByInsList BIT, @PRCurrencyForCal nvarchar(3), @PRCurrencyForPay nvarchar(3)
+
+	set @E_RateToVNDAllo=1
+	set @soluot = 0
+	SET @TotalAllF = 0
+	SET @SI_MaxSalary = 0
+	SET @SI_MinSalary = 0
+	SET @Amount = 0
+	SET @AmountTT = 0
+	SET @AmountNonTax =0
+	set @IsLawSalary = isnull(@IsLawSalary, 0)
+
+	-- Lay ve dong du lieu cuoi cung trong incomes
+	select top(1) @ID  = RecID FROM HR_PayIncome WITH (NOLOCK) where EmployeeID = @EmployeeID and DowCode = @DowCode Order by FromTime Desc	
+	--SELECT @ProductSal=isnull(SUM(Amount),0) FROM Hrm_pr_ProductAmount with (nolock) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode 
+	SET @ProductSal = 0
+
+	-- Lay ve dau ki luong, cuoi ki luong
+	SELECT TOP(1) @FromTime = FromDate, @ToTime = ToDate FROM HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode
+
+	SELECT TOP(1) @PRCurrencyForCal = PRCurrencyForCal, @PRCurrencyForPay = PRCurrencyForPay, @PRIsMinSalByInsList = case when PRIsSalGradeSISal = 1 and PRIsMinSalByInsList = 1 then 1 else 0 end
+	FROM HR_ConfigPR WITH (NOLOCK)
+	WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+
+	-- hphoa modified: 2012/02/19: tao cac bang tam chua cac const dung trong công thuc tinh phu cap
+	-- Tim xem trong thang hien tai, nhan vien co nhan dc phu cap nao hok
+	IF exists (select top(1) 1 from HR_EmpAllowance as Allo WITH (NOLOCK) inner join HR_LSAlloGrade as AG WITH (NOLOCK) on Allo.AlloGradeCode = AG.AlloGradeCode
+		WHERE IsUserFormula = 1 and IsCurrent = 1 And EmployeeID = @EmployeeID and IsLawSalary = 0) 
+	BEGIN
+		-- Lay ve muc dong bhxh toi da, toi thieu theo ky tinh luong.
+		SELECT TOP(1) @SI_MaxSalary = SI_MaxSalary, @SI_MinSalary = SI_MinSalary FROM HR_fnGetRateDeductions(@DowCode + '/01') 
+		WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+
+		select ce.* into #Insurance from (
+			select SI.EmployeeID, SIRateE as SIRateE, SIRateC as SIRateC, HIRateC as HIRateC,  HIRateE as HIRateE, UIRateC as UIRateC, UIRateE as UIRateE,
+				@SI_MinSalary as MinimumSalary, @SI_MaxSalary as MaximumSalary
+			from HR_SocialIns as SI WITH (NOLOCK)
+			where SI.DowCode = @DowCode and SI.EmployeeID = @EmployeeID
+		) as ce
+
+		-- Tao bang tam lay ve danh sach cac biet le cua 1 nhan vien theo tháng
+		select CE.ExceptCode, Sum(CE.AmountF) as AmountF into #ATExcept FROM HR_PayTExcept CE WITH (NOLOCK) where DowCode = @DowCode and EmployeeID = @EmployeeID Group By ExceptCode
+
+		-- Tao bang tam lay ve danh sach cac phu cap cua 1 nhan vien theo tháng
+		select ALLO.AlloGradeCode, Sum(ALLO.AmountF) as AmountF into #AALLO FROM HR_PayAllowance ALLO WITH (NOLOCK) where DowCode = @DowCode and EmployeeID = @EmployeeID Group By AlloGradeCode
+
+		-- Tra ve so phut di tre, ve som, so lan di tre, ve som theo tháng
+		SELECT EarLateWorks.* into #EarLateWorks from (
+			select EmployeeID, SUM(TimeInLate) as SoPhut_VaoTre, SUM(TimeOutEarly) as SoPhut_VeSom, 
+				SUM(case when TimeInLate > 0 then 1 else 0 end) as SoLan_VaoTre, 
+				SUM(case when TimeOutEarly > 0 then 1 else 0 end) as SoLan_VeSom
+			from HR_TSKowLateEarly WITH (NOLOCK) where DowCode = @DowCode And EmployeeID = @EmployeeID 
+			group by EmployeeID
+		) as EarLateWorks
+
+		-- Lay quyet dinh phu cap hien tai		
+		SELECT EALLO.* into #AEALLO from 
+		(
+			SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, EAllo.FixAmount, EAllo.SalaryRate,
+				EAllo.EffectDate, case when EndDate is null then @ToTime else EndDate end as EndDate
+			FROM HR_EmpAllowance as EAllo WITH (NOLOCK) inner join HR_LSAlloGrade AS AG WITH (NOLOCK) ON EAllo.AlloGradeCode = AG.AlloGradeCode
+			WHERE EAllo.EmployeeID = @EmployeeID and (AG.IsFixAmount = 1) AND (EffectDate <= @ToTime 
+				AND (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime)) 
+
+			UNION ALL
+			SELECT EAllo.EmployeeID, EAllo.AlloGradeCode, 
+				dbo.HR_fnGetSalaryByLevel(EAllo.EmployeeID, @ToTime, 
+					CASE WHEN AG.SalaryType = 2 AND @PRIsMinSalByInsList = 1 THEN -2
+						WHEN AG.SalaryType = 4 AND @PRIsMinSalByInsList = 1 THEN -4
+						ELSE AG.SalaryType end) * EAllo.SalaryRate / 100 AS FixAmount,
+				EAllo.SalaryRate, EAllo.EffectDate, case when EndDate is null then @ToTime else EndDate end as EndDate
+			FROM HR_EmpAllowance as EAllo WITH (NOLOCK) inner join HR_LSAlloGrade AS AG WITH (NOLOCK) ON EAllo.AlloGradeCode = AG.AlloGradeCode
+			WHERE  EAllo.EmployeeID = @EmployeeID AND (AG.IsFixAmount = 0) AND (EffectDate <= @ToTime and (EAllo.EndDate = '' OR EAllo.EndDate IS NULL OR EAllo.EndDate > @FromTime))
+		) as EALLO
+
+		-- Lay danh sach nhan vien cho phép điều động, bổ sung, thuyên chuyển
+		SELECT EWork.* into #EWork from (			
+			select EmployeeID, 
+				case when BeginDate < @FromTime then @FromTime else BeginDate end as FromTime,
+				case when EndDate IS null then @ToTime when EndDate > @ToTime then @ToTime else EndDate end as ToTime, 
+				OrgUnitID, PositionID 
+			from (
+				SELECT EmployeeID, BeginDate, EndDate, OrgUnitID, PositionID,
+					ROW_NUMBER() OVER (PARTITION BY EmployeeID ORDER BY EmployeeID, [BeginDate] desc) AS Row
+				FROM HR_EmpWorking WITH (NOLOCK) where EmployeeID = @EmployeeID
+			) as R where Row = 1
+		) as EWork
+
+		select ce.* into #EIncome from (
+			SELECT EmployeeID, Sum(TotalKowSal) as TotalKowSal, Sum(TotalOTSal) as TotalOTSal
+			from HR_PayIncome with (nolock) where EmployeeID = @EmployeeID and DowCode = @DowCode
+			GROUP BY EmployeeID
+		) as ce
+
+		--select CE.* into #EPerApps from (
+		--	SELECT HCSEM_EmpAppraisal.EmployeeID, RankM01 AS M01, RankM02 AS M02, RankM03 AS M03, RankM04 AS M04, RankM05 AS M05, 
+		--		RankM06 AS M06, RankM07 AS M07, RankM08 AS M08, RankM09 AS M09, RankM10 AS M10, RankM11 AS M11, RankM12 AS M12, 
+		--		RankQ01 AS Q01, RankQ02 AS Q02, RankQ03 AS Q03, RankQ04 AS Q04, RankH01 AS H01, RankH02 AS H02, RankYear AS AppYear
+		--	FROM HCSEM_EmpAppraisal WITH (NOLOCK)
+		--	Where EmployeeID = @EmployeeID
+		--) as CE
+
+		-- Lay ve cac yeu to
+		select ce.*, I.TotalKowSal, I.TotalOTSal
+		into #ASFactors from (
+			SELECT cv.EmployeeID, isnull(BsSalary.RealSalary,0) as LuongCoBan, isnull(BsSalary.MinSalary,0) as LuongCoBan_ToiThieu, 
+				isnull(BsSalary.CoeffSalary,0) as HeSo_LuongCoBan, isnull(BsSalary.PieceWage,0) as LuongKhoan, 
+				isnull(JwSalary.RealSalary,0) as LuongChucDanh, isnull(JwSalary.MinSalary,0) as LuongChucDanh_ToiThieu, isnull(UnitOT, 0) as DonGia_LuongNgoaiGio,
+				PRTUnionAmount AS CongDoanPhi, PRSIStandardWD AS NgayCongChuan_BHXH, TSMaxOTHourPerY AS SoGioNgoaiGio_QD1Nam, 
+				TSStandardWDOfOT AS NgayCongChuan_TinhNgoaiGio, PRPITFamilyTaxFreeOwn AS TruGiaCanh_BanThan, PRPITFamilyTaxFreeUnit AS TruGiaCanh_1PhuThuoc, 
+				ConTypeCode_REF AS LoaiHDLD, CV.EmpTypeCode_REF AS LoaiNhanVien, CV.DepartmentCode_REF AS BoPhanLamViec, cv.JobWCode_REF AS ChucDanhCongViec,
+			--	M01, M02, M03, M04, M05, M06, M07, M08, M09, M10, M11, M12, Q01, Q02, Q03, Q04, H01, H02, AppYear,
+				EDow_Num AS NgayCongChuan, IsServiceFee AS CoPhiDichVu,
+				JoinedOn AS NgayVaoLam, EndDate AS NgayThoiViec, CareerDate AS NgayVaoNganh, PersonnelDate AS NgayVaoBienChe, 
+				HiredOn AS NgayThanhNVChinhThuc, IsTUnion AS LaCongDoanVien, TUnionDate AS NgayVaoCongDoan, 
+				IsHI AS CoThamGiaBHYT, IsSI AS CoThamGiaBHXH, IsUI AS CoThamGiaBHTN,
+				AdvanceSal AS MucLuongTamUng, [HCSEM.GioiTinh_Val] AS GioiTinh, TUnionFee AS MucDongCongDoanPhi, AssignRegionCode_REF AS VungLamViec, 
+				CAP3 AS BoPhanCap3, CAP2 AS BoPhanCap2, Birthday AS NgaySinh, CV.AcademicID AS HocHam, CV.Foreigner AS LaNguoiVietNam,
+				WLeaveDayGroupCode_REF AS NhomNgayNghiTuan, BsSalary.InsSalary AS LuongDongBHXH, CV.EndDate_Plan as NgayDuKien_ThoiViec,
+				IsDirectLabour AS LaLaoDongTrucTiep, @GroupSalCode as NhomLuong
+			FROM(
+				select EmployeeID, ConTypeCode_REF, EmpTypeCode_REF, DepartmentCode_REF, JobWCode_REF, IsServiceFee,
+					JoinedOn, case when StoppedOn is not null then DATEADD(day, -1, StoppedOn) else StoppedOn end as EndDate, CareerDate, PersonnelDate, HiredOn,
+					IsHI, IsSI, IsUI, AdvanceSal, [HCSEM.GioiTinh_Val], AssignRegionCode_REF,
+					CAP3, CAP2, convert(datetime, Birthday, 103) AS Birthday, AcademicID, Foreigner, WLeaveDayGroupCode_REF,
+					EndDate_Plan, IsDirectLabour, TUnionFee, TUnionDate, IsTUnion
+				from HR_VWEmpCurriculumViateCV
+				left join  HR_VMDepartmentFullLevel ON HR_VMDepartmentFullLevel.OrgUnitID = HR_VWEmpCurriculumViateCV.OrgUnitID
+				where EmployeeID = @EmployeeID
+			) as CV left outer join(
+				SELECT EmployeeID, RealSalary, MinSalary, CoeffSalary, PieceWage, UnitOT, InsSalary
+				FROM (
+					select B.EmployeeID, RealSalary, MinSalary, CoeffSalary, PieceWage, InsSalary, UnitOT,
+						ROW_NUMBER() OVER(PARTITION BY B.EmployeeID ORDER BY B.EffectDate desc) as RowID
+					from HR_EmpBasicSalary AS B WITH (NOLOCK) 
+					WHERE EmployeeID = @EmployeeID and (B.EffectDate <= @ToTime AND (B.EndDate IS NULL OR B.EndDate > @FromTime)) 
+				) AS Z WHERE Z.RowID = 1
+			) as BsSalary on CV.EmployeeID = BsSalary.EmployeeID
+			LEFT OUTER JOIN (
+				SELECT EmployeeID, RealSalary, MinSalary
+				FROM (
+					select B.EmployeeID, RealSalary, MinSalary, ROW_NUMBER() OVER(PARTITION BY B.EmployeeID ORDER BY B.EffectDate desc) as RowID
+					from HR_EmpJWSalary AS B WITH (NOLOCK)
+					WHERE EmployeeID = @EmployeeID and (B.EffectDate <= @ToTime AND (B.EndDate IS NULL OR B.EndDate > @FromTime)) 
+				) AS z
+			) as JwSalary ON BsSalary.EmployeeID = JwSalary.EmployeeID
+			LEFT OUTER JOIN (
+				select @EmployeeID as EmployeeID, PRTUnionAmount, PRSIStandardWD, PRPITFamilyTaxFreeOwn, PRPITFamilyTaxFreeUnit
+				from HR_ConfigPR WITH (NOLOCK)
+				WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+			) as SC ON CV.EmployeeID = SC.EmployeeID LEFT OUTER JOIN (
+				SELECT @EmployeeID AS EmployeeID, TSMaxOTHourPerY, TSStandardWDOfOT
+				FROM HR_ConfigTS WITH (NOLOCK)
+				WHERE (BUCode IS NULL OR (BUCode IS NOT NULL AND BUCode = @BUCode))
+			) AS TS ON CV.EmployeeID = TS.EmployeeID
+			--left outer join #EPerApps as EPA on CV.EmployeeID = EPA.EmployeeID
+			LEFT OUTER JOIN
+			(
+				SELECT EmployeeID, StandardWD AS EDow_Num FROM HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode
+			) as PRD on CV.EmployeeID = PRD.EmployeeID
+			--LEFT OUTER JOIN (
+			--	select EmployeeID, IsTUnion, TUnionDate, TUnionFee from HCSEM_EmpInfoUnion WITH (NOLOCK) where EmployeeID = @EmployeeID
+			--) as EParty on CV.EmployeeID = EParty.EmployeeID
+		) as CE LEFT JOIN #EIncome AS I ON CE.EmployeeID = I.EmployeeID
+
+		-- Lấy tổng quỹ tiền lương group by theo GroupSalCode
+		select ce.* into #HCSPR_FundSalaryUnit from (
+			select GroupSalCode, Sum(TotalFund) as SalaryUnit from HR_PRFundSalaryUnit with (nolock) where DowCode = @DowCode AND 1 = 0 group by GroupSalCode
+		) as ce
+
+		-- Lay ve don gia tổng quỹ tiền lương
+		SET @UnitOutput = 0
+		Exec HR_spGetSalaryUnit @DowCode, @EmployeeID, @Fromtime, @ToTime, @GroupSalCode, @UnitOutput output
+		declare @EmpSalProduct_Amount money
+		set @EmpSalProduct_Amount = 0
+		--exec HCSPR_spGetEmpSalProduct @DowCode, @EmployeeID, @ToTime, @GroupSalCode, @EmpSalProduct_Amount output
+
+		select ce.* into #tmp_tbl_kow_f_1_row from (
+			select @EmpSalProduct_Amount as ESalaryUnit
+		) as ce
+
+		-- Lay ve he so luong-thuong 
+        select AFDE.* into #AFDE from ( 
+            select R.CoeffCode, Sum( 
+					case when IsSplit = 0 then Coefficient 
+						WHEN IsSplit = 1 and Row_ID = 1 then Coefficient else 0 end) as Coefficient   
+			from (
+				select FDE.CoeffCode, FDE.Coefficient, SC.IsSplit, ROW_NUMBER() OVER(PARTITION BY FDE.EmployeeID, FDE.CoeffCode ORDER BY FDE.EmployeeID, FromTime desc) as Row_ID
+				FROM HR_PRSalCoeffEmp as FDE WITH (NOLOCK) left outer join HR_LSSalCoeff as SC WITH (NOLOCK) on FDE.CoeffCode = SC.CoeffCode 
+				Where EmployeeID = @EmployeeID and FromTime<=@ToTime and @FromTime<=ToTime 
+			) as R
+			Group By R.CoeffCode 
+        ) as AFDE
+
+	END
+	ELSE
+	BEGIN
+		RETURN
+	END
+
+	DECLARE @EffectDate DATETIME, @tmpAmountNonTax FLOAT, @tmpAlloGradeCode VARCHAR(20), @IsTaxFreeAmountByYear BIT, @AmountNonTaxByYear FLOAT, @Year VARCHAR(4)
+	SET @tmpAlloGradeCode = NULL
+	SET @tmpAmountNonTax = 0
+	SET @AmountNonTaxByYear = 0 -- 1. Tiền miễn thuế tính theo năm
+	SET @Year = LEFT(@DowCode, 4)
+
+	SELECT T.*, T1.IsTaxFreeAmountByYear, T1.SalaryInclude, T1.IsMonthAmount, T1.IsInPayroll, T1.CurrencyCode
+	INTO #Result
+	FROM HR_fnCreateDatetimeListOfAllowance_FillData(@FromTime, @ToTime, @EmployeeID, @BUCode) AS T
+		inner join HR_LSAlloGrade as T1 WITH (NOLOCK) on T.AlloGradeCode = T1.AlloGradeCode
+	WHERE T1.IsLawSalary = @IsLawSalary
+
+	-- Ghi nhận lịch sử thay đổi thông tin phụ cấp
+	-- Đã move ra salarylevel 2023.06.20
+	--INSERT INTO HCSPR_ListOfEmpAllowance(DowCode, EmployeeID, FromTime, ToTime, AlloGradeCode, FixAmount, SalaryRate, EndDate, 
+	--	fBeginDate, fEndDate, DepartmentCode, GroupSalCode, JobWCode, JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, 
+	--	AmountNoTax, CreatedOn, CreatedBy)
+	--SELECT @DowCode, @EmployeeID, FromTime, ToTime, AlloGradeCode, FixAmount, SalaryRate, EndDate, fBeginDate, fEndDate, 
+	--	DepartmentCode, GroupSalCode, JobWCode, JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, AmountNoTax, 
+	--	GETDATE() as CreatedOn, 'application' as CreatedBy
+	--FROM #Result
+
+	-- Lay ve danh sach phu cap cua nhan vien tinh cho 1 thang, hu?ng 1 lan trong thang
+	DECLARE EAllowance_Cursor CURSOR FOR
+	SELECT @EmployeeID, T.AlloGradeCode, CurrencyCode, T.IsMonthAmount, T.AmountNoTax, T.IsInPayroll, 
+		T.FromTime, T.ToTime, T.FixAmount, T.SalaryRate, T.IsTaxFreeAmountByYear, T.GroupSalCode
+	FROM #Result AS T
+	ORDER BY SalaryInclude
+	OPEN EAllowance_Cursor
+	WHILE 1 = 1
+	BEGIN
+		FETCH NEXT FROM EAllowance_Cursor INTO @EmployeeID, @AlloGradeCode, @UICurrencyCode, @IsMonthAmount,@AmountNonTax, @IsInPayroll, 
+			@Allo_EffectDate, @EndDate, @FixAmount, @SalaryRate, @IsTaxFreeAmountByYear, @GroupSalCode
+		IF @@FETCH_STATUS != 0
+			BREAK;
+
+		-- cap nhat lai nhom luong
+		update #ASFactors set NhomLuong = @GroupSalCode where EmployeeID = @EmployeeID
+
+		IF @IsTaxFreeAmountByYear = 1
+		BEGIN
+			-- Tìm tổng tiền đã miễn thuế theo năm tính tới trước thời điểm tính lương
+			SELECT @AmountNonTaxByYear = ISNULL(SUM(T.AmountNonTax), 0)
+			FROM dbo.HR_PayAllowance AS T WITH (NOLOCK)
+			WHERE T.EmployeeID = @EmployeeID AND T.AlloGradeCode = @AlloGradeCode 
+				AND LEFT(T.DowCode, 4) = @Year and T.DowCode <= @DowCode
+        END
+
+		IF @tmpAlloGradeCode IS NULL OR @tmpAlloGradeCode <> @AlloGradeCode
+		BEGIN
+			IF @IsTaxFreeAmountByYear = 0
+			BEGIN
+				-- miễn thuế theo tháng
+				SET @tmpAmountNonTax = @AmountNonTax
+			end
+			ELSE
+			begin
+				IF @AmountNonTax > @AmountNonTaxByYear 
+					SET @tmpAmountNonTax = @AmountNonTax - @AmountNonTaxByYear
+				ELSE
+					SET @tmpAmountNonTax = 0
+            END
+            --
+			SET @tmpAlloGradeCode = @AlloGradeCode
+		END
+        
+		-- lay ty gia	
+		IF @UICurrencyCode ='' OR @UICurrencyCode IS NULL OR LEN(@UICurrencyCode) = 0 -- Neu trong DM PC ko chon nguyen te tinh PC thi gan nguyen te tinh PC = nguyen te tinh luong cua NV
+			SET @UICurrencyCode = @E_CurrencyCode
+	
+		IF @UICurrencyCode <> @E_CurrencyCode	-- Neu nguyen te PC <> nguyen te tinh luong cua NV thi tim ty gia cua nguyen te PC
+			SELECT TOP(1) @E_RateToVNDAllo = RateToVND FROM HR_fnGetPayExchangeRate(@BUCode, @DowCode, @UICurrencyCode)
+		ELSE 
+			SET @E_RateToVNDAllo = @E_RateToVND
+
+		SET @E_RateToVNDAllo = ISNULL(@E_RateToVNDAllo, 1)
+		SET @AmountTemp = 0
+		
+
+		SET @EndDate = case when @EndDate IS null then @ToTime else @EndDate end
+		-- Lay mốc thời gian tạm (FromTime)
+		-- SET @tempTime = DATEADD(DAY,-1,@FromTime)
+		SET @tempTime = DATEADD(DAY,-1, @Allo_EffectDate)
+			print('aadsad')
+
+		if @IsMonthAmount = 1
+		begin			
+			IF not exists (select top(1) 1 from #EWork) -- Trong thang nhân viên khong co quyet dinh thuyên chuyển nào
+			begin
+				-- Phan ra cong thuc, tinh tung phu cap 1				
+				exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+				'HR_LSAlloGrade', 0, 0, 0, 0, 
+				0, 0, 0, 0, 0, 
+				@GroupSalCode, @FixAmount, @SalaryRate, @Allo_EffectDate, @EndDate, 
+				@Dow_Num, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+				-1, -1, @AmountTemp output
+
+				SET @AmountTemp = case when @AmountTemp is null then 0 else @AmountTemp end
+			end
+			ELSE
+			begin
+				if not exists ( 
+					SELECT top(1) 1 from HR_SysFormula WITH (NOLOCK)
+					where ListType = 'HR_LSAlloGrade' and ListCode = @AlloGradeCode and GroupSalCode = @GroupSalCode
+						and (Atom = 'DepartmentCode_REF' Or Atom = 'JobWCode_REF'))
+				begin
+					-- Phan ra cong thuc, tinh tung phu cap 1
+					exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+					'HR_LSAlloGrade', 0, 0, 0, 0, 
+					0, 0, 0, 0, 0, 
+					@GroupSalCode, @FixAmount, @SalaryRate, @Allo_EffectDate, @EndDate, 
+					@Dow_Num, @E_RateToVND, @InsSalary, @ProductSal,@UnitOutput,
+					-1, -1, @AmountTemp output
+
+					SET @AmountTemp = case when @AmountTemp is null then 0 else @AmountTemp end
+				end
+				else
+				begin
+					SET @AmountTemp = 0
+					SET @Amount2 = 0
+					DECLARE Cursor_1 CURSOR FOR
+						select EmployeeID, FromTime, ToTime, OrgUnitID, PositionID from #EWork
+						Order By FromTime 
+					OPEN Cursor_1
+					WHILE 1 = 1
+					BEGIN
+						FETCH NEXT FROM Cursor_1 INTO @mEmpID, @BeginDate, @EndDate, @DepartmentCode, @JobWCode
+						IF @@FETCH_STATUS != 0
+							BREAK;
+						IF DATEDIFF(day, @tempTime, @BeginDate) >= 2
+						begin
+							SET @t1 = DATEADD(DAY,1,@tempTime)
+							SET @t2 = DATEADD(DAY,-1,@BeginDate)
+
+							-- Phan ra cong thuc, tinh tung phu cap 1				
+							exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+							'HR_LSAlloGrade', 0, 0, 0, 0, 
+							0, 0, 0, 0, 0, 
+							@GroupSalCode, @FixAmount, @SalaryRate, @t1, @t2, 
+							@Dow_Num, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+							-1, -1, @Amount2 output
+
+							set @AmountTemp = (case when @Amount2 is null then 0 else @Amount2 end) + @AmountTemp
+						end	
+						SET @tempTime = @EndDate
+
+						set @JobWCode = case when @JobWCode is null then '-1' else @JobWCode end
+						-- Phan ra cong thuc, tinh tung phu cap 1				
+						exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+						'HR_LSAlloGrade', 0, 0, 0, 0, 
+						0, 0, 0, 0, 0, 
+						@GroupSalCode, @FixAmount, @SalaryRate, @BeginDate, @EndDate, 
+						@Dow_Num, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+						-1, -1, @Amount2 output
+
+						set @AmountTemp = (case when @Amount2 is null then 0 else @Amount2 end) + @AmountTemp
+
+					END
+					CLOSE Cursor_1  
+					DEALLOCATE Cursor_1
+				end
+			end
+
+		end
+		else	
+		begin
+
+			SET @CurDate = @Allo_EffectDate
+			While DATEDIFF(DAY, @CurDate, @EndDate) >= 0
+			BEGIN	
+				set @Amount2 = 0
+
+				If exists(select top(1) 1 from #EWork where @CurDate between FromTime and ToTime) 
+				begin
+					Select top(1) @DepartmentCode = OrgUnitID, @JobWCode = PositionID from #EWork where @CurDate between FromTime and ToTime
+					set @JobWCode = case when @JobWCode is null then '-1' else @JobWCode end
+					-- Xet tu ngay @fBeginDay , den ngay @ToTime cua ky tinh luong
+					exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+						'HR_LSAlloGrade', 0, 0, 0, 0, 
+						0, 0, 0, 0, 0, 
+						@GroupSalCode, @FixAmount, @SalaryRate, @CurDate, @CurDate, 
+						@Dow_Num, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+						@DepartmentCode, @JobWCode, @Amount2 output
+				end
+				Else
+				begin 
+					-- Xet tu ngay @fBeginDay , den ngay @ToTime cua ky tinh luong
+					exec HR_spBuildFormula4KowOrAllo @EmployeeID, @DowCode, @AlloGradeCode, @SI_MinSalary, @SI_MaxSalary, 
+						'HR_LSAlloGrade', 0, 0, 0, 0, 
+						0, 0, 0, 0, 0, 
+						@GroupSalCode, @FixAmount, @SalaryRate, @CurDate, @CurDate, 
+						@Dow_Num, @E_RateToVNDAllo, @InsSalary, @ProductSal,@UnitOutput,
+						-1, -1, @Amount2 output
+				end
+
+				set @AmountTemp = (case when @Amount2 is null then 0 else @Amount2 end) + @AmountTemp
+				if @Amount2>0 
+				set @soluot=@soluot+1
+				SET @CurDate = DATEADD(day, 1, @CurDate)
+			END
+		end
+
+		-- Chen phu cap vua tinh duoc vao bang phu cap chi tiet
+		IF @AmountTemp != 0
+		BEGIN
+
+			SET @Amount = @AmountTemp
+			SET @AmountTT = 0
+			
+			if isnull(@UICurrencyCode, '') = ''
+			begin
+				if @PRCurrencyForPay = @E_CurrencyCode
+				begin
+					set @AmountTT = @Amount * @E_RateToVND
+				end
+				else
+				begin
+					set @AmountTT = @Amount / @E_RateToVND
+				END
+			end
+			else
+			begin
+				-- Nếu N.Tệ phát sinh = N.Tệ thanh toán
+				if @UICurrencyCode = @PRCurrencyForPay
+				begin
+					-- Nếu N.Tệ phát sinh = N.Tệ tính lương của nv
+					if @PRCurrencyForPay = @E_CurrencyCode
+					begin
+						set @AmountTT = @Amount * @E_RateToVND
+					end
+					else -- Nguyên tệ tính lương nv khác N.Tệ phát sinh
+					begin
+						set @AmountTT = @Amount
+						set @Amount = @Amount / @E_RateToVND
+					end
+				end
+				else if @UICurrencyCode <> @PRCurrencyForPay -- N.Tệ phát sinh khác N.Tệ thanh toán
+				begin
+					if @PRCurrencyForPay = @E_CurrencyCode
+					begin
+						set @AmountTT = @Amount * @E_RateToVND
+						set @Amount = @AmountTT 
+					end
+					else
+					begin
+						if @UICurrencyCode = @E_CurrencyCode
+						begin
+							set @AmountTT = @Amount * @E_RateToVND
+						end
+						else
+						BEGIN
+							set @AmountTT = @Amount * @E_RateToVNDAllo
+							SET @Amount = @AmountTT / @E_RateToVND
+						end
+					end
+				end
+				else
+					continue;
+			END
+			
+			-- Tính tiền miễn thuế theo tháng
+			IF (@tmpAmountNonTax > 0 and @AmountTT < @tmpAmountNonTax)
+			BEGIN 
+				IF @AmountTT < 0	
+					SET @tmpAmountNonTax = 0 
+				ELSE
+					SET @tmpAmountNonTax = @AmountTT
+			END
+			INSERT INTO HR_PayAllowance(EmployeeID, AlloGradeCode, FromTime, ToTime, Amount, AmountF, DowCode, DayNum, AmountNonTax, CreatedOn, CreatedBy)
+			Values(@EmployeeID, @AlloGradeCode, @Allo_EffectDate, @EndDate,Round(@AmountTT, @App_ForgCurrAmtDec), 
+				ROUND(@Amount, @App_BaseAmtDec), @DowCode, @soluot, ROUND(@tmpAmountNonTax, @App_ForgCurrAmtDec), GETDATE(), 'application')
+
+			SET @tmpAmountNonTax = dbo.HR_fnFht_Max(0, @AmountNonTax - @tmpAmountNonTax)
+
+			-- cap nhật lại danh sach phu cap
+			if not exists(select top(1)1 from #AALLO Where AlloGradeCode = @AlloGradeCode)
+				Insert into #AALLO(AlloGradeCode, AmountF) values(@AlloGradeCode, Round(case when @UICurrencyCode = @E_CurrencyCode then @AmountTemp else @AmountTemp / @E_RateToVNDAllo end, @App_BaseAmtDec))
+			else
+				Update #AALLO set AmountF = AmountF + Round(case when @UICurrencyCode = @E_CurrencyCode then @AmountTemp else @AmountTemp / @E_RateToVNDAllo end, @App_BaseAmtDec) Where AlloGradeCode = @AlloGradeCode
+
+			if @IsInPayroll = 1
+				SET @TotalAllF = @TotalAllF + @Amount				
+		END
+	END
+	CLOSE EAllowance_Cursor  
+	DEALLOCATE EAllowance_Cursor
+
+	-- Cap nhat phu cap com
+	declare @mAmountRiceF money set @mAmountRiceF =0
+	SELECT @mAmountRiceF=isnull(SUM(isnull(AmountF,0)),0) 
+	FROM HR_PayAllowance T WITH (NOLOCK) INNER JOIN HR_LSAlloGrade L WITH (NOLOCK) ON T.AlloGradeCode = L.AlloGradeCode
+	WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode AND IsLawSalary = 0
+	 AND IsInPayroll = 1 AND AlloType = 2 AND IsUserFormula = 1 
+
+	DECLARE @TotalAll money
+	SET @TotalAll =  Round(@TotalAllF * @E_RateToVNDAllo, @App_ForgCurrAmtDec)
+	-- Cap nhat lai bang incomes
+	UPDATE HR_PayIncome Set 
+		RiceAllowance = @mAmountRiceF,
+		TotalAllowance = ROUND( TotalAllowance + @TotalAllF - @mAmountRiceF, @App_BaseAmtDec), 
+		GrossSal = GrossSal + @TotalAllF, 
+		GrossSalVND = GrossSalVND + @TotalAll, 
+		NetSal = NetSal + @TotalAllF, 
+		NetSalVND = NetSalVND + @TotalAll where RecID = @ID
+	RETURN
+
+
