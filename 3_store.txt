@@ -1,0 +1,1203 @@
+---------------------------------------------1
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spEmpDayOff_UPDATEDETAIL]    Script Date: 1/22/2025 5:31:55 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[HR_spEmpDayOff_UPDATEDETAIL]
+(
+   @inserted uniqueidentifier,
+   @deleted uniqueidentifier,
+   @UserID1 nvarchar(100)
+)as
+BEGIN
+	SET NOCOUNT ON;
+	DECLARE @RecordID uniqueidentifier
+	declare @DelKowCode NVARCHAR(20)
+	declare @DelBegDate datetime, @DelEndDate DATETIME, @DelREndDate DATETIME,@DelDayNum FLOAT, @DelIsRemainKowds BIT
+    declare @BegDate datetime, @EndDate DATETIME, @KowCode NVARCHAR(20)
+	DECLARE @EmployeeID NVARCHAR(30)
+	DECLARE @Now DATETIME SET @Now = CONVERT(NVARCHAR(10),GETDATE(),111)
+	DECLARE @IsLeaveDTVS BIGINT, @DelIsLeaveDTVS BIGINT
+	DECLARE @gSGMC FLOAT SET @gSGMC = 8
+	DECLARE @IsPrivateT7 BIT, @KowType INT
+	DECLARE @KOW2LastPayroll NVARCHAR(20) SET @KOW2LastPayroll ='0'
+	SELECT @KOW2LastPayroll = Value FROM HR_SysSettingsForCustomers WITH(NOLOCK)  WHERE  KeyCode = N'KOW2LastPayroll'
+	DECLARE @KOW2LastPayroll_V2 BIT
+	SET @KOW2LastPayroll_V2 = 0
+	if exists (select 1 from HR_SysSettingsForCustomers where KeyCode='KOW2LastPayroll_V2' AND Value = 1)
+	BEGIN
+		SET @KOW2LastPayroll_V2 = 1
+	END
+
+	DECLARE @IsTransDayOffToKowds BIT, @Err NVARCHAR(200)
+	SELECT @IsTransDayOffToKowds = IsTransDayOffToKowds FROM dbo.HR_ConfigTS WITH(NOLOCK) WHERE ISNULL(BUCode,'') = ''
+
+	declare @gSSLNC int set @gSSLNC = 2
+	SELECT @gSSLNC = isnull(TSDecPlaceWD,0) FROM HR_ConfigTS WHERE ISNULL(BUCode,'') = ''
+
+	select * into #tmpOffDelete from HR_EmpDayOffDeleted_tmp where RecID = @deleted and UserID = @UserID1
+	 
+	select * into #tmpOffInserted from HR_EmpDayOffInserted_tmp where RecID = @inserted and UserID = @UserID1
+	--SELECT * INTO tmpD FROM DELETED
+	--DROP TABLE tmpD
+	--SELECT * FROM tmpD
+
+	declare @KowCodeKhongLuong nvarchar(20)
+	SELECT @KowCodeKhongLuong=KowCodeKhongLuong FROM dbo.HR_ConfigTS WITH(NOLOCK) WHERE ISNULL(BUCode,'') = ''
+
+	SELECT I.*, ISNULL(S.TSHoursPerWD,8) AS TSHoursPerWD, ISNULL(V.IsSubKowSpecical,0) AS IsSubKowSpecical, 
+					V.KowSLN AS KowCodeSLN, V.KowASLN AS KowCodeASLN,
+					ISNULL(L.IsPrivateT7,0) AS IsPrivateT7, LK.KowType
+	INTO #HCSEM_EmpDayOff_trg 
+	FROM #tmpOffInserted I LEFT JOIN #tmpOffDelete D ON D.RecID = I.RecID
+	LEFT JOIN HR_ConfigTSEmp S WITH(NOLOCK) ON S.EmployeeID = I.EmployeeID
+	LEFT JOIN dbo.HR_EmployeeExt E WITH(NOLOCK) ON E.EmployeeID  =I.EmployeeID
+	LEFT JOIN dbo.HR_SetupALObject V WITH(NOLOCK) ON V.ALObjectID = E.ALObjectID
+	LEFT JOIN dbo.HR_LSWLeaveDayGroup L WITH(NOLOCK) ON L.WLeaveDayGroupCode =E.WLeaveDayGroupCode
+	LEFT JOIN dbo.HR_LSKOW LK WITH(NOLOCK) ON LK.KowCode = I.KowCode
+	WHERE (D.RecID IS NULL AND ISNULL(I.IsNoRunTrigger,0) = 0) OR (D.RecID IS NOT NULL)
+	--WHERE ISNULL(I.IsNoRunTrigger,0) = 0 or (ISNULL(I.IsNoRunTrigger,0) = 1 and ISNULL(@KowCodeKhongLuong, '') <> I.KowCode)
+
+	IF NOT EXISTS (SELECT 1 FROM #HCSEM_EmpDayOff_trg) RETURN
+
+	--SELECT IsNoRunTrigger,* FROM #HCSEM_EmpDayOff_trg
+	if exists (select 1 from #HCSEM_EmpDayOff_trg where IsNoRunTrigger = 1)
+	begin
+		update F set F.IsNoRunTrigger=0, F.SystemNote = '' from HR_EmpDayOff F
+		inner join #HCSEM_EmpDayOff_trg T on T.RecID = F.RecID
+	END
+
+	DECLARE @UserID NVARCHAR(50), @fBegDate DATETIME, @fEndDate DATETIME
+	--SELECT * FROM #tmpOffDelete
+	DECLARE @DelLeavePeriod INT,@DelIsSubYear BIT, @DelEmployeeID NVARCHAR(30), @DelYearNum FLOAT
+	CREATE TABLE #tblUpdateKowAddMoreS(RecID uniqueidentifier)
+	DECLARE @from DATETIME, @to DATETIME
+	DECLARE @IsSubKowSpecical BIT, @KowSLN NVARCHAR(30), @KowASLN NVARCHAR(30)
+	CREATE TABLE #kowds_Del(EmployeeID NVARCHAR(30), WorkDate DATETIME, KowCode NVARCHAR(20), DayNum FLOAT, ProjectCode VARCHAR(20), RefID BIGINT)--RefID: của phiêu phép
+	declare curtg_trFFFF cursor for
+		SELECT RecID, EmployeeID, BeginDate, ISNULL(REndDate,EndDate) AS EndDate, 
+					KowCode, IsLeaveDTVS, TSHoursPerWD, IsSubKowSpecical, KowCodeSLN, KowCodeASLN, IsPrivateT7, KowType, UserID
+		FROM #HCSEM_EmpDayOff_trg
+	open curtg_trFFFF
+	fetch next from curtg_trFFFF into @RecordID, @EmployeeID, @BegDate, @EndDate, @KowCode, 
+						@IsLeaveDTVS, @gSGMC, @IsSubKowSpecical,@KowSLN, @KowASLN, @IsPrivateT7, @KowType, @UserID
+	WHILE @@FETCH_STATUS=0
+	BEGIN
+		SET @DelEmployeeID = ''
+		SET @DelBegDate = NULL
+		SET @DelEndDate = NULL
+		SET @DelYearNum = 0
+		SET @DelLeavePeriod = NULL
+		SET @DelDayNum = 0
+		IF EXISTS (SELECT 1 FROM #tmpOffDelete WHERE RecID = @RecordID)
+		BEGIN
+			SELECT TOP(1) @DelBegDate = BeginDate, @DelEndDate = EndDate, @DelREndDate = REndDate, @DelKowCode = KowCode, 
+						@DelDayNum = DateNum, @DelIsLeaveDTVS = IsLeaveDTVS, @DelLeavePeriod = LeavePeriod,@DelIsSubYear = IsSubYear,
+						@DelEmployeeID = EmployeeID, @DelYearNum = YearNum
+			FROM #tmpOffDelete WHERE RecID = @RecordID
+			
+			IF EXISTS (SELECT TOP(1) 1 FROM dbo.HR_SysSettingsForCustomers WITH(NOLOCK) WHERE KeyCode = N'QuyTrinh.FillNgayLonHonHienTai' AND Value=1)
+			BEGIN
+				IF @DelEndDate >= @Now
+				BEGIN
+					SET @fBegDate = @DelBegDate
+					SET @fEndDate = @DelEndDate
+					IF @fBegDate < @Now SET @fBegDate = @Now
+					
+					DELETE S FROM HR_TSKowDs S
+					INNER JOIN (
+						SELECT RecID, dbo.HR_fnGetNgayChotLuong(EmployeeID, DowCode) AS NgayChotLuong
+						FROM HR_TSKowDs WITH(NOLOCK) WHERE EmployeeID = @EmployeeID AND WorkDate BETWEEN @fBegDate AND @fEndDate AND KowCode = @DelKowCode
+					) R ON R.RecID = S.RecID
+					WHERE @Now <= R.NgayChotLuong OR R.NgayChotLuong IS NULL
+				END
+			END
+
+			IF EXISTS (SELECT TOP(1) 1 FROM #tmpOffInserted I WHERE I.RecID=@RecordID AND i.EmployeeID = @DelEmployeeID AND i.BeginDate=@DelBegDate 
+							AND i.EndDate=@DelEndDate AND ISNULL(i.REndDate,@Now) = ISNULL(@DelREndDate,@Now) 
+							AND i.KowCode=@DelKowCode AND i.YearNum=@DelYearNum 
+							AND I.DateNum = @DelDayNum AND I.LeavePeriod = @DelLeavePeriod AND I.IsSubYear = @DelIsSubYear)
+			BEGIN
+				GOTO Next_DOff
+			END
+		END
+
+		--khi chinh sua phieu Thanh buoi(cap nhat lai ngay thu 7)
+		IF @IsPrivateT7 = 1 AND EXISTS (SELECT 1 FROM #tmpOffDelete WHERE RecID = @RecordID)
+		BEGIN
+			--danh sach detail dang xoa
+			SELECT S.EmployeeID, S.WorkDate, T.Tuan INTO #lstOfDetail FROM HR_EmpDayOffDetailDay S CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T
+			INNER JOIN #tmpOffDelete R ON R.RecID = S.RecID
+			WHERE DATEPART(dw,S.WorkDate) <> 7 AND R.RecID = @RecordID 
+			GROUP BY S.EmployeeID, S.WorkDate, T.Tuan
+
+			DELETE S FROM HR_EmpDayOffDetailDay S 
+			INNER JOIN #tmpOffDelete R ON R.RecID = S.RecID
+			WHERE R.RecID = @RecordID 
+
+			--Thanh Buoi-Cap nhat lai cac phieu ngay T7 neu co
+			SELECT R.EmployeeID, R.WorkDate, R.Tuan INTO #lstOfUpdateT7
+			FROM #lstOfDetail R
+			INNER JOIN dbo.HR_EmployeeExt E ON E.EmployeeID = R.EmployeeID
+			INNER JOIN HR_LSWLeaveDayGroup L ON L.WLeaveDayGroupCode =E.WLeaveDayGroupCode
+			WHERE ISNULL(L.IsPrivateT7,0) = 1 
+			
+			DELETE FROM #tblUpdateKowAddMoreS
+			IF EXISTS (SELECT 1 FROM #lstOfUpdateT7)
+			BEGIN
+				PRINT ''
+				--tim cac phieu chung Tuan voi ngay trong #lstOfDetail(danh sach xoa) ma co ngay T7, dautuan-cuoi tuan xac dinh tu WorkDate ngay T7
+	
+				SELECT S.ID, S.RecID, S.KowCode,S.EmployeeID, S.WorkDate 
+				INTO #lstOfUpdate_d
+				FROM dbo.HR_EmpDayOffDetailDay S WITH(NOLOCK)
+				INNER JOIN (SELECT EmployeeID,DATEADD(DAY,-7,MIN(WorkDate)) AS BegDate, DATEADD(DAY,7,MAX(WorkDate)) AS EndDate FROM #lstOfUpdateT7 GROUP BY EmployeeID) R
+						ON R.EmployeeID = S.EmployeeID AND S.WorkDate BETWEEN R.BegDate AND R.EndDate
+				WHERE DATEPART(dw,S.WorkDate) = 7
+
+				SELECT S.ID, S.RecID, S.WorkDate, L.KowType, S.EmployeeID, DATEADD(DAY,-5,S.WorkDate) AS DauTuan, DATEADD(DAY,1,S.WorkDate) AS CuoiTuan 
+				INTO #lstOfUpdate
+				FROM #lstOfUpdate_d S CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T
+				INNER JOIN  #lstOfDetail R ON R.Tuan = T.Tuan AND R.EmployeeID = S.EmployeeID
+				LEFT JOIN dbo.HR_LSKOW L ON L.KowCode =S.KowCode
+
+				SELECT S.RecID,S.ID, SUM(ISNULL(R.DayNum,0)) AS SN INTO #TmpUpdate1 FROM #lstOfUpdate S 
+				LEFT JOIN HR_EmpDayOffDetailDay R ON S.EmployeeID = R.EmployeeID AND R.WorkDate BETWEEN S.DauTuan AND S.CuoiTuan AND DATEPART(dw,r.WorkDate) <> 7
+				GROUP BY S.RecID,S.ID
+
+				--update detail
+				UPDATE S SET S.DayNum = CASE WHEN R.SN > 0 THEN 1 ELSE 0.5 END, S.Note = N'Xoa ngay nghi cap nhat lai T7' from HR_EmpDayOffDetailDay S
+				INNER JOIN #TmpUpdate1 R ON R.ID =S.ID
+
+				SELECT S.RecID,SUM(S.DayNum) AS DayNum INTO #lstOfDayNum
+				FROM
+				(
+					SELECT RecID FROM #lstOfUpdate GROUP BY RecID
+				) R INNER JOIN HR_EmpDayOffDetailDay S ON S.RecID = R.RecID
+				GROUP BY S.RecID
+
+				UPDATE F SET F.DateNum = R.DayNum, F.YearNum = R.DayNum, F.SystemNote = N'Xoa ngay nghi cap nhat lai T7', F.ModifiedOn = GETDATE() 
+				FROM dbo.HR_EmpDayOff F INNER JOIN #lstOfDayNum R ON R.RecID = F.RecID
+
+				INSERT INTO #tblUpdateKowAddMoreS(RecID)
+				SELECT RecID FROM #lstOfDayNum GROUP BY RecID
+
+				DROP TABLE #lstOfDayNum
+				DROP TABLE #TmpUpdate1
+				DROP TABLE #lstOfUpdate_d
+
+				IF EXISTS (SELECT 1 FROM #lstOfUpdate WHERE KowType = 15)
+				BEGIN
+					DECLARE @EmpCode NVARCHAR(30), @CurYear INT
+					declare curtgCal cursor for
+						SELECT F.EmployeeID, F.CurrentYear 
+						FROM #lstOfUpdate S 
+						INNER JOIN dbo.HR_EmpDayOff F ON F.RecID = S.RecID
+						WHERE S.KowType = 15
+						GROUP BY F.EmployeeID, F.CurrentYear
+						ORDER BY F.CurrentYear
+					open curtgCal
+					fetch next from curtgCal into @EmpCode,@CurYear
+					while @@FETCH_STATUS=0
+					begin
+						exec HR_spCalculateVacation_Reset @EmpCode, @CurYear, 1
+						NEXT_EMP:
+						fetch next from curtgCal into @EmpCode,@CurYear
+					end
+					close curtgCal
+					deallocate curtgCal
+				END
+				
+				DROP TABLE #lstOfUpdate
+			END
+			DROP TABLE #lstOfDetail
+			DROP TABLE #lstOfUpdateT7
+		END
+		--neu co update tu ngay-den ngay
+		--hntruong 27/04/2018
+		--tu dong chuyen ngay nghi vao bang cong cho AIC
+		--SELECT 'fffffffff'
+		IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = N'DayOffAuToToKowds' AND [Value] >= 1)
+			OR ISNULL(@IsTransDayOffToKowds,0) = 1
+		BEGIN
+		--SELECT * FROM #tmpOffDelete
+			IF EXISTS (SELECT 1 FROM #tmpOffDelete WHERE RecID = @RecordID)
+			BEGIN
+				SET @DelIsLeaveDTVS = 0
+
+				SELECT TOP(1) @DelBegDate = BeginDate, @DelEndDate = EndDate, @DelREndDate = REndDate, @DelKowCode = KowCode, @DelDayNum = DateNum, @DelIsLeaveDTVS = IsLeaveDTVS
+				FROM #tmpOffDelete WHERE RecID = @RecordID
+				IF @DelREndDate IS NOT NULL
+				BEGIN
+					SET @DelEndDate = @DelREndDate
+				END
+
+				--SELECT @KOW2LastPayroll AS '@KOW2LastPayroll',@KOW2LastPayroll_V2 AS '@KOW2LastPayroll_V2'
+				IF (@KOW2LastPayroll = '1' OR @KOW2LastPayroll_V2 = 1)
+				BEGIN
+					--SELECT @DelBegDate,@DelEndDate,@DelKowCode
+
+
+					DELETE S FROM HR_TSKowDs S
+					INNER JOIN (
+						SELECT K.RecID,K.EmployeeID, K.WorkDate, K.DowCode, dbo.HR_fnGetNgayChotLuong(K.EmployeeID, K.DowCode) AS NgayChotLuong
+						from HR_TSKowDs K WITH(NOLOCK)
+						WHERE K.EmployeeID = @EmployeeID AND K.WorkDate BETWEEN @DelBegDate AND @DelEndDate 
+							AND (K.KowCode = @DelKowCode OR K.KowCode = @KowSLN OR K.KowCode = @KowASLN)
+					) R ON R.RecID = S.RecID
+					inner join (select EmployeeID,WorkDate,KowCode,DayNum from HR_EmpDayOffDetailDay WHERE RecID = @RecordID) T 
+								on T.EmployeeID = S.EmployeeID and T.WorkDate = S.WorkDate and T.KowCode = S.KowCode
+					WHERE (@Now <= R.NgayChotLuong OR R.NgayChotLuong IS NULL) 
+
+					DELETE from dbo.HR_TSKowDsLastPayroll WHERE EmployeeID = @EmployeeID AND WorkDate BETWEEN @DelBegDate AND @DelEndDate 
+							AND (KowCode = @DelKowCode OR KowCode = @KowSLN OR KowCode = @KowASLN)
+
+					INSERT INTO dbo.HR_TSKowDsLastPayroll(EmployeeID,WorkDate,KowCode,DayNum,IsNoon,DowCode,IsPay,Sorting,CreatedOn,CreatedBy, SystemNote)
+					SELECT S.EmployeeID,S.WorkDate, S.KowCode, T.DayNum * (-1), 0, S.DowCode, S.IsPay, S.Sorting,GETDATE(), S.CreatedBy, N'Chỉnh sửa phiếu phép'
+					FROM HR_TSKowDs S
+					INNER JOIN (
+						SELECT K.RecID,K.EmployeeID, K.WorkDate, K.DowCode, dbo.HR_fnGetNgayChotLuong(K.EmployeeID, K.DowCode) AS NgayChotLuong
+						from HR_TSKowDs K WITH(NOLOCK)
+						WHERE K.EmployeeID = @EmployeeID AND K.WorkDate BETWEEN @DelBegDate AND @DelEndDate 
+							AND (K.KowCode = @DelKowCode OR K.KowCode = @KowSLN OR K.KowCode = @KowASLN)
+					) R ON R.RecID = S.RecID
+					inner join (select EmployeeID,WorkDate,KowCode,CASE WHEN @gSGMC=1 then DayNum * 8.0 ELSE DayNum END AS DayNum from HR_EmpDayOffDetailDay WHERE RecID = @RecordID) T 
+								on T.EmployeeID = S.EmployeeID and T.WorkDate = S.WorkDate and T.KowCode = S.KowCode
+					WHERE R.NgayChotLuong IS not NULL and @Now > R.NgayChotLuong
+
+					DELETE FROM HR_EmpDayOffDetailDay WHERE RecID = @RecordID
+				END
+				ELSE
+                BEGIN
+				--SELECT @DelBegDate,@DelEndDate
+					DELETE from HR_TSKowDs WHERE EmployeeID = @EmployeeID AND WorkDate BETWEEN @DelBegDate AND @DelEndDate 
+							AND (KowCode = @DelKowCode OR KowCode = @KowSLN OR KowCode = @KowASLN)
+
+					DELETE FROM HR_EmpDayOffDetailDay WHERE RecID = @RecordID
+						--SELECT @RecordID AS ss,* INTO tmpD FROM #tmpOffDelete
+					DELETE FROM #kowds_Del
+					INSERT INTO #kowds_Del(EmployeeID, WorkDate, KowCode, DayNum, ProjectCode)
+					SELECT R.EmployeeID, R.WorkDate, S.KowCode, SUM(R.DayNum) AS DayNum, R.ProjectCode
+					FROM HR_EmpDayOffDetailDay R with(nolock)
+					INNER JOIN HR_EmpDayOff S ON S.RecID = R.RecID
+					WHERE R.EmployeeID = @EmployeeID AND R.WorkDate BETWEEN @DelBegDate AND @DelEndDate
+					GROUP BY R.EmployeeID, R.WorkDate, S.KowCode, R.ProjectCode
+
+					DELETE K from HR_TSKowDs K 
+					INNER JOIN #kowds_Del S ON S.EmployeeID = K.EmployeeID AND S.WorkDate = K.WorkDate AND S.KowCode = K.KowCode
+					WHERE K.EmployeeID = @EmployeeID
+
+					--sum lai công phép trước đó
+					insert INTO HR_TSKowDs(EmployeeID, WorkDate, KowCode, RootKowCode, DayNum, DowCode, 
+									Sorting, IsPay, CreatedBy, Note, ProjectCode)
+					SELECT S.EmployeeID, WorkDate, S.KowCode, S.KowCode, CASE WHEN @gSGMC=1 THEN S.DayNum * 8 ELSE S.DayNum END, P.DowCode, 
+									0, 0, 'auto', 'HCSEM_spEmpDayOff_detailDay_update-update những phép còn lại của ngày sau khi xóa', S.ProjectCode
+					FROM #kowds_Del S
+					LEFT JOIN HR_LSPayrollDow P WITH(NOLOCK) ON S.WorkDate BETWEEN P.BegDay AND P.EndDay
+				END
+			END
+		END
+
+		IF ISNULL(@UserID,'') = '' SET @UserID = 'RIGGERDayoff'
+		EXEC HR_spEmpDayOff_detailDay_update @RecordID,@UserID, 99
+
+		IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = 'AutoCaculateWork_Standard' AND Value=1)
+			OR ISNULL(@IsTransDayOffToKowds,0) = 1
+		BEGIN
+			SET @from  = @BegDate
+			SET @to = @EndDate
+
+			IF EXISTS (SELECT 1 FROM #tmpOffDelete WHERE RecID = @RecordID)
+			BEGIN
+				SELECT TOP(1) @DelBegDate = BeginDate, @DelEndDate = EndDate, @DelREndDate = REndDate, @DelKowCode = KowCode, @DelDayNum = DateNum, @DelIsLeaveDTVS = IsLeaveDTVS
+				FROM #tmpOffDelete WHERE RecID = @RecordID
+
+				IF @DelREndDate IS NOT NULL
+				BEGIN
+					SET @DelEndDate = @DelREndDate
+				END
+
+				IF @DelBegDate IS NOT NULL AND @from > @DelBegDate
+				BEGIN
+					SET @from  = @DelBegDate
+				END
+				IF @DelEndDate IS NOT NULL AND @to > @DelEndDate
+				BEGIN
+					SET @to  = @DelEndDate
+				END
+			END
+			IF @to >= @Now SET @to = DATEADD(DAY,-1, @Now)
+
+			IF @from <= @to
+			BEGIN
+				IF EXISTS (SELECT 1 FROM dbo.HR_SysSettingsForCustomers WHERE KeyCode = N'HCSTS_spCaculateWork' AND [Value] = 2)
+				BEGIN
+					exec HR_spAutoCalTimeSheet_XuLyQuyetThe_TienThu @EmployeeID,@from,@to,0,0
+				END
+				ELSE
+				BEGIN
+					EXEC HR_spCaculateWork 'admin','HCSTS08', @EmployeeID,@from,@to,NULL, 1
+				END
+			END
+		END
+
+	
+		--tinh lai cong cho Thanh buoi
+		IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = 'ThanhBuoi_CallTimeSheet')
+		BEGIN
+			DECLARE @PRCurrentPayrollDow NVARCHAR(7),@SalBeg DATETIME, @SalEnd DATETIME
+			SELECT TOP(1) @PRCurrentPayrollDow = PRCurrentPayrollDow FROM dbo.HR_ConfigPR WITH(NOLOCK)
+			SELECT @SalBeg = BegDay, @SalEnd = EndDay FROM dbo.HR_LSPayrollDow WITH(NOLOCK) WHERE DowCode = @PRCurrentPayrollDow
+
+			SET @from = @BegDate
+			SET @to = @EndDate
+			IF @from > @Now SET @from = DATEADD(DAY,1,@Now)
+			IF @to > @Now SET @to = DATEADD(DAY,1,@Now)
+			IF EXISTS (SELECT 1 FROM #tmpOffDelete WHERE RecID = @RecordID)
+			BEGIN
+				DECLARE @f DATETIME, @t DATETIME
+				SELECT @f = BeginDate,@t = EndDate FROM #tmpOffDelete WHERE RecID = @RecordID
+
+				IF @f <= @Now AND @f < @from SET @from = @f
+				IF @t <= @Now AND @t > @to SET @to = @t
+			END
+
+			IF @SalBeg IS NOT NULL
+			BEGIN
+				IF @from < @SalBeg SET @from  =@SalBeg
+				IF @to > @SalEnd SET @to = @SalEnd
+
+				--INSERT INTO Test01(emp,begdate,enddate)
+				--VALUES (@EmployeeID,@from,@to)
+				IF @from <= @Now
+				BEGIN
+					IF EXISTS (SELECT 1 FROM dbo.HR_SysSettingsForCustomers WHERE KeyCode = N'HCSTS_spCaculateWork' AND [Value] = 2)
+					BEGIN
+						exec HR_spAutoCalTimeSheet_XuLyQuyetThe_TienThu @EmployeeID,@from,@to,0,0
+					END
+					ELSE
+					BEGIN
+						EXEC HR_spCaculateWork 'admin','HCSTS08', @EmployeeID,@from,@to,NULL,1
+                       END
+				END
+			END
+		END
+
+		IF EXISTS (SELECT TOP(1) 1 FROM dbo.HR_SysSettingsForCustomers WITH(NOLOCK) WHERE KeyCode = N'QuyTrinh.FillNgayLonHonHienTai' AND Value=1)
+		BEGIN
+			IF @EndDate >= @Now
+			BEGIN
+				SET @fBegDate = @BegDate
+				SET @fEndDate = @EndDate
+				IF @fBegDate < @Now SET @fBegDate = @Now
+				
+				EXEC dbo.HR_spFillCacQuaTrinhVaoBangCong @UserID = N'admin',                    -- nvarchar(30)
+													@EmployeeID = @EmployeeID,              -- nvarchar(30)
+													@ProcessID = 0,                   -- int
+													@RecordID = @RecordID,                  -- nvarchar(50)
+													@BegDate = @fBegDate, -- datetime
+													@EndDate = @fEndDate, -- datetime
+													@Err = @Err OUTPUT                -- nvarchar(max)
+			END
+		END
+
+		Next_DOff:
+		FETCH NEXT FROM curtg_trFFFF INTO @RecordID, @EmployeeID, @BegDate, @EndDate, @KowCode, @IsLeaveDTVS, @gSGMC, 
+				@IsSubKowSpecical,@KowSLN, @KowASLN, @IsPrivateT7, @KowType, @UserID
+	END
+	CLOSE curtg_trFFFF
+	DEALLOCATE curtg_trFFFF
+END
+
+
+
+
+
+--------------------------------------------------------------2
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spEmpDayOff_DELETEDETAIL]    Script Date: 1/22/2025 5:32:58 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[HR_spEmpDayOff_DELETEDETAIL](
+@deleted uniqueidentifier,
+@UserID nvarchar(100)
+)
+as
+BEGIN
+	SET NOCOUNT ON;
+	declare @BegDate datetime, @EndDate DATETIME, @KowCode NVARCHAR(20)
+	DECLARE @EmployeeID NVARCHAR(30)
+	DECLARE @Now DATETIME SET @Now = CONVERT(NVARCHAR(10),GETDATE(),111)
+	DECLARE @KOW2LastPayroll NVARCHAR(20) SET @KOW2LastPayroll ='0'
+	SELECT @KOW2LastPayroll = Value FROM HR_SysSettingsForCustomers WITH(NOLOCK)  WHERE  KeyCode = N'KOW2LastPayroll'
+	DECLARE @KOW2LastPayroll_V2 BIT
+	SET @KOW2LastPayroll_V2 = 0
+	if exists (select 1 from HR_SysSettingsForCustomers WITH(NOLOCK) where KeyCode='KOW2LastPayroll_V2' AND Value = 1)
+	BEGIN
+		SET @KOW2LastPayroll_V2 = 1
+	END
+	SELECT * INTO #DayOffDeleted FROM HR_EmpDayOffDeleted_tmp  where RecID = @deleted and UserID = @UserID
+	IF NOT EXISTS (SELECT 1 FROM #DayOffDeleted) RETURN
+
+	--danh sach detail dang xoa
+	SELECT S.EmployeeID, S.WorkDate, T.Tuan INTO #lstOfDetail FROM HR_EmpDayOffDetailDay S  WITH(NOLOCK)
+	CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T
+	INNER JOIN #DayOffDeleted R ON R.RecID = S.RecID
+	GROUP BY S.EmployeeID, S.WorkDate, T.Tuan
+
+	if not exists (select 1 from #lstOfDetail) return
+
+	select  S.ID, S.RecID, S.EmployeeID, S.WorkDate, CASE WHEN ISNULL(V.TSHoursPerWD,0)=1 THEN S.DayNum * 8.0 ELSE S.DayNum END AS DayNum, 
+		S.LeavePeriod, S.CreatedBy, S.CreatedOn, S.Note, S.IsRemainCalKowds, S.FromTime, S.ToTime, S.ProjectCode, S.KowCode,
+		dbo.HR_fnGetNgayChotLuong(S.EmployeeID,P.DowCode) AS NgayChotLuong
+	into #DayOffDetailDell 
+	FROM HR_EmpDayOffDetailDay S  WITH(NOLOCK)
+	INNER JOIN #DayOffDeleted R ON R.RecID = S.RecID
+	LEFT JOIN HR_ConfigTSEmp V ON V.EmployeeID = R.EmployeeID
+	inner join HR_LSPayrollDow P WITH(NOLOCK) on S.WorkDate between P.BegDay and P.EndDay
+
+	DELETE S FROM HR_EmpDayOffDetailDay S 
+	INNER JOIN #DayOffDeleted R ON R.RecID = S.RecID
+
+	--Thanh Buoi-Cap nhat lai cac phieu ngay T7 neu co
+	SELECT R.EmployeeID, R.WorkDate, R.Tuan INTO #lstOfUpdateT7
+	FROM #lstOfDetail R
+	INNER JOIN dbo.HR_EmployeeExt E ON E.EmployeeID = R.EmployeeID
+	INNER JOIN HR_LSWLeaveDayGroup L ON L.WLeaveDayGroupCode =E.WLeaveDayGroupCode
+	WHERE ISNULL(L.IsPrivateT7,0) = 1 
+
+	CREATE TABLE #tblUpdateKowAddMore(RecordID uniqueidentifier)
+	IF EXISTS (SELECT 1 FROM #lstOfUpdateT7)
+	BEGIN
+		--tim cac phieu chung Tuan voi ngay trong #lstOfDetail(danh sach xoa) ma co ngay T7, dautuan-cuoi tuan xac dinh tu WorkDate ngay T7
+		SELECT S.ID, S.RecID, S.KowCode,S.EmployeeID, S.WorkDate 
+		INTO #lstOfUpdate_d
+		FROM dbo.HR_EmpDayOffDetailDay S WITH(NOLOCK)
+		INNER JOIN (SELECT EmployeeID,DATEADD(DAY,-7,MIN(WorkDate)) AS BegDate, DATEADD(DAY,7,MAX(WorkDate)) AS EndDate FROM #lstOfUpdateT7 GROUP BY EmployeeID) R
+				ON R.EmployeeID = S.EmployeeID AND S.WorkDate BETWEEN R.BegDate AND R.EndDate
+		WHERE DATEPART(dw,S.WorkDate) = 7
+
+		SELECT S.ID, S.RecID, S.WorkDate, L.KowType, S.EmployeeID, DATEADD(DAY,-5,S.WorkDate) AS DauTuan, DATEADD(DAY,1,S.WorkDate) AS CuoiTuan 
+		INTO #lstOfUpdate
+		FROM #lstOfUpdate_d S CROSS APPLY dbo.Hr_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T
+		INNER JOIN  #lstOfDetail R ON R.Tuan = T.Tuan AND R.EmployeeID = S.EmployeeID
+		LEFT JOIN dbo.HR_LSKOW L ON L.KowCode =S.KowCode
+
+		SELECT S.RecID,S.ID, SUM(ISNULL(R.DayNum,0)) AS SN INTO #TmpUpdate1 FROM #lstOfUpdate S 
+		LEFT JOIN HR_EmpDayOffDetailDay R ON S.EmployeeID = R.EmployeeID AND R.WorkDate BETWEEN S.DauTuan AND S.CuoiTuan AND DATEPART(dw,r.WorkDate) <> 7
+		GROUP BY S.RecID,S.ID
+
+		--update detail
+		UPDATE S SET S.DayNum = CASE WHEN R.SN > 0 THEN 1 ELSE 0.5 END, S.Note = N'Xoa ngay nghi cap nhat lai T7' from HR_EmpDayOffDetailDay S
+		INNER JOIN #TmpUpdate1 R ON R.ID =S.ID
+
+		SELECT S.RecID,SUM(S.DayNum) AS DayNum INTO #lstOfDayNum
+		FROM
+        (
+			SELECT RecID FROM #lstOfUpdate GROUP BY RecID
+		) R INNER JOIN HR_EmpDayOffDetailDay S ON S.RecID = R.RecID
+		GROUP BY S.RecID
+
+		UPDATE F SET F.DateNum = R.DayNum, F.YearNum = R.DayNum, F.SystemNote = N'Xoa ngay nghi cap nhat lai T7', F.ModifiedOn = GETDATE() 
+		FROM dbo.HR_EmpDayOff F INNER JOIN #lstOfDayNum R ON R.RecID = F.RecID
+
+		INSERT INTO #tblUpdateKowAddMore(RecordID)
+		SELECT RecID FROM #lstOfDayNum GROUP BY RecID
+
+		IF EXISTS (SELECT 1 FROM #lstOfUpdate WHERE KowType = 15)
+		BEGIN
+			DECLARE @EmpCode NVARCHAR(30), @CurYear INT
+			declare curtgCal cursor for
+				SELECT F.EmployeeID, F.CurrentYear 
+				FROM #lstOfUpdate S 
+				INNER JOIN dbo.HR_EmpDayOff F ON F.RecID = S.RecID
+				WHERE S.KowType = 15
+				GROUP BY F.EmployeeID, F.CurrentYear
+				ORDER BY F.CurrentYear
+			open curtgCal
+			fetch next from curtgCal into @EmpCode,@CurYear
+			while @@FETCH_STATUS=0
+			begin
+				exec HR_spCalculateVacation_Reset @EmpCode, @CurYear, 1
+				NEXT_EMP:
+				fetch next from curtgCal into @EmpCode,@CurYear
+			end
+			close curtgCal
+			deallocate curtgCal
+		END
+	END
+
+	DECLARE @IsTransDayOffToKowds BIT SET @IsTransDayOffToKowds = 0
+	SELECT  @IsTransDayOffToKowds = IsTransDayOffToKowds FROM dbo.HR_ConfigTS WITH(NOLOCK) WHERE ISNULL(BUCode,'') = ''
+	IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = N'DayOffAuToToKowds' AND [Value] >= 1)
+		OR ISNULL(@IsTransDayOffToKowds,0) = 1
+		OR EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = 'AutoCaculateWork_Standard' AND Value=1)
+	BEGIN
+		DECLARE @RecordID uniqueidentifier
+		declare @IsRemainKowds BIT
+
+		--#tblUpdateKowAddMore
+		SELECT I.RecID, I.EmployeeID, I.BeginDate, I.EndDate, I.KowCode, ISNULL(I.IsRemainCalKowds,0) AS IsRemainCalKowds 
+		INTO #lstOfDelKowds
+		FROM #DayOffDeleted I
+		UNION ALL
+		SELECT I.RecID, I.EmployeeID, I.BeginDate, I.EndDate, I.KowCode, ISNULL(I.IsRemainCalKowds,0) AS IsRemainCalKowds
+		FROM #tblUpdateKowAddMore S
+		INNER JOIN dbo.HR_EmpDayOff I ON I.RecID  = S.RecordID
+		LEFT JOIN #DayOffDeleted D ON D.RecID = I.RecID
+		WHERE D.RecID IS NULL
+
+		DECLARE @IsSubKowSpecical BIT, @KowSLN NVARCHAR(30), @KowASLN NVARCHAR(30)
+		CREATE TABLE #kowds_Del2(EmployeeID NVARCHAR(30), WorkDate DATETIME, KowCode NVARCHAR(20), DayNum FLOAT, ProjectCode VARCHAR(20), CreatedOn Datetime)
+		declare curtg_trF cursor for
+			SELECT I.RecID, I.EmployeeID, I.BeginDate, I.EndDate, I.KowCode, ISNULL(I.IsRemainCalKowds,0) AS IsRemainCalKowds, 
+					ISNULL(V.IsSubKowSpecical,0) AS IsSubKowSpecical, V.KowSLN, V.KowASLN
+			FROM #lstOfDelKowds I
+			LEFT JOIN dbo.HR_EmployeeExt E WITH(NOLOCK) ON E.EmployeeID = I.EmployeeID
+			LEFT JOIN dbo.HR_SetupALObject V WITH(NOLOCK) ON V.ALObjectID = E.ALObjectID
+		open curtg_trF
+		fetch next from curtg_trF into @RecordID, @EmployeeID, @BegDate, @EndDate, @KowCode, @IsRemainKowds, @IsSubKowSpecical, @KowSLN, @KowASLN
+		WHILE @@FETCH_STATUS=0
+		BEGIN
+	
+			IF @KOW2LastPayroll = '1' OR @KOW2LastPayroll_V2 = 1
+			BEGIN
+				DELETE S FROM HR_TSKOWDS S
+				INNER JOIN (
+					SELECT EmployeeID,WorkDate,KowCode,DayNum,NgayChotLuong
+					FROM #DayOffDetailDell WHERE RecID = @RecordID
+				) R ON R.EmployeeID = S.EmployeeID and R.WorkDate = S.WorkDate and R.KowCode = S.KowCode
+				WHERE (@Now <= R.NgayChotLuong OR R.NgayChotLuong IS NULL) and S.DayNum <= R.DayNum
+
+				update S set S.DayNum = S.DayNum - R.DayNum
+				FROM HR_TSKOWDS S
+				INNER JOIN (
+					SELECT EmployeeID,WorkDate,KowCode,DayNum,NgayChotLuong
+					FROM #DayOffDetailDell WHERE RecID = @RecordID
+				) R ON R.EmployeeID = S.EmployeeID and R.WorkDate = S.WorkDate and R.KowCode = S.KowCode
+				WHERE (@Now <= R.NgayChotLuong OR R.NgayChotLuong IS NULL) and S.DayNum > R.DayNum
+
+				DELETE FROM dbo.HR_TSKowDsLastPayroll
+				WHERE EmployeeID = @EmployeeID AND WorkDate BETWEEN @BegDate AND @EndDate AND (KowCode = @KowCode OR KowCode = @KowSLN OR KowCode =@KowASLN)
+
+				INSERT INTO dbo.HR_TSKowDsLastPayroll(EmployeeID,WorkDate,KowCode,DayNum,IsNoon,DowCode,IsPay,Ordinal,CreatedOn,CreatedBy, SystemNote)
+				select S.EmployeeID,S.WorkDate, S.KowCode, R.DayNum * (-1), 0, S.DowCode, S.IsPay, S.Ordinal,GETDATE(), S.CreatedBy, N'Xóa phiếu phép sau ngày chốt công' 
+				FROM HR_TSKowDs S
+				INNER JOIN (
+					SELECT EmployeeID,WorkDate,KowCode,DayNum,NgayChotLuong
+					FROM #DayOffDetailDell 
+						WHERE RecID = @RecordID
+				) R ON R.EmployeeID = S.EmployeeID and R.WorkDate = S.WorkDate and R.KowCode = S.KowCode
+				WHERE (R.NgayChotLuong IS NOT NULL and @Now > R.NgayChotLuong)
+			END
+			ELSE
+            BEGIN
+				DELETE FROM HR_TSKOWDS 
+				WHERE EmployeeID = @EmployeeID AND WorkDate BETWEEN @BegDate AND @EndDate AND (KowCode = @KowCode OR KowCode = @KowSLN OR KowCode =@KowASLN)
+
+				DELETE FROM #kowds_Del2
+				INSERT INTO #kowds_Del2(EmployeeID, WorkDate, KowCode, DayNum, ProjectCode)
+				SELECT R.EmployeeID, R.WorkDate, S.KowCode, CASE WHEN ISNULL(V.TSHoursPerWD,0) = 1 then SUM(R.DayNum) *8.0 ELSE  SUM(R.DayNum) END AS DayNum, R.ProjectCode
+				FROM HR_EmpDayOffDetailDay R with(nolock)
+				INNER JOIN HR_EmpDayOff S with(nolock) ON S.RecID = R.RecID
+				LEFT JOIN HR_ConfigTSEmp V ON V.EmployeeID = R.EmployeeID
+				WHERE R.EmployeeID = @EmployeeID AND R.WorkDate BETWEEN @BegDate AND @EndDate
+				GROUP BY R.EmployeeID, R.WorkDate, S.KowCode, R.ProjectCode, V.TSHoursPerWD
+
+				DELETE K FROM HR_TSKOWDS K 
+				INNER JOIN #kowds_Del2 S ON S.EmployeeID = K.EmployeeID AND S.WorkDate = K.WorkDate AND S.KowCode = K.KowCode
+				WHERE K.EmployeeID = @EmployeeID
+
+				INSERT INTO HR_TSKOWDS(EmployeeID, WorkDate, KowCode, RootKowCode, DayNum, DowCode, 
+							Sorting, IsPay, CreatedBy, Note, ProjectCode)
+				SELECT S.EmployeeID, WorkDate, S.KowCode, S.KowCode, S.DayNum, P.DowCode, 0, 0, 'auto', 'HCSEM_spEmpDayOff_detailDay_update', S.ProjectCode
+				FROM #kowds_Del2 S
+				LEFT JOIN HR_LSPayrollDow P ON S.WorkDate BETWEEN P.BegDay AND P.EndDay
+			END
+
+			--dung cho AIC(AIC xai chay them cau ben duoi de insert cau hinh)
+			DECLARE @from DATETIME, @to DATETIME
+			SET @from  = @BegDate 
+			IF @EndDate >= @Now SET @to = DATEADD(DAY,-1, @Now)
+			ELSE SET @to = @EndDate
+
+			IF EXISTS (SELECT 1 FROM dbo.HR_SysSettingsForCustomers WHERE KeyCode = N'HCSTS_spCaculateWork' AND [Value] = 2)
+			BEGIN
+				exec HCSTS_spAutoCalTimeSheet_XuLyQuyetThe_TienThu @EmployeeID,@from,@to,0,0
+			END
+			ELSE
+            BEGIN
+				IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = 'AIC_CallTimeSheet_UpdateDayOff' AND Value = 1)
+				BEGIN
+					IF(@BegDate < @Now)
+					BEGIN
+						EXEC HCSTS_spAutoCalTimeSheetEveryDay_AIC @EmployeeID, @from, @to, 0, 0
+					END
+				END
+				ELSE
+				BEGIN
+					EXEC HR_spCaculateWork 'admin','HCSTS08', @EmployeeID, @from , @to,NULL,1
+				END
+			END
+
+			FETCH NEXT FROM curtg_trF INTO @RecordID, @EmployeeID, @BegDate, @EndDate, @KowCode, @IsRemainKowds, @IsSubKowSpecical, @KowSLN, @KowASLN
+		END
+		CLOSE curtg_trF
+		DEALLOCATE curtg_trF
+	END
+
+	--tinh lai cong cho Thanh buoi
+	IF EXISTS (SELECT 1 FROM HR_SYSSettingsForCustomers WHERE KeyCode = 'ThanhBuoi_CallTimeSheet')
+	BEGIN
+		DECLARE @PRCurrentPayrollDow NVARCHAR(7),@SalBeg DATETIME, @SalEnd DATETIME
+		SELECT TOP(1) @PRCurrentPayrollDow = PRCurrentPayrollDow FROM dbo.HR_ConfigPR WITH(NOLOCK)
+		SELECT @SalBeg = BegDay, @SalEnd = EndDay FROM dbo.HR_LSPayrollDow WITH(NOLOCK) WHERE DowCode = @PRCurrentPayrollDow
+
+		declare curtgDelOff cursor for
+			SELECT EmployeeID,BeginDate,EndDate FROM #DayOffDeleted
+		open curtgDelOff
+		fetch next from curtgDelOff into @EmployeeID, @BegDate, @EndDate
+		while @@FETCH_STATUS=0
+		begin
+			SET @from = @BegDate
+			SET @to = @EndDate
+			IF @from > @Now SET @from = DATEADD(DAY,1,@Now)
+			IF @to > @Now SET @to = DATEADD(DAY,1,@Now)
+
+			IF @SalBeg IS NOT NULL
+			BEGIN
+				IF @from < @SalBeg SET @from = @SalBeg
+				IF @to > @SalEnd SET @to = @SalEnd
+				IF @from <= @Now
+				BEGIN
+					IF EXISTS (SELECT 1 FROM dbo.HR_SYSSettingsForCustomers WHERE KeyCode = N'HCSTS_spCaculateWork' AND [Value] = 2)
+					BEGIN
+						exec HCSTS_spAutoCalTimeSheet_XuLyQuyetThe_TienThu @EmployeeID,@from,@to,0,0
+					END
+					ELSE
+					BEGIN
+						EXEC HR_spCaculateWork 'admin','HCSTS08', @EmployeeID,@from,@to,NULL,1
+                       END
+				END
+			END
+
+			fetch next from curtgDelOff into @EmployeeID, @BegDate, @EndDate
+		end
+		close curtgDelOff
+		deallocate curtgDelOff
+	END
+END
+
+
+
+-----------------------------------------------------------------3
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spEmpDayOff_detailDay_update]    Script Date: 1/22/2025 5:33:37 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[HR_spEmpDayOff_detailDay_update]
+(
+	@RecordID uniqueidentifier,
+	@UserID NVARCHAR(250),
+	@Kind INT = 99 --99:goi từ trigger dayoff
+)
+AS
+BEGIN
+	DECLARE @KOW2LastPayroll NVARCHAR(20) SET @KOW2LastPayroll ='0'
+	SELECT @KOW2LastPayroll = Value FROM HR_SysSettingsForCustomers WITH(NOLOCK)  WHERE  KeyCode = N'KOW2LastPayroll'
+	DECLARE @KOW2LastPayroll_V2 BIT
+	SET @KOW2LastPayroll_V2 = 0
+	if exists (select 1 from HR_SysSettingsForCustomers where KeyCode='KOW2LastPayroll_V2' AND Value = 1)
+	BEGIN
+		SET @KOW2LastPayroll_V2 = 1
+	END
+
+	declare @WLeaveDayValue INT, @IsSubHoliday bit,@IsSubWeek BIT, @IsSunday BIT, @IsRemainCalKowds BIT, @KowCode NVARCHAR(20), @Now DATETIME
+	DECLARE @TSDecPlaceWD INT, @KowType int
+	SET @Now = CONVERT(NVARCHAR(10),GETDATE(),111)
+	set @WLeaveDayValue = 0
+
+	DECLARE @BegDate DATETIME,@EndDate DATETIME,@REndDate DATETIME, @LeavePeriod INT, @YearNum FLOAT, @EmployeeID NVARCHAR(30),
+			@TSSysVacationTypeCode NVARCHAR(20), @IsLeaveDTVS SMALLINT, @DailyTimeNum FLOAT
+	IF @Kind = 11
+	begin
+		--CREATE TABLE #HCSEM_EmpDayOff_trg (EmployeeID NVARCHAR(30),BeginDate DATETIME,EndDate DATETIME,LeavePeriod INT,YearNum FLOAT,IsSubHoliday BIt,IsSubWeek BIT,IsSubSunday bit)
+		SELECT TOP(1) I.RecID, I.EmployeeID, I.KowCode, I.BeginDate,  I.EndDate,  I.LeavePeriod,I.YearNum ,I.DateNum, I.IsSubHoliday,  
+					I.IsSubWeek,  I.IsSubSunday, I.IsRemainCalKowds, I.IsLeaveDTVS, I.DailyTimeNum, I.FromTime, I.ToTime, I.ProjectCode, LK.KowType
+		INTO #HCSEM_EmpDayOff_trg
+		FROM HR_EmpDayOff I WITH(NOLOCK) 
+		LEFT JOIN dbo.HR_LSKOW LK ON LK.KowCode = I.KowCode
+		WHERE RecID = @RecordID
+
+	END
+	SET @IsLeaveDTVS = 0
+	DECLARE @FromTime DateTime, @ToTime DateTime, @ProjectCode NVARCHAR(30)
+	SELECT TOP(1) @EmployeeID = F.EmployeeID,@BegDate = F.BeginDate, @EndDate = F.EndDate, @LeavePeriod = F.LeavePeriod, 
+				@YearNum = CASE WHEN ISNULL(F.YearNum,0) = 0 THEN F.DateNum ELSE F.YearNum END, @IsSubHoliday = F.IsSubHoliday, 
+				@IsSubWeek = F.IsSubWeek, @IsSunday = F.IsSubSunday, @IsRemainCalKowds = ISNULL(F.IsRemainCalKowds,0), @KowCode = F.KowCode,
+				@IsLeaveDTVS = F.IsLeaveDTVS, @DailyTimeNum = ISNULL(F.DailyTimeNum,0),@FromTime = S.FromTime, @ToTime = S.ToTime,
+				@ProjectCode = S.ProjectCode, @KowType = F.KowType, @REndDate = S.REndDate
+	FROM #HCSEM_EmpDayOff_trg F
+	LEFT JOIN HR_EmpDayOff S WITH(NOLOCK) ON S.RecID = F.RecID
+	WHERE F.RecID = @RecordID
+	SET @BegDate = CONVERT(NVARCHAR(10),@BegDate,111)
+	SET @EndDate = CONVERT(NVARCHAR(10),@EndDate,111)
+
+	IF @REndDate IS NOT NULL
+	BEGIN
+		SET @EndDate = @REndDate
+	END
+
+	DECLARE @BUCode NVARCHAR(30), @KowSLN NVARCHAR(30), @KowASLN NVARCHAR(30), @IsSubKowSpecical BIT	
+	SELECT TOP(1) @BUCode = '', @KowSLN = V.KowSLN, @KowASLN = V.KowASLN, @IsSubKowSpecical = ISNULL(V.IsSubKowSpecical,0)
+	FROM HR_VwEmployees E WITH(NOLOCK) LEFT JOIN HR_OrgUnitHierarchy P WITH(NOLOCK) ON P.OrgUnitID=e.OrgUnitID
+	LEFT JOIN dbo.HR_SetupALObject V ON V.ALObjectID = E.ALObjectID
+	WHERE E.EmployeeID = @EmployeeID
+
+	SELECT @WLeaveDayValue = isnull(L.WLeaveDayValue,1), @TSDecPlaceWD = S.TSDecPlaceWD
+    from HR_ConfigTS S with(NOLOCK)
+	left JOIN HR_LSWLeaveDayGroup L WITH(NOLOCK) on L.WLeaveDayGroupCode = S.TSWLeaveDayCode
+	WHERE ISNULL(S.BUCode,'') = ISNULL(@BUCode,'')
+
+	DECLARE @gSGMC FLOAT
+	SELECT @gSGMC = TSHoursPerWD FROM dbo.HR_ConfigTSEmp WITH(NOLOCK) WHERE EmployeeID = @EmployeeID
+	SET @gSGMC = ISNULL(@gSGMC,8)
+
+	SET @TSDecPlaceWD = ISNULL(@TSDecPlaceWD,2)
+
+	IF ISNULL(@DailyTimeNum,0) > 0 SET @DailyTimeNum = @DailyTimeNum/8.00
+
+	CREATE TABLE #tblUpdateKowAddMoreds(RecordID BIGINT)
+	IF @LeavePeriod in (6,7)
+	BEGIN
+		--SELECT REPLACE(CONVERT(NVARCHAR(10),GETDATE(),108),':','')
+
+		DECLARE @Err NVARCHAR(max)
+		DECLARE @usrID NVARCHAR(100) SET @usrID = 'trgDayOff'+ISNULL(@UserID,@EmployeeID)+REPLACE(CONVERT(NVARCHAR(10),GETDATE(),108),':','')
+		DELETE from HR_HPLeaveRequestGenDetailTime_tmp where UserID = @usrID
+		EXEC HR_spSumDayOffEmp_portal_LeavePeriod6
+					null,
+					@usrID,
+					@EmployeeID,
+					@BegDate,
+					@LeavePeriod,
+					@EndDate,
+					@FromTime,
+					@ToTime,
+					1, --0:Load mat dinh ban dau,1: thay doi tu ngay, 2:thoi doi den ngay, 3: thoi doi tu gio, 4 thay doi den gio
+					NULL,
+					'VN',
+					null,
+					null,
+					null,
+					null,
+					null,
+					null,
+					@Err OUT
+
+		--SELECT * FROM HR_HPLeaveRequestGenDetailTime_tmp WHERE UserID=@UserID
+		DELETE FROM HR_EmpDayOffDetailDay WHERE RecID = @RecordID
+		INSERT INTO HR_EmpDayOffDetailDay(RecID, EmployeeID, WorkDate, DayNum, LeavePeriod, CreatedBy, FromTime, ToTime, KowCode, ProjectCode)
+		SELECT @RecordID, @EmployeeID, WorkDate, HourNum/8.0, @LeavePeriod, @UserID, FromTime, ToTime, @KowCode, @ProjectCode
+		FROM HR_HPLeaveRequestGenDetailTime_tmp
+		WHERE UserID=@usrID
+
+		DELETE FROM HR_HPLeaveRequestGenDetailTime_tmp WHERE UserID=@usrID
+		
+		GOTO NextCalKow
+	END
+
+	IF ISNULL(@LeavePeriod,0) = 5 SET @LeavePeriod = 2
+
+	DECLARE @sumHoliday float, @i DateTime, @temp int
+	
+	set @sumHoliday = 0
+
+	DECLARE @WLeaveDayGroupCode VARCHAR(20)
+	SELECT TOP(1) @TSSysVacationTypeCode = TSSysHolidayCode FROM HR_ConfigTSEmp WITH (NOLOCK) WHERE EmployeeID = @EmployeeID
+	SELECT TOP(1) @WLeaveDayGroupCode = WLeaveDayGroupCode FROM dbo.HR_EmployeeExt WITH (NOLOCK) WHERE EmployeeID = @EmployeeID
+
+	-- tạo bảng tam chứa DayOff
+	select DayOff, LeavePeriod INTO #HCSTS_RegisterDayOff_tmp 
+	FROM HR_TSRegisterDayOff with (nolock) where EmployeeID = @EmployeeID and DayOff between @BegDate and @EndDate
+	
+	DECLARE @IsPrivateT7 bit
+	SELECT TOP(1) @WLeaveDayValue = WLeaveDayValue, @IsPrivateT7 = IsPrivateT7 FROM dbo.HR_LSWLeaveDayGroup WITH (NOLOCK) WHERE WLeaveDayGroupCode = @WLeaveDayGroupCode	
+
+	SET @IsSubHoliday = ISNULL(@IsSubHoliday,0)
+	SET @IsSubWeek = ISNULL(@IsSubWeek,0)
+	SET @IsSunday = ISNULL(@IsSunday,0)
+
+	--SELECT * FROM #lstOfDayDetail
+	DECLARE @HalfdayOnSAT VARCHAR(110), @IsHalfdayOnSAT BIT SET @IsHalfdayOnSAT = 0
+	SELECT @HalfdayOnSAT = L.HalfdayOnSAT FROM dbo.HR_LSKOW L WITH(NOLOCK) WHERE KowCode = @KowCode
+	IF ISNULL(@HalfdayOnSAT,'') <> '' AND EXISTS (SELECT 1 FROM dbo.HR_FNSplitString_varchar(@HalfdayOnSAT,',') WHERE data = @WLeaveDayGroupCode)
+	BEGIN
+		SET @IsHalfdayOnSAT = 1
+	END
+
+	SELECT D.mDate AS WorkDate, CASE WHEN ISNULL(H.LeavePeriod,0) IN (2,3) THEN 1 else 0 END AS NghiNuaNgay, H.LeavePeriod
+	INTO #lstOfDayDetail
+	FROM HR_FNGet_SelectFromTODate(@BegDate, @EndDate) D
+	LEFT JOIN dbo.HR_fnGet_HolidayDetails(@BegDate,@EndDate,@IsSubHoliday, @IsSubWeek,@IsSunday,@EmployeeID) H ON H.Date_Off = D.mDate
+	WHERE H.Date_Off IS NULL OR (H.Date_Off IS NOT NULL AND H.LeavePeriod <> 1)
+			OR (@IsHalfdayOnSAT = 1 AND DATEPART(dw,d.mDate) = 7)
+
+	SELECT S.WorkDate, CASE WHEN @IsHalfdayOnSAT = 1 AND DATEPART(dw,S.WorkDate) = 7 THEN 0.5
+							WHEN @LeavePeriod = 4 THEN 
+								CASE WHEN S.NghiNuaNgay = 1 and @DailyTimeNum > 0.5 THEN 0.5 ELSE @DailyTimeNum END
+							WHEN S.NghiNuaNgay = 1 THEN 
+								0.5
+							ELSE 
+								case when @BegDate=@EndDate and @YearNum<1 then @YearNum else 1 END  
+							END AS DayNum, 
+						CASE WHEN @LeavePeriod = 4 THEN @LeavePeriod 
+							 WHEN S.NghiNuaNgay = 1 THEN CASE WHEN S.LeavePeriod = 2 THEN 3 ELSE 2 END
+							 ELSE 1 END AS LeavePeriod,
+			S.NghiNuaNgay, ROW_NUMBER()OVER(ORDER BY S.WorkDate) AS RowIndex
+	INTO #lstOfDate
+	FROM #lstOfDayDetail S 
+
+	
+
+	DECLARE @SumNN FLOAT 
+	DECLARE @DayNumEndDate FLOAT
+
+	IF @LeavePeriod = 4
+	BEGIN
+		PRINT ''
+	END
+	ELSE
+    BEGIN	
+		IF @LeavePeriod = 3--nếu nghỉ bắt đầu từ buổi chiều của từ ngày(@begdate)--> ngày đầu tiên là nghỉ buổi chiều.(các ngày còn lại nghỉ nguyên ngày)
+		BEGIN
+			--nếu ngày nghỉ tuần là loại nghỉ 1/2 sáng t7 và @begdate = Thứ 3--> T7 nghỉ sáng.
+			--Ngược lại nếu @begdate ko là t7 thì trừ ngày nghỉ vào buổi chiều của @begdate
+			UPDATE #lstOfDate SET LeavePeriod = 3 WHERE RowIndex = 1
+			UPDATE #lstOfDate SET DayNum = 0.5 WHERE RowIndex = 1 and DayNum > 0.5
+		END
+		
+		--Tinh Tong so ngay nghi nam giua @begdate vs @Enddate để xem ngày cuối nghỉ 1/2 ngày hay nguyên ngày.
+		IF @BegDate < @EndDate
+		BEGIN
+			SET @SumNN = 0
+			SET @DayNumEndDate = 0
+			SELECT @SumNN = SUM(DayNum) FROM #lstOfDate WHERE WorkDate < @EndDate
+			SET @DayNumEndDate = @YearNum - ISNULL(@SumNN,0)
+			--SELECT @DayNumEndDate,@YearNum,@SumNN
+			IF @DayNumEndDate < 1--Ngay cuoi nghi buoi sang
+			BEGIN
+				if @DayNumEndDate > 0
+				BEGIN
+					UPDATE #lstOfDate SET DayNum = 0.5, LeavePeriod = 2 WHERE WorkDate = @EndDate
+				END
+				ELSE
+                BEGIN
+					--neu ngay cuoi tinh ra 0 ngay phep thi xoa
+					delete from #lstOfDate WHERE WorkDate = @EndDate
+				END
+			END
+			ELSE
+			BEGIN
+				--nghi nguyen ngay neu <> loai nghi 1/2 t7(neu la T7 and Loai nghi =1/2 T7 thi nghi sang)
+				UPDATE #lstOfDate SET LeavePeriod = 1 WHERE WorkDate = @EndDate AND NghiNuaNgay <> 1
+				UPDATE #lstOfDate SET LeavePeriod = 2 WHERE WorkDate = @EndDate AND NghiNuaNgay = 1
+			END
+		END
+		ELSE
+		BEGIN
+			IF (@LeavePeriod = 2 OR @LeavePeriod = 1) AND @YearNum < 1
+			BEGIN
+				UPDATE #lstOfDate SET LeavePeriod = 2 WHERE WorkDate = @BegDate
+				UPDATE #lstOfDate SET DayNum = 0.5 WHERE WorkDate = @BegDate and DayNum > 0.5
+			END
+			ELSE
+			BEGIN
+				IF @LeavePeriod = 3 AND @YearNum < 1
+				BEGIN
+				   UPDATE #lstOfDate SET  LeavePeriod = 3 WHERE WorkDate = @BegDate
+				   UPDATE #lstOfDate SET DayNum = 0.5 WHERE WorkDate = @BegDate and DayNum > 0.5
+				END
+				ELSE
+				BEGIN
+					IF @YearNum >= 1
+					BEGIN
+						UPDATE #lstOfDate SET DayNum = 1, LeavePeriod = 1 WHERE WorkDate = @BegDate 
+					END
+				END
+			END
+		END
+	END
+	
+	DECLARE @KowNumSLN FLOAT, @kowNumASLN FLOAT
+	CREATE TABLE #tblSLN(WorkDate DATETIME, KowCode NVARCHAR(30), LeavePeriod int, DayNum FLOAT)
+	IF ISNULL(@IsSubKowSpecical,0) = 1
+	BEGIN
+		IF EXISTS (SELECT 1 FROM dbo.HR_fnGetKowASLN(@EmployeeID,@BegDate,@EndDate))
+		BEGIN
+			exec HCSHP_spGetKowASLN @EmployeeID,@KowCode, @BegDate, @EndDate,@LeavePeriod,@YearNum
+			IF EXISTS (SELECT 1 from #tblSLN)
+			BEGIN
+				SET @KowNumSLN = 0
+				set @kowNumASLN = 0
+				SELECT @KowNumSLN = SUM(DayNum) FROM #tblSLN WHERE KowCode = @KowSLN
+				SELECT @kowNumASLN = SUM(DayNum) FROM #tblSLN WHERE KowCode = @KowASLN
+			END
+			UPDATE dbo.HR_EmpDayOff SET KowSLN = ISNULL(@KowNumSLN,0), KowASLN =ISNULL(@kowNumASLN,0), ModifiedOn=GETDATE() WHERE RecID =@RecordID
+		END
+	END
+	DECLARE @FromDate DATETIME, @ToDate DATETIME
+	SET @FromDate = DATEADD(DAY,-7,@BegDate)
+	SET @ToDate = DATEADD(DAY,7,@EndDate)
+
+	DELETE FROM HR_EmpDayOffDetailDay WHERE RecID = @RecordID
+	--update lai cong T7 dat biet Thanh buoi trong #lstOfDate
+	--TIm cac phieu ngay T7 cua Thanh buoi, cap nhat lai
+	IF ISNULL(@IsPrivateT7,0) = 1
+	BEGIN
+		IF EXISTS (SELECT 1 FROM #lstOfDate WHERE DATEPART(dw,WorkDate) = 7 AND DayNum < 1)
+		BEGIN
+			--nhung ngay nghi trong tuan <> t7
+			SELECT S.WorkDate,T.Tuan INTO #lstOfRequestCalPhepTmp
+			FROM
+			(
+				SELECT WorkDate FROM dbo.HR_EmpDayOffDetailDay 
+				WHERE EmployeeID = @EmployeeID AND WorkDate BETWEEN @FromDate AND @ToDate AND DayNum < 1 AND DATEPART(dw,WorkDate) <> 7
+				UNION
+				SELECT WorkDate FROM #lstOfDate WHERE DATEPART(dw,WorkDate) <> 7
+			) S CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T
+
+			SELECT S.WorkDate,T.Tuan INTO #lstOfRequest2Tmp FROM #lstOfDate S CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T WHERE DATEPART(dw,S.WorkDate) = 7
+			
+			UPDATE T SET T.DayNum = 1 from #lstOfDate T
+			INNER JOIN 
+			(
+				SELECT S.WorkDate FROM #lstOfRequest2Tmp S INNER JOIN #lstOfRequestCalPhepTmp R ON R.Tuan = S.Tuan GROUP BY S.WorkDate
+			) T2 ON T2.WorkDate = T.WorkDate
+		END
+	END
+	INSERT INTO HR_EmpDayOffDetailDay(RecID, EmployeeID, WorkDate, DayNum, LeavePeriod, CreatedBy, ProjectCode, KowCode)
+	SELECT @RecordID, @EmployeeID, S.WorkDate, ISNULL(R.DayNum,S.DayNum), ISNULL(R.LeavePeriod,S.LeavePeriod), @UserID, @ProjectCode, ISNULL(R.KowCode, @KowCode)
+	FROM #lstOfDate S
+	LEFT JOIN #tblSLN R ON R.WorkDate = S.WorkDate
+
+	--TIm cac phieu ngay T7 cua Thanh buoi, cap nhat lai
+	
+	IF ISNULL(@IsPrivateT7,0) = 1
+	BEGIN
+		SELECT S.mDate, T.Tuan INTO #lstOfDayTmp1 FROM dbo.HR_FNGet_SelectFromTODate(@BegDate,@EndDate) S
+		 CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.mDate,S.mDate,2) T
+
+		SELECT S.ID,S.RecID,S.WorkDate,T.Tuan, L.KowType INTO #lstOfRequestCalPhep
+		FROM
+		(
+			SELECT ID,RecID,WorkDate, KowCode FROM dbo.HR_EmpDayOffDetailDay 
+			WHERE EmployeeID = @EmployeeID AND RecID <> @RecordID AND WorkDate BETWEEN @FromDate AND @ToDate AND DayNum < 1 AND DATEPART(dw,WorkDate) = 7
+		) S CROSS APPLY dbo.HR_SelectNgayBatDauTuan(S.WorkDate,S.WorkDate,2) T
+		INNER JOIN #lstOfDayTmp1 R ON R.Tuan = T.Tuan
+		LEFT JOIN dbo.HR_LSKOW L ON L.KowCode = S.KowCode
+		GROUP BY S.ID,S.RecID,S.WorkDate,T.Tuan, L.KowType
+
+		INSERT INTO #tblUpdateKowAddMoreds(RecordID)
+		SELECT RecID FROM #lstOfRequestCalPhep GROUP BY RecID
+
+		IF EXISTS (SELECT 1 FROM #lstOfRequestCalPhep WHERE KowType <> 15)
+		BEGIN
+			UPDATE S SET S.DateNum= S.DateNum + R.SN * 0.5, S.YearNum = S.YearNum + R.SN * 0.5
+			FROM dbo.HR_EmpDayOff S
+			INNER JOIN (SELECT RecID,COUNT(1) AS SN FROM #lstOfRequestCalPhep WHERE KowType <> 15 GROUP BY RecID) R ON R.RecID = S.RecID
+
+			UPDATE S SET DayNum = 1, S.Note = N'Thanh buoi tu dong cap nhat 0.5 len 1 do anh huowng phieu phep trong tuan' FROM HR_EmpDayOffDetailDay S
+			INNER JOIN #lstOfRequestCalPhep R ON R.ID = S.ID
+			WHERE R.KowType <> 15
+		END
+		IF EXISTS (SELECT 1 FROM #lstOfRequestCalPhep WHERE KowType = 15)
+		BEGIN
+			--cong them phep nam
+			UPDATE S SET S.DateNum= CASE WHEN S.DateNum + R.SN * 0.5 > DATEDIFF(DAY,S.BeginDate,S.EndDate)+1  THEN DATEDIFF(DAY,S.BeginDate,S.EndDate)+1 ELSE S.DateNum + R.SN * 0.5 END
+					, S.YearNum = S.YearNum + R.SN * 0.5
+			FROM dbo.HR_EmpDayOff S
+			INNER JOIN (SELECT RecID,COUNT(1) AS SN FROM #lstOfRequestCalPhep WHERE KowType = 15 GROUP BY RecID) R ON R.RecID = S.RecID
+
+			UPDATE S SET DayNum = 1, S.Note = N'Thanh buoi tu dong cap nhat 0.5 len 1 do anh huowng phieu phep trong tuan' FROM HR_EmpDayOffDetailDay S
+			INNER JOIN #lstOfRequestCalPhep R ON R.ID = S.ID
+			WHERE R.KowType = 15
+
+			DECLARE @MinYear INT, @MaxYear int
+			SELECT @MinYear=MIN(E.CurrentYear), @MaxYear = MAX(E.CurrentYear) FROM
+            (
+				SELECT RecID FROM #lstOfRequestCalPhep WHERE KowType = 15 GROUP BY RecID
+			) S INNER JOIN dbo.HR_EmpDayOff E WITH(NOLOCK) ON E.RecID = S.RecID
+			WHERE E.EmployeeID =@EmployeeID
+
+			DECLARE @CurYear int
+			IF @MinYear = @MaxYear OR EXISTS (SELECT 1 FROM dbo.HR_EmpVacation WHERE EmployeeID =@EmployeeID AND vYearCal = @MaxYear)
+			BEGIN
+				SET @CurYear = @MaxYear
+			END
+			ELSE
+            BEGIN
+				SET @CurYear = @MinYear
+			END
+			exec HR_spCalculateVacation_Reset @EmployeeID, @CurYear, 1
+		END
+	END
+	
+	IF ISNULL(@Kind,0) = 99 RETURN--goi tu trigger dayoff--da xu ly tu dong tinh cong
+	NextCalKow:
+	DECLARE @IsTransDayOffToKowds BIT	
+	SELECT @IsTransDayOffToKowds = IsTransDayOffToKowds FROM dbo.HR_ConfigTS WITH(NOLOCK) WHERE ISNULL(BUCode,'') = ''
+
+	--SELECT @IsTransDayOffToKowds
+	IF ISNULL(@IsTransDayOffToKowds,0) = 1 OR 
+		EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = 'IsUpdateDayOffAfterCalKowds' AND Value=1) OR
+		EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = 'AutoCaculateWork_Standard' AND Value=1)
+	BEGIN
+		IF EXISTS (SELECT 1 FROM dbo.HR_SysSettingsForCustomers WHERE KeyCode = N'HCSTS_spCaculateWork' AND [Value] = 2)
+		BEGIN
+			exec HCSTS_spAutoCalTimeSheet_XuLyQuyetThe_TienThu @EmployeeID,@BegDate,@EndDate,0,0
+		END
+		ELSE
+        BEGIN
+			EXEC HR_spCaculateWork @UserID,'HCSTS08', @EmployeeID,@BegDate,@EndDate,NULL,1
+		END
+	END
+	ELSE
+    BEGIN
+		
+		IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers WHERE KeyCode = N'DayOffAuToToKowds' AND [Value] = 1)
+		BEGIN
+		
+			SELECT R.ID, R.EmployeeID, R.WorkDate, ISNULL(R.KowCode,S.KowCode) AS KowCode, R.DayNum AS DayNum, R.ProjectCode, isnull(S.ModifiedOn, S.CreatedOn) as CreatedOn
+			INTO #kowdsDetail_1
+			FROM HR_EmpDayOffDetailDay R
+			INNER JOIN HR_EmpDayOff S ON S.RecID = R.RecID
+			WHERE R.EmployeeID = @EmployeeID AND R.WorkDate BETWEEN @BegDate AND @EndDate
+
+			SELECT R.EmployeeID,R.WorkDate, ISNULL(R.KowCode,F.KowCode) AS KowCode, R.DayNum, R.ProjectCode, isnull(F.ModifiedOn, F.CreatedOn) as CreatedOn
+			INTO #kowdsDetail_2
+			FROM #tblUpdateKowAddMoreds S INNER JOIN HR_EmpDayOffDetailDay R ON R.RecID = S.RecordID
+			LEFT JOIN dbo.HR_EmpDayOff F ON F.RecID = S.RecordID
+			LEFT JOIN #kowdsDetail_1 K ON K.ID = R.ID
+			WHERE K.ID IS NULL
+
+			SELECT R.EmployeeID, R.WorkDate, R.KowCode, R.ProjectCode,SUM(R.DayNum) AS DayNum,cast(convert(nvarchar(10),min(CreatedOn),111) as datetime) as CreatedOn
+			INTO #kowds
+			FROM 
+			(
+				SELECT EmployeeID, WorkDate, KowCode, DayNum, ProjectCode,CreatedOn FROM #kowdsDetail_1
+				UNION ALL
+				SELECT EmployeeID, WorkDate, KowCode, DayNum, ProjectCode,CreatedOn FROM #kowdsDetail_2
+			) R GROUP BY R.EmployeeID, R.WorkDate, R.KowCode,R.KowCode, R.ProjectCode
+
+			IF @KOW2LastPayroll = '1' OR @KOW2LastPayroll_V2 = 1
+			BEGIN
+				--bang cong truoc khi thuc hiện trừ phep
+				SELECT K.EmployeeID,K.WorkDate,K.KowCode, K.DayNum
+				INTO #sKowdsBeforeUpdate
+				FROM dbo.HR_TSKowDS K WITH(NOLOCK)
+				WHERE K.EmployeeID  = @EmployeeID AND K.WorkDate BETWEEN @BegDate AND @EndDate 
+
+				--xoa nhung phieu hop le
+				DELETE S FROM HR_TSKowDS S
+				INNER JOIN (
+					SELECT K.RecID, dbo.HR_fnGetNgayChotLuong(K.EmployeeID, K.DowCode) AS NgayChotLuong, S.CreatedOn as CreatedOn FROM HR_TSKowDS K  WITH(NOLOCK)
+					INNER JOIN #kowds S ON S.EmployeeID = K.EmployeeID AND S.WorkDate = K.WorkDate AND S.KowCode = K.KowCode
+					WHERE K.EmployeeID = @EmployeeID
+				) R ON R.RecID = S.RecID
+				WHERE R.NgayChotLuong IS NULL OR  R.CreatedOn <= R.NgayChotLuong
+
+				--tap cong insert
+				SELECT S.EmployeeID, WorkDate, S.KowCode, CASE WHEN @gSGMC = 1 THEN S.DayNum * 8.0 ELSE S.DayNum END AS DayNum, P.DowCode, 
+								0 AS Ordinal, 0 AS IsPay, 'auto' AS CreatedBy, 'HCSEM_spEmpDayOff_detailDay_update 2' AS Note, S.ProjectCode,
+								dbo.HR_fnGetNgayChotLuong(S.EmployeeID, P.DowCode) AS NgayChotLuong, S.CreatedOn
+				INTO #KowNewInsert
+				FROM #kowds S
+				INNER JOIN HR_LSPayrollDow P WITH(NOLOCK) ON S.WorkDate BETWEEN P.BegDay AND P.EndDay
+
+				--chi xu ly cac loai cong nghi
+				DELETE K FROM HR_TSKowDSLastPayroll K
+				INNER JOIN #KowNewInsert S ON S.EmployeeID = K.EmployeeID AND S.WorkDate = K.WorkDate 
+				INNER JOIN dbo.HR_LSKOW L ON L.KowCode = k.KowCode
+				WHERE L.KowType NOT IN (1,2,3,5,6,25)
+
+				SELECT S.EmployeeID, S.WorkDate, S.KowCode, S.KowCode, S.DayNum, S.DowCode, 
+								S.Ordinal, S.IsPay, S.CreatedBy, S.Note + N'-ngày chốt:' + ISNULL(CONVERT(NVARCHAR(10),NgayChotLuong,111),''), S.ProjectCode
+				FROM #KowNewInsert S
+				--WHERE S.NgayChotLuong IS NULL OR S.CreatedOn <= S.NgayChotLuong
+				--tap cong cũ trước đó
+				INSERT INTO HR_TSKowDS(EmployeeID, WorkDate, KowCode, RootKowCode, DayNum, DowCode, 
+								Sorting, IsPay, CreatedBy, Note, ProjectCode)
+				SELECT S.EmployeeID, S.WorkDate, S.KowCode, S.KowCode, S.DayNum, S.DowCode, 
+								S.Ordinal, S.IsPay, S.CreatedBy, S.Note + N'-ngày chốt:' + ISNULL(CONVERT(NVARCHAR(10),NgayChotLuong,111),''), S.ProjectCode
+				FROM #KowNewInsert S
+				WHERE S.NgayChotLuong IS NULL OR S.CreatedOn <= S.NgayChotLuong
+
+				IF EXISTS (SELECT 1 FROM #KowNewInsert WHERE NgayChotLuong IS NOT NULL AND CreatedOn > NgayChotLuong)
+				BEGIN
+					--chi xu ly cac loai cong nghi
+					DELETE K FROM HR_TSKowDsLastPayroll K
+					INNER JOIN #KowNewInsert S ON S.EmployeeID = K.EmployeeID AND S.WorkDate = K.WorkDate 
+					INNER JOIN dbo.HR_LSKOW L ON L.KowCode = k.KowCode
+					WHERE L.KowType NOT IN (1,2,3,5,6,25)
+
+					--lay phan chenh lech chuyen vao payroll
+					INSERT INTO dbo.HR_TSKowDsLastPayroll(EmployeeID,WorkDate,KowCode,DayNum,IsNoon,DowCode,IsPay,Sorting,CreatedOn,CreatedBy)
+					SELECT S.EmployeeID,S.WorkDate, S.KowCode, S.DayNum - ISNULL(K.DayNum,0), 0, S.DowCode, S.IsPay, S.Ordinal,GETDATE(), S.CreatedBy
+					FROM #KowNewInsert S
+					LEFT JOIN #sKowdsBeforeUpdate K ON K.EmployeeID = S.EmployeeID AND K.WorkDate = S.WorkDate AND K.KowCode = S.KowCode
+					WHERE S.NgayChotLuong IS NOT NULL AND S.CreatedOn > S.NgayChotLuong AND S.DayNum - ISNULL(K.DayNum,0) > 0
+				END
+			END
+			ELSE
+			BEGIN
+				DELETE K FROM HR_TSKowDS K 
+				INNER JOIN #kowds S ON S.EmployeeID = K.EmployeeID AND S.WorkDate = K.WorkDate AND S.KowCode = K.KowCode
+				WHERE K.EmployeeID = @EmployeeID
+
+				INSERT INTO HR_TSKowDS(EmployeeID, WorkDate, KowCode, RootKowCode, DayNum, DowCode, 
+								Sorting, IsPay, CreatedBy, Note, ProjectCode)
+				SELECT S.EmployeeID, WorkDate, S.KowCode, S.KowCode, CASE WHEN @gSGMC = 1 THEN S.DayNum * 8.0 ELSE S.DayNum END, P.DowCode, 
+								0, 0, 'auto', 'HCSEM_spEmpDayOff_detailDay_update 3', S.ProjectCode
+				FROM #kowds S
+				LEFT JOIN HR_LSPayrollDow P WITH(NOLOCK) ON S.WorkDate BETWEEN P.BegDay AND P.EndDay
+			END
+		
+			--dung cho AIC(AIC xai chay them cau ben duoi de insert cau hinh)
+			IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers  WITH(NOLOCK) WHERE KeyCode = 'AIC_CallTimeSheet_UpdateDayOff' AND Value = 1)
+			BEGIN
+				IF(@BegDate < @Now AND ISNULL(@IsLeaveDTVS,0) = 0)
+				BEGIN
+					DECLARE @from DATETIME, @to DATETIME
+					SET @from  = @BegDate 
+					IF @EndDate >= @Now SET @to = DATEADD(DAY,-1, @Now)
+					ELSE SET @to = @EndDate
+					EXEC HR_spAutoCalTimeSheetEveryDay_AIC @EmployeeID, @from, @to, 0, 0
+				END
+			END
+		END
+
+		--tu dong tinh cong chung
+		IF EXISTS (SELECT 1 FROM HR_SysSettingsForCustomers  WITH(NOLOCK) WHERE KeyCode = 'AutoCaculateWork_Standard' AND Value=1)
+		BEGIN
+			IF EXISTS (SELECT 1 FROM dbo.HR_SysSettingsForCustomers  WITH(NOLOCK) WHERE KeyCode = N'HCSTS_spCaculateWork' AND [Value] = 2)
+			BEGIN
+				exec HCSTS_spAutoCalTimeSheet_XuLyQuyetThe_TienThu @EmployeeID,@BegDate,@EndDate,0,0
+			END
+			ELSE
+            BEGIN
+				EXEC HR_spCaculateWork @UserID,'HCSTS08', @EmployeeID,@BegDate,@EndDate,NULL,1
+			END
+		END
+	END
+END
+
