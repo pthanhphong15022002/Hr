@@ -1,0 +1,1884 @@
+----------------------------------------------------------------1
+USE [codx_hr]
+GO
+/****** Object:  StoredProcedure [dbo].[HR_spDeductionSI]    Script Date: 1/23/2025 8:57:36 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROC [dbo].[HR_spDeductionSI]
+(
+	@AdjDowCode varchar(7) = '2022/02',
+	@NumAdj int = 1,
+	@note nvarchar(200) = '',
+	@UserID NVARCHAR(20) = N'20210000003',
+	@strEmps nvarchar(max) = N'190158',
+	@IsTmp BIT = 0,
+	@GenDate DATETIME = '2022/02/28'
+) --// [HR_SocialInsAdjust] và [HR_SocialIns] và [HR_SocialInsAdjust_Layer] và [HR_SocialIns_Layer] [sẽ có sự thay đổi khi mà thực hiện trích nộp]
+AS
+begin
+	DECLARE @DowCode_SI varchar(7), @CurrencyCode nvarchar(3), @decp int, @tmp_fBegDay datetime, @tmp_fEndDay datetime
+    
+		
+	-- Danh sách phòng ban đã bị khóa
+	select ce.* into #Deps from (
+		select OrgUnitID from HR_fnGetUserLockPayroll_Salary(@AdjDowCode)
+	) as ce	
+
+	SELECT ce.* INTO #tmpEmps FROM (
+		select CAST(data AS NVARCHAR(20)) as EmployeeID FROM dbo.SplitStrings_CTE(@strEmps, ',')
+		--select EmployeeID from HR_SysFilterEmployee where FunctionID = 'HRT104' and UserID = '2404020001'
+	) AS ce  OPTION (MAXRECURSION 0)
+
+	--select * from #tmpEmps
+	select top(1) @tmp_fBegDay = BegDay, @tmp_fEndDay = EndDay from HR_LSPayrollDow with (nolock) where DowCode = @AdjDowCode
+
+	--select @tmp_fBegDay,@AdjDowCode
+	select ce.* into #HR_ConfigTSEmpStandardWD from (
+		select T.EmployeeID, T.FromDate, T.ToDate, T.StandardWD from HR_ConfigTSEmpStandardWD as T with (nolock) inner join #tmpEmps as T1 on T.EmployeeID = T1.EmployeeID
+		where T.DowCode = @AdjDowCode
+	) as ce
+	--select * from #HR_ConfigTSEmpStandardWD
+
+	SELECT ce.* INTO #HCSSYS_ConfigTSEmp FROM (
+		SELECT T.EmployeeID, CASE WHEN T.TSHoursPerWD = 1 THEN 8 ELSE 1 END AS TSHoursPerWD
+		FROM HR_ConfigTSEmp as T with (nolock) inner join #tmpEmps as T1 on T.EmployeeID = T1.EmployeeID
+	) AS ce
+
+	select EmployeeID, E_EndDate, E_Active, E_ReturnKCBDate, CONVERT(varchar(7), E_ReturnKCBDate, 111) as E_ReturnKCBDate_YYYYMM, day(E_ReturnKCBDate) as E_ReturnKCBDate_DD, 
+		ce.YYYYMMJoinDate, ce.CurrencyCode, ce.JoinedOn, ce.OrgUnitID, ce.BUCode, IsSI, IsHI, IsUI, GroupType, TaxCode, isnull(FromDate, @tmp_fBegDay) as FromDate, 
+		isnull(ToDate, @tmp_fEndDay) as ToDate, HiredOn,
+		ce.SICode, ce.HICode, ce.UICode, ISNULL(IsReturnKCB,0) AS IsReturnKCB, TSHoursPerWD
+	into #employee_filters from (
+		select E.EmployeeID, E.StoppedOn as E_EndDate, E.Active as E_Active, E.IsReturnKCB, E.ReturnKCBDate as E_ReturnKCBDate, CONVERT(VARCHAR(7), E.JoinedOn, 111) AS YYYYMMJoinDate,
+			E.CurrencyCode, E.JoinedOn, E.OrgUnitID, ISNULL(NULL, N'') AS BUCode, 
+			CASE WHEN E.HICode IS NULL THEN 0 ELSE 1 END AS IsSI,
+			CASE WHEN E.HICode IS NULL THEN 0 ELSE 1 END AS IsHI, 
+			CASE WHEN E.UICode IS NULL THEN 0 ELSE 1 END AS IsUI, GroupType, TaxCode, T2.FromDate, ToDate, HiredOn,
+			E.SICode, E.HICode, E.UICode, T4.TSHoursPerWD
+		from #tmpEmps as F 
+			INNER JOIN HR_VWEmployees as E with (nolock) on F.EmployeeID = E.EmployeeID
+			LEFT JOIN #Deps as Deps on E.OrgUnitID = Deps.OrgUnitID
+			LEFT JOIN dbo.HR_LSGroupSalary as GS WITH (NOLOCK) on E.GroupSalCode = GS.GroupSalCode 
+			LEFT JOIN #HR_ConfigTSEmpStandardWD AS T2 WITH (NOLOCK) ON E.EmployeeID = T2.EmployeeID
+			LEFT JOIN #HCSSYS_ConfigTSEmp AS T4 WITH (NOLOCK) ON F.EmployeeID = T4.EmployeeID
+		where Deps.OrgUnitID is NULL
+	) as ce
+
+	--select * from #employee_filters
+	-- Lay ve danh sach nhan vien chuan bi thuc hien trich nop BHXH va xoa di du lieu cu thoa dk where 
+	DELETE FROM SI FROM HR_SocialIns as SI INNER JOIN #employee_filters F on SI.EmployeeID = F.EmployeeID
+	where SI.DowCode = @AdjDowCode
+	
+	-- Lay ve danh sach nhan vien chuan bi thuc hien trich nop BHXH va xoa di du lieu cu thoa dk where 
+	DELETE FROM SIA from HR_SocialInsAdjust as SIA with (nolock) INNER JOIN #employee_filters F on SIA.EmployeeID = F.EmployeeID 
+	WHERE AdjDowCode = @AdjDowCode AND NumAdj = @NumAdj
+	
+	-- Xoa du lieu cu khi phat sinh biet le tu dong
+	DELETE FROM T FROM HR_PayTExcept AS T WITH (NOLOCK) INNER JOIN #employee_filters AS T1 ON T.EmployeeID = T1.EmployeeID
+	WHERE ExceptCode in (
+		select ExceptCode
+		from HR_ConfigPRSubAutoBackCollectSI WITH (NOLOCK) WHERE IsGenMoney = 1
+	) AND DowCode = @AdjDowCode
+
+
+	DECLARE @FDate datetime, @TDate datetime, @Num_Add int, @MaxEndDate DATETIME
+    DECLARE @FDate_PrevM datetime, @TDate_PrevM DATETIME, @PrevAdjDowCode varchar(7)
+    
+	--ngay bat dau va ngay ket thuc cua 'gia tri ngay nghi viec lam can cu bao giam'
+	SET @FDate = Convert(datetime, @AdjDowCode + '/01', 102)
+
+	SET @TDate =  DateAdd(day, -1, DateAdd(month, DateDiff(month, 0, @FDate)+1, 0))
+
+	SET @FDate_PrevM = CONVERT(VARCHAR(7), DATEADD(MONTH, -1, @FDate), 111) + '/01'
+	SET @TDate_PrevM = DateAdd(day, -1, DateAdd(month, DateDiff(month, 0, @FDate_PrevM)+1, 0))
+
+	set @PrevAdjDowCode = convert(varchar(7), DATEADD(month, -1, cast(@AdjDowCode + '/01' as datetime)), 111)
+	
+	SELECT ce.* into #tblRateDeductions FROM (
+		SELECT ISNULL(NULL, N'') AS BUCode2, SICode, InsType, RateEmp, RateCo, MinSalary, MaxSalary FROM HR_fnGetInsuranceTypeByTime(@AdjDowCode)
+	) AS ce
+	
+	select ce.* into #TMP_SocialInsAdjust from (
+		select T.EmployeeID, MAX(T1.AdjDowCode) AS AdjDowCode
+		from #employee_filters as T inner join HR_SocialInsAdjust as T1 with (nolock) on T.EmployeeID = T1.EmployeeID
+		where T1.AdjDowCode < @AdjDowCode and NumAdd in (2,3,4)
+		group by T.EmployeeID
+	) as ce
+	
+	select ce.* into #TMP_SocialInsAdjust_delete from (
+		select T.EmployeeID
+		from #TMP_SocialInsAdjust as T inner join HR_SocialInsAdjust as T1 with (nolock) on T.EmployeeID = T1.EmployeeID
+		where T1.AdjDowCode > T.AdjDowCode AND T1.NumAdd = 1
+		group by T.EmployeeID
+	) as ce 
+
+	DELETE T FROM #TMP_SocialInsAdjust AS T INNER JOIN #TMP_SocialInsAdjust_delete AS T1 ON T.EmployeeID = T1.EmployeeID
+	
+		--select @AdjDowCode
+	SELECT ce.* INTO #Employee_Config FROM (
+		SELECT T.EmployeeID, E_EndDate, E_Active, E_ReturnKCBDate, CONVERT(varchar(7), E_ReturnKCBDate, 111) as E_ReturnKCBDate_YYYYMM, day(E_ReturnKCBDate) as E_ReturnKCBDate_DD, 
+		T.YYYYMMJoinDate, T.CurrencyCode, T.JoinedOn, T.OrgUnitID, T.BUCode, IsSI, IsHI, IsUI, GroupType, TaxCode, isnull(FromDate, @tmp_fBegDay) as FromDate, 
+		isnull(ToDate, @tmp_fEndDay) as ToDate, HiredOn,
+		T.SICode, T.HICode, T.UICode, ISNULL(IsReturnKCB,0) AS IsReturnKCB, TSHoursPerWD, T1.*, 
+			T2.RateEmp AS SI_RateEmp, T2.RateCo AS SI_RateCo, T2.MinSalary AS SI_MinSalary, T2.MaxSalary AS SI_MaxSalary,
+			T3.RateEmp AS HI_RateEmp, T3.RateCo AS HI_RateCo, T3.MinSalary AS HI_MinSalary, T3.MaxSalary AS HI_MaxSalary,
+			T4.RateEmp AS UI_RateEmp, T4.RateCo AS UI_RateCo, T4.MinSalary AS UI_MinSalary, T4.MaxSalary AS UI_MaxSalary,
+			ISNULL(HiredOn, Eff_DateNotSi) AS E_OfficialDate,
+			FromDate AS fBegDay, 
+			CASE when DAY(ToDate) > DAY(Eff_DateNotSi) then convert(varchar(7), ToDate, 111) + '/' + cast(DAY(Eff_DateNotSi) as varchar) else ToDate END AS fEndDay,
+			DATEADD(day, 1, DATEADD(month, -1, Eff_DateNotSi)) - 1 AS FDateTS, Eff_DateNotSi - 1 AS TDateTS
+		FROM #employee_filters AS T 
+		INNER JOIN (
+			SELECT ISNULL(S.BUCode, N'') AS BUCode1, PRDecPlaceCurrencyForCal, PRDecPlaceCurrencyForPay, PRSIDayReturnHI, PRSIDayEffect, PRSIDayDecrease, PRTUnionRateCo,
+				PRIsSIByCurrencyForCal, PRCurrencyForPay, PRSITotalDayNotPay, ISNULL(PRIsSI1RowForDescreaseML,0) AS PRIsSI1RowForDescreaseML,
+				case WHEN PRIsSIByCurrencyForCal = 1 THEN PRDecPlaceCurrencyForCal ELSE PRDecPlaceCurrencyForPay END AS mSSL,
+				Convert(datetime, @AdjDowCode + '/' + cast(PRSIDayEffect as varchar), 102) AS Eff_DateNotSi,
+				Dateadd(month, -1, Convert(datetime, @AdjDowCode + '/' + cast(PRSIDayDecrease as varchar))) AS Eff_DayOffSi,
+				case when PRIsSalGradeSISal = 1 and PRIsMinSalByInsList = 1 then 1 else 0 END AS PRIsMinSalByInsList,
+				PRPITFamilyTaxFreeOwn AS gPRPITFamilyTaxFreeOwn_Peru, PRPITFamilyTaxFreeUnit AS gPRPITFamilyTaxFreeUnit_Peru, PRIsPaySINet,
+				PRSIKowCodes, PRIsDeductionBasedOnOfficialDate, PRSITotalPaidDays, PRSIPaidDayKowCodes, S.PRSIAdjDowCodeType, S.PRSITotalPaidDaysType
+			FROM HR_ConfigPR AS S WITH (NOLOCK)
+		) AS T1 ON isnull(T.BUCode,'') =  isnull(T1.BUCode1,'') 
+			LEFT JOIN #tblRateDeductions AS T2 ON T.BUCode = T2.BUCode2 AND T.SICode = T2.SICode
+			LEFT JOIN #tblRateDeductions AS T3 ON T.BUCode = T3.BUCode2 AND T.HICode = T3.SICode
+			LEFT JOIN #tblRateDeductions AS T4 ON T.BUCode = T4.BUCode2 AND T.UICode = T4.SICode
+			left join #TMP_SocialInsAdjust as T5 on T.EmployeeID = T5.EmployeeID
+		WHERE JoinedOn <= Eff_DateNotSi 
+			and ((IsSI = 1) OR (IsHI = 1) OR (IsUI = 1))
+			--AND (
+			--	(E_Active = 1 AND (E_EndDate = '' OR (E_EndDate is null) OR (E_EndDate Between dateadd(day, 1, Eff_DayOffSi) AND @TDate) OR E_EndDate > @TDate)) 
+			--	OR (E_Active = 0 AND E_EndDate >= dateadd(day, 1, Eff_DayOffSi))
+			--) 
+			AND (
+				T1.PRIsDeductionBasedOnOfficialDate = 0 
+				OR (T1.PRIsDeductionBasedOnOfficialDate = 1 and HiredOn <= Eff_DateNotSi)
+			)
+			AND T5.EmployeeID is null
+	) AS ce 
+	
+
+	DECLARE @EmployeeID NVARCHAR(20), @MinSalary decimal(18,5), @CoeffSalary FLOAT, @Real_Salary decimal(18,5), @EndDate DATETIME 
+	DECLARE @mTyleBHXH FLOAT, @mTyleBHYT FLOAT, @mTyleBHTN FLOAT, @mAmountSI decimal(18,5), @mBHXHMax decimal(18,5), @mBHYTMax decimal(18,5), @mBHTNMax decimal(18,5), @SalaryInsO decimal(18,5),@SalaryInsO_YT decimal(18,5), @SalaryInsO_TN decimal(18,5)
+	DECLARE @JobAllo decimal(18,5), @SeniorAllo decimal(18,5), @SeniorOverAllo decimal(18,5), @OtherAllo decimal(18,5), @Amount decimal(18,5), @CoeffJobAllo decimal(18,5), @CoeffSeniorAllo decimal(18,5)
+	DECLARE @CoeffSeniorOverAllo decimal(18,5), @CoeffOtherAllo decimal(18,5), @TotalCoeffAllo decimal(18,5), @DateNum FLOAT, @KowType INT, @AmountF decimal(18,5)
+	DECLARE @mTyleBHXHCN FLOAT, @mTyleBHXHCT FLOAT, @mTyleBHYTCN FLOAT, @mTyleBHYTCT FLOAT, @mTyleBHTNCN FLOAT, @mTyleBHTNCT FLOAT
+	DECLARE @RealSalSI decimal(18,5), @OldRealSalSI decimal(18,5), @RealSalHI decimal(18,5), @OldRealSalHI decimal(18,5), @RealSalUI decimal(18,5), @OldRealSalUI decimal(18,5)
+	DECLARE @active BIT, @ReturnKCBDate datetime, @GroupType int
+	DECLARE @totPrevPercentPay decimal(18,5), @totCurrPercentPay decimal(18,5), @KowTypePreM INT, @YYYYMMJoinDate VARCHAR(7)
+	DECLARE @IsReduceSiUi BIT, @PreDowCode VARCHAR(7), @bs_EffectDate DATETIME, @Dayoff_EndDate DATETIME, @IsReturnKCB BIT
+    DECLARE @PRSITotalPaidDays float, @PRSIPaidDayKowCodes VARCHAR(200), @PRSIAdjDowCodeType int, @PRSITotalPaidDaysType INT, @FlagIsDeduction BIT
+    DECLARE @InsReportingDate DATETIME, @OfficialDate DATETIME, @KowCode VARCHAR(20), @tmpDayNum FLOAT
+    DECLARE @mSSL INT, @Eff_DateNotSi DATETIME, @Eff_DayOffSi DATETIME, @PRSIDayDecrease INT, @PRSITotalDayNotPay INT, @PRSIDayReturnHI INT, @PRIsSI1RowForDescreaseML BIT
+	DECLARE @PRTUnionRateCo FLOAT, @mUN FLOAT, @PRCurrencyForPay VARCHAR(10), @Flag_THAISAN_COTANGLUONG BIT, @HICode VARCHAR(20)
+	DECLARE @RateEmp FLOAT, @RateCo FLOAT, @Row_ID INT, @TSHoursPerWD FLOAT
+
+	-- Lay ds nv co tham gia trich nop BHXH truoc do (yyyy/MM - 1)
+	select ce.* into #SI from (
+		SELECT SI.EmployeeID, RealSalSI, SI.RealSalHI, SI.RealSalUI, SIRateE + SI.SIRateC + HIRateE + HIRateC + UIRateE + UIRateC as totPrevPercentPay 
+		FROM HR_SocialIns as SI with (nolock) inner join #employee_filters as F on SI.EmployeeID = F.EmployeeID
+		Where DowCode = @PrevAdjDowCode --Left(Convert(varchar, dateadd(month, -1, Convert(datetime, @AdjDowCode + '/01', 111)), 111),7)
+	) as ce
+	
+	select ce.* into #AdjSI from (
+		select R.EmployeeID, R.KowType, R.NumAdd, ROW_NUMBER() OVER(PARTITION BY EmployeeID ORDER BY AdjDowCode DESC) AS xRowID
+		from (
+			SELECT SI.EmployeeID, SI.AdjDowCode, KowType, ROW_NUMBER() OVER(PARTITION BY SI.EmployeeID ORDER BY SI.AdjDowCode desc, 
+				CASE when KowType in (9,19) then 0 else KowType end) as Row_ID, SI.NumAdd
+			FROM HR_SocialInsAdjust as SI with (nolock) inner join #employee_filters as F on SI.EmployeeID = F.EmployeeID
+			WHERE SI.AdjDowCode <= Convert(varchar(7), dateadd(month, -1, @AdjDowCode + '/01'), 111)
+		) as R where (R.Row_ID = 1 AND (R.NumAdd in (5,6,14))) OR (R.Row_ID = 2 AND (R.NumAdd IN (6,14)))
+	) as ce WHERE ce.xRowID = 1 AND ce.NumAdd IN (6,14)
+	
+
+
+	CREATE TABLE #tblSiAllowance (EmployeeID NVARCHAR(20), JobAllo FLOAT, SeniorAllo FLOAT, SeniorOverAllo FLOAT, OtherAllo FLOAT, CoeffJobAllo FLOAT, CoeffSeniorAllo FLOAT, CoeffSeniorOverAllo FLOAT, CoeffOtherAllo FLOAT, Amount FLOAT, AmountF FLOAT)
+	INSERT INTO #tblSiAllowance(EmployeeID, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, 
+		Amount, AmountF)
+	EXEC HR_spGetSiAllowance @AdjDowCode, @strEmps
+	
+	select * from #tblSiAllowance
+	-- 2021.06.24: ProPzy_Issue_C&B_TRích đống BHXH: xác đinh mức đóng khi có nhiều qđ lương
+	-- tính từ ngày hiệu lực lương( or kỳ công) đến ngày xét BHXH , nếu đủ 50% công chuẩn thì lấy lương mới nhất trích nộp BHXH. 
+	-- Nếu không đủ 50%  công thì xét qđ lương trước đó kiền kề, vẫn theo quy tắt đủ 50% công chuẩn thì lấy lương mới nhất trích nộp BHXH, 
+	-- nếu không đủ thì xét tiếp qđ lương trước đó kiền kề
+
+	SELECT TOP(1) @PRSITotalPaidDays = PRSITotalPaidDays, @PRSITotalPaidDaysType = PRSITotalPaidDaysType, @PRSIPaidDayKowCodes = PRSIPaidDayKowCodes, @PRSIAdjDowCodeType = PRSIAdjDowCodeType
+	FROM dbo.HR_ConfigPR WITH (NOLOCK)
+	-- 
+	SELECT *, ROW_NUMBER() OVER(PARTITION BY EmployeeID ORDER BY EmployeeID, EffectDate) as Row_Y
+	INTO #HCSEM_EmpBasicSalary
+	FROM (
+		SELECT T.EmployeeID, EffectDate, MinSalary, CoeffSalary, InsSalary, IsCurrent, 
+			ROW_NUMBER() OVER(PARTITION BY T.EmployeeID ORDER BY T.EmployeeID, EffectDate desc) as Row_ID,
+			Eff_DateNotSi, CAST(0 AS BIT) AS IsFlag, T1.JoinedOn, T.EndDate, T1.TSHoursPerWD
+		from HR_EmpBasicSalary as T WITH (NOLOCK) 
+		INNER JOIN #Employee_Config AS T1 ON T.EmployeeID = T1.EmployeeID
+		where (EffectDate < Eff_DateNotSi) and (T1.E_EndDate = '' or T1.E_EndDate is null or EffectDate < T1.E_EndDate)
+	) AS R 
+	WHERE (@PRSITotalPaidDays = 0 AND R.Row_ID = 1) OR (@PRSITotalPaidDays > 0 AND R.Row_ID <= 2)
+	--
+	IF @PRSITotalPaidDays > 0
+	BEGIN
+		SELECT ce.* INTO #AAA FROM #HCSEM_EmpBasicSalary AS ce
+
+		-- Không xử lý cho những nhân viên trong tháng không có quyết định điều chỉnh lương
+		DELETE #AAA WHERE EmployeeID IN (
+			SELECT EmployeeID
+			FROM #HCSEM_EmpBasicSalary WHERE Row_ID = 2 AND CONVERT(VARCHAR(7), EffectDate, 111) <> @AdjDowCode
+		)
+
+		-- Chỉ xử lý cho những nhân viên có điều chỉnh lương trong tháng
+		declare @tmpDatetime datetime, @tmpPRSITotalPaidDays float
+		DECLARE cursor_1 CURSOR FOR  
+			SELECT EmployeeID, EffectDate, Eff_DateNotSi, Row_Y, EndDate, TSHoursPerWD FROM #AAA ORDER BY Row_Y desc
+		OPEN cursor_1
+		WHILE 1 = 1  
+		BEGIN   
+			FETCH NEXT FROM cursor_1 INTO @EmployeeID, @bs_EffectDate, @Eff_DateNotSi, @Row_ID, @EndDate, @TSHoursPerWD
+			IF @@FETCH_STATUS != 0
+				BREAK;
+
+			
+			IF @Row_ID > 1
+			begin
+				SET @tmpDayNum = 0
+				
+				IF @PRSIAdjDowCodeType = 1
+				BEGIN
+					SELECT TOP(1) @tmpDatetime = ToDate FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+				END
+				else
+					set @tmpDatetime = @Eff_DateNotSi
+
+				-- Tổng số ngày công hưởng lương
+				IF @PRSITotalPaidDaysType = 1
+					SELECT TOP(1) @tmpPRSITotalPaidDays = (@PRSITotalPaidDays * StandardWD / 100) * @TSHoursPerWD FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+				ELSE IF @PRSITotalPaidDaysType = 0
+					set @tmpPRSITotalPaidDays = @PRSITotalPaidDays
+				ELSE IF @PRSITotalPaidDaysType = 2
+					SELECT TOP(1) @tmpPRSITotalPaidDays = (StandardWD - @PRSITotalPaidDays) * @TSHoursPerWD FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+				ELSE
+					SET @tmpPRSITotalPaidDays = 0
+
+				-- Đối với nhân viên nghỉ việc thì đếm: công thực tế từ ngày đầu kỳ lương đến ngày báo cáo (ngày hiện tại) + công mặc định từ ngày hiện tại đến ngày nghỉ việc
+				IF (@EndDate Between dateadd(day, 1, @Eff_DayOffSi) AND @TDate) --OR (@EndDate > @TDate)
+				BEGIN 
+					SET @tmpDatetime = CONVERT(VARCHAR(10), @GenDate, 111)
+					SET @tmpDayNum = @tmpDayNum + @TSHoursPerWD * dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @tmpDatetime + 1, @EndDate - 1, 3)
+				END
+				ELSE
+                BEGIN
+			
+					/* select * from 
+						Nhân sự đang làm việc : từ ngày bắt đầu kỳ công đến ngày cuối cùng của tkỳ công/ngày làm việc cuối cùng
+						(công tực tế tính đến ngày trích + công dự kiến theo ngày làm việc)> NCC -14 công nghỉ
+					*/
+					SET @tmp_fEndDay = @tmpDatetime
+					SET @tmpDatetime = CONVERT(VARCHAR(10), @GenDate, 111)
+					SET @tmpDayNum = @tmpDayNum + @TSHoursPerWD * dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @tmpDatetime + 1, @tmp_fEndDay, 3)
+                END 
+
+				;WITH tblA AS (
+					SELECT LTRIM(RTRIM(CAST(data AS VARCHAR(20)))) AS KowCode FROM dbo.HR_FNSplitString_varchar(@PRSIPaidDayKowCodes, ',')
+				)
+				SELECT @tmpDayNum = @tmpDayNum + ISNULL(SUM(T.DayNum), 0)
+				FROM dbo.HR_TSKowDs AS T WITH (NOLOCK) INNER JOIN tblA AS T1 ON T.KowCode = T1.KowCode
+				WHERE T.EmployeeID = @EmployeeID AND T.WorkDate BETWEEN @bs_EffectDate AND @tmpDatetime
+
+
+				IF @tmpDayNum <= @tmpPRSITotalPaidDays
+				BEGIN
+					UPDATE #HCSEM_EmpBasicSalary
+					SET IsFlag = 1
+					WHERE EmployeeID = @EmployeeID AND Row_Y = @Row_ID
+                END				 
+			end
+		END
+		CLOSE cursor_1   
+		DEALLOCATE cursor_1
+
+		DELETE #HCSEM_EmpBasicSalary WHERE IsFlag = 1
+	END 
+
+	EXEC HR_spGetDeductionSI @AdjDowCode, @FDate, @TDate, @strEmps
+	
+	DECLARE @tblGetDeductionSI TABLE(EmployeeID NVARCHAR(20), MinSalary money, CoeffSalary float, Real_Salary money, EndDate datetime, mTyleBHXH float, mTyleBHYT float, mTyleBHTN float, 
+			mAmountSI money, mBHXHMax money, mBHYTMax money, mBHTNMax money, SalaryInsO money, SalaryInsO_YT money, SalaryInsO_TN money,
+			JobAllo float, SeniorAllo float, SeniorOverAllo float, OtherAllo float, Amount money, CoeffJobAllo float, CoeffSeniorAllo float, CoeffSeniorOverAllo float, CoeffOtherAllo float, TotalCoeffAllo float,
+			DateNum float, KowType int, mTyleBHXHCN float, mTyleBHXHCT float, mTyleBHYTCN float, mTyleBHYTCT float, mTyleBHTNCN float, mTyleBHTNCT float, AmountF money,
+			Active bit, ReturnKCBDate DATETIME, GroupType int, bs_EffectDate DATETIME, Dayoff_EndDate DATETIME, InsReportingDate DATETIME, KowCode VARCHAR(20))
+	insert into @tblGetDeductionSI(EmployeeID, MinSalary, CoeffSalary, Real_Salary, EndDate, mTyleBHXH, mTyleBHYT, 
+			mTyleBHTN, mAmountSI, mBHXHMax, mBHYTMax, mBHTNMax, SalaryInsO, SalaryInsO_YT, SalaryInsO_TN,
+			JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo, Amount, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo,
+			DateNum, KowType, mTyleBHXHCN, mTyleBHXHCT, mTyleBHYTCN, mTyleBHYTCT, mTyleBHTNCN, mTyleBHTNCT, AmountF,
+			Active, ReturnKCBDate, GroupType, bs_EffectDate, Dayoff_EndDate, InsReportingDate, KowCode)
+	EXEC HR_spGetDeductionSI @AdjDowCode, @FDate, @TDate, @strEmps
+	--RETURN;
+
+
+	-- Lay ds nv tham gia trich nop BHXH dang xet (yyyy/MM)
+	select ce.* into #Result from (
+		SELECT A.EmployeeID, A.MinSalary, A.CoeffSalary, A.Real_Salary, A.EndDate, A.mTyleBHXH, A.mTyleBHYT, A.mTyleBHTN,
+			A.mAmountSI, A.mBHXHMax, A.mBHYTMax, A.mBHTNMax, A.SalaryInsO, A.SalaryInsO_YT, A.SalaryInsO_TN, A.JobAllo, A.SeniorAllo, A.SeniorOverAllo, A.OtherAllo, 
+			A.Amount, A.CoeffJobAllo, 
+			A.CoeffSeniorAllo, A.CoeffSeniorOverAllo, A.CoeffOtherAllo, A.TotalCoeffAllo, A.DateNum, A.KowType, A.mTyleBHXHCN, A.mTyleBHXHCT, 
+			A.mTyleBHYTCN, A.mTyleBHYTCT, A.mTyleBHTNCN, A.mTyleBHTNCT, A.AmountF,
+			A.active, A.ReturnKCBDate, B.RealSalSI, B.RealSalHI, B.RealSalUI, 
+			A.GroupType, A.bs_EffectDate, B.totPrevPercentPay, isnull(C.KowType,0) as KowTypePreM, F.JoinedOn, F.CurrencyCode,
+			Dayoff_EndDate, F.IsReturnKCB, F.HICode, PRSITotalPaidDays, PRSIPaidDayKowCodes, PRSIAdjDowCodeType, PRSITotalPaidDaysType, InsReportingDate,
+			F.HiredOn, A.KowCode, TSHoursPerWD
+		FROM @tblGetDeductionSI as A 
+			inner join #employee_filters as F on A.EmployeeID = F.EmployeeID
+			LEFT JOIN #SI as B ON A.EmployeeID = B.EmployeeID
+			LEFT JOIN #Deps as Deps on F.OrgUnitID = Deps.OrgUnitID 
+			LEFT JOIN #AdjSI as C on A.EmployeeID = C.EmployeeID
+			LEFT JOIN (
+				SELECT EmployeeID, PRSITotalPaidDays, PRSIPaidDayKowCodes, PRSIAdjDowCodeType, PRSITotalPaidDaysType FROM #Employee_Config
+			) AS D ON A.EmployeeID = D.EmployeeID
+		where Deps.OrgUnitID is null
+	) as ce
+
+	--select * from #Result
+	--select @EndDate, @Eff_DayOffSi, @AdjDowCode, @PRSIDayDecrease
+	-- Tao bang tạm chưa danh sách nv thuoc bang HR_SocialInsAdjust
+	select ce.* into #HR_SocialInsAdjust from (
+		select EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+			SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+			CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, SIRateE, HIRateE, UIRateE,  
+			SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+			BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+			SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+			CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+			SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, SIRateC, HIRateC, UIRateC, KowType, KowTypePreM, IsReduceSiUi, EffDateAdjSal,
+			RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate
+		from HR_SocialInsAdjust with (nolock) where 1 = 0										 
+	) as ce
+
+
+
+	select ce.* into #HCSSI_SocialInsAdjust_v2 from (
+		select EmployeeID, SIRateE, HIRateE, UIRateE, SIRateC, HIRateC, UIRateC,  
+			SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC
+		from HR_SocialInsAdjust with (nolock) where 1 = 0										 
+	) as ce
+	
+	
+	-- tao bang tam chua danh sach nv thuoc bang chinh HR_SocialIns
+	select ce.* into #HR_SocialIns from (
+		select EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+				TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+				TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+				HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns
+		from HR_SocialIns with (nolock) where 1 = 0
+	) as ce
+
+	--select 'fff',* from #HR_SocialIns
+
+
+	select ce.* into #Cong_TS from (
+		select KowCode from dbo.HR_LSKOW WITH (NOLOCK) where KowType in (9,19) GROUP BY KowCode
+	) as ce
+
+	select ce.* into #tmp_auto_adj from (
+		select cast(N'' AS NVARCHAR(20)) as EmployeeID, cast(1 as int) as mType where 1 = 0
+	) as ce
+
+	DECLARE @JoinDate datetime
+	-- Lay ve danh sach dieu chinh BHXH
+
+	DECLARE employee_cursor_bhxh CURSOR FOR 
+
+		select R.EmployeeID, MinSalary, CoeffSalary, Real_Salary, R.EndDate, mTyleBHXH, mTyleBHYT, mTyleBHTN, mAmountSI, mBHXHMax, 
+			mBHYTMax, mBHTNMax, SalaryInsO, SalaryInsO_YT, SalaryInsO_TN, 
+			JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo, Amount, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, 
+			TotalCoeffAllo, DateNum, KowType, mTyleBHXHCN, mTyleBHXHCT, mTyleBHYTCN, mTyleBHYTCT, mTyleBHTNCN, mTyleBHTNCT, AmountF,
+			R.active, R.ReturnKCBDate, R.RealSalSI, GroupType, R.totPrevPercentPay, isnull(R.CurrencyCode, '') as CurrencyCode, KowTypePreM, 
+			CONVERT(VARCHAR(7), R.JoinedOn, 111) AS JoinDate, bs_EffectDate, Dayoff_EndDate, R.RealSalHI, R.RealSalUI, R.IsReturnKCB,
+			R.HICode, PRSITotalPaidDays, PRSIPaidDayKowCodes, PRSIAdjDowCodeType, PRSITotalPaidDaysType, InsReportingDate, HiredOn, 
+			R.KowCode, TSHoursPerWD, ISNULL(HiredOn, R.JoinedOn)
+		from #Result as R
+		order by EmployeeID -- Where A.EmployeeID = 155
+		
+	OPEN employee_cursor_bhxh  
+	WHILE 1 = 1  
+	BEGIN  
+		FETCH NEXT FROM employee_cursor_bhxh INTO @EmployeeID, @MinSalary, @CoeffSalary, @Real_Salary, @EndDate, @mTyleBHXH, @mTyleBHYT, @mTyleBHTN, @mAmountSI, @mBHXHMax, 
+						@mBHYTMax, @mBHTNMax, @SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, 
+						@JobAllo, @SeniorAllo, @SeniorOverAllo, @OtherAllo, @Amount, @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, 
+						@TotalCoeffAllo, @DateNum, @KowType, @mTyleBHXHCN, @mTyleBHXHCT, @mTyleBHYTCN, @mTyleBHYTCT, @mTyleBHTNCN, @mTyleBHTNCT, @AmountF, 
+						@active, @ReturnKCBDate, @OldRealSalSI, @GroupType, @totPrevPercentPay, @CurrencyCode, @KowTypePreM, @YYYYMMJoinDate, @bs_EffectDate, 
+						@Dayoff_EndDate, @OldRealSalHI, @OldRealSalUI, @IsReturnKCB, @HICode, @PRSITotalPaidDays, @PRSIPaidDayKowCodes, @PRSIAdjDowCodeType, 
+						@PRSITotalPaidDaysType, @InsReportingDate, @OfficialDate, @KowCode, @TSHoursPerWD, @JoinDate
+
+		IF @@FETCH_STATUS != 0
+			BREAK;
+		
+		SET @Flag_THAISAN_COTANGLUONG = 0
+		SET @FlagIsDeduction = 0
+	--select @KowType	
+		IF @KowType < 0
+		BEGIN
+			DECLARE @tmpAdjDowCode VARCHAR(20)
+			SET @tmpAdjDowCode = NULL
+
+			select TOP(1) @tmpAdjDowCode = R.AdjDowCode
+			from (
+				select RecID, NumAdd, AdjDowCode, ROW_NUMBER() OVER(ORDER BY AdjDowCode desc) as RowID 
+				from HR_SocialInsAdjust where EmployeeID = @EmployeeID and AdjDowCode < @AdjDowCode
+				AND NumAdd NOT IN (27,28)
+			) as R where RowID = 1 and NumAdd = 5 
+
+			if @tmpAdjDowCode IS NOT NULL 
+			BEGIN
+				IF EXISTS(SELECT TOP(1) 1 FROM #HR_SocialInsAdjust WHERE EmployeeID = @EmployeeID AND @Num_Add NOT IN (7,8,27,28))
+					GOTO NextStep
+
+				SET @Flag_THAISAN_COTANGLUONG = 1
+				-- Trong trường hợp nghỉ thai sản, xét xem nhân viên có được tăng lương hay không
+				SELECT @OldRealSalSI = R.RealSalSI, @OldRealSalHI = R.RealSalHI, @OldRealSalUI = R.RealSalUI, @DowCode_SI = R.AdjDowCode, @Num_Add = NumAdd
+				FROM (
+					SELECT RealSalSI, RealSalHI, RealSalUI, AdjDowCode, NumAdd, ROW_NUMBER() OVER(ORDER BY AdjDowCode desc) as RowID
+					FROM dbo.HR_SocialInsAdjust WHERE EmployeeID = @EmployeeID AND AdjDowCode < @AdjDowCode
+				) AS R WHERE R.RowID = 1
+
+				if @OldRealSalSI is null
+				begin
+					SELECT @OldRealSalSI = R.RealSalSI, @OldRealSalHI = R.RealSalHI, @OldRealSalUI = R.RealSalUI, @DowCode_SI = R.DowCode, @Num_Add = NumAdd
+					FROM (
+						SELECT RealSalSI, RealSalHI, RealSalUI, DowCode, NumAdd, ROW_NUMBER() OVER(ORDER BY DowCode desc) as RowID
+						FROM dbo.HR_SocialIns WHERE EmployeeID = @EmployeeID AND DowCode < @AdjDowCode
+					) AS R WHERE R.RowID = 1
+				end
+
+				--
+				SET @RealSalSI = @SalaryInsO
+				SET @RealSalHI = @SalaryInsO_YT
+				SET @RealSalUI = @SalaryInsO_TN
+
+				--
+				IF (@OldRealSalSI <> @RealSalSI OR @OldRealSalHI <> @RealSalHI OR @OldRealSalUI <> @RealSalUI) AND @Num_Add NOT IN (7,8)
+				
+					GOTO THAISAN_COTANGLUONG
+
+			END
+			
+NextStep:
+
+			-- Nếu trong quá trình nghỉ thai sản có quyet dinh tang luong lần 2
+			IF EXISTS(
+				SELECT TOP(1) 1
+				FROM #Employee_Config AS T INNER JOIN dbo.HR_EmpDayOff AS T1 WITH (NOLOCK) ON T.EmployeeID = T1.EmployeeID
+					INNER JOIN #Cong_TS AS T2 ON T1.KowCode = T2.KowCode
+				WHERE T.EmployeeID = @EmployeeID AND T.Eff_DayOffSi BETWEEN T1.BeginDate AND T1.EndDate
+			)
+			BEGIN
+				if exists(
+					select top(1) 1
+					from (
+						select NumAdd, ROW_NUMBER() OVER(ORDER BY AdjDowCode desc) as RowID 
+						from HR_SocialInsAdjust where EmployeeID = @EmployeeID and AdjDowCode < @AdjDowCode
+					) as R where RowID = 1 and NumAdd IN (7,8)
+				)
+				BEGIN
+                
+					SET @Flag_THAISAN_COTANGLUONG = 1
+					-- Trong trường hợp nghỉ thai sản, xét xem nhân viên có được tăng lương hay không
+					SELECT @OldRealSalSI = R.RealSalSI, @OldRealSalHI = R.RealSalHI, @OldRealSalUI = R.RealSalUI, @DowCode_SI = R.AdjDowCode, @Num_Add = NumAdd
+					FROM (
+						SELECT RealSalSI, RealSalHI, RealSalUI, AdjDowCode, NumAdd, ROW_NUMBER() OVER(ORDER BY AdjDowCode desc) as RowID
+						FROM dbo.HR_SocialInsAdjust WHERE EmployeeID = @EmployeeID AND AdjDowCode < @AdjDowCode
+					) AS R WHERE R.RowID = 1
+
+					if @OldRealSalSI is null
+					begin
+						SELECT @OldRealSalSI = R.RealSalSI, @OldRealSalHI = R.RealSalHI, @OldRealSalUI = R.RealSalUI, @DowCode_SI = R.DowCode, @Num_Add = NumAdd
+						FROM (
+							SELECT RealSalSI, RealSalHI, RealSalUI, DowCode, NumAdd, ROW_NUMBER() OVER(ORDER BY DowCode desc) as RowID
+							FROM dbo.HR_SocialIns WHERE EmployeeID = @EmployeeID AND DowCode < @AdjDowCode
+						) AS R WHERE R.RowID = 1
+					end
+
+					--
+					SET @RealSalSI = @SalaryInsO
+					SET @RealSalHI = @SalaryInsO_YT
+					SET @RealSalUI = @SalaryInsO_TN
+
+					--
+					IF (@OldRealSalSI <> @RealSalSI OR @OldRealSalHI <> @RealSalHI OR @OldRealSalUI <> @RealSalUI) AND @Num_Add IN (7,8)
+						GOTO THAISAN_COTANGLUONG
+				END
+            END
+			CONTINUE;
+		end
+	
+		SET @IsReduceSiUi = 0
+
+		SELECT TOP(1) @mSSL = mSSL, @Eff_DateNotSi = Eff_DateNotSi, @Eff_DayOffSi = Eff_DayOffSi, @PRSIDayDecrease = PRSIDayDecrease,
+			@PRSITotalDayNotPay = PRSITotalDayNotPay, @PRSIDayReturnHI = PRSIDayReturnHI, @PRIsSI1RowForDescreaseML = PRIsSI1RowForDescreaseML,
+			@PRTUnionRateCo = PRTUnionRateCo, @mUN = UI_RateEmp + UI_RateCo, @PRCurrencyForPay = PRCurrencyForPay
+		FROM #Employee_Config WHERE EmployeeID = @EmployeeID
+
+		if @CurrencyCode = @PRCurrencyForPay
+			set @decp = 0
+		else
+			set @decp = @mSSL
+				
+		-- Nếu nhan vien nghỉ TS đi làm lại có ngày bắt đầu >= 16 thì không trích.
+		if exists (
+			select top(1) 1 from HR_EmpDayOff as D WITH (NOLOCK) inner join #Cong_TS as T on D.KowCode = T.KowCode 
+			where EmployeeID = @EmployeeID and @FDate between D.BeginDate and isnull(REndDate, EndDate) 
+				and (isnull(REndDate, EndDate) between @FDate and @TDate and isnull(REndDate, EndDate) + 1 >= @Eff_DateNotSi) and D.IsCopy = 0
+		)
+		begin
+		
+			continue;
+		END
+		
+		if exists (
+			select top(1) 1 from HR_EmpDayOff as D WITH (NOLOCK) inner join #Cong_TS as T on D.KowCode = T.KowCode 
+			where EmployeeID = @EmployeeID and @FDate_PrevM between D.BeginDate and isnull(REndDate, EndDate) 
+				AND (isnull(REndDate, EndDate) between @FDate_PrevM and @TDate_PrevM and isnull(REndDate, EndDate) + 1 >= DATEADD(MONTH, -1, @Eff_DateNotSi)) 
+				AND D.IsCopy = 0
+		)
+		BEGIN
+		
+			SET @KowTypePreM = 9
+			SELECT TOP(1) @bs_EffectDate = isnull(REndDate, EndDate) + 1 from HR_EmpDayOff as D WITH (NOLOCK) inner join #Cong_TS as T on D.KowCode = T.KowCode 
+			where EmployeeID = @EmployeeID and @FDate_PrevM between D.BeginDate and isnull(REndDate, EndDate) 
+				AND (isnull(REndDate, EndDate) between @FDate_PrevM and @TDate_PrevM and isnull(REndDate, EndDate) + 1 >= DATEADD(MONTH, -1, @Eff_DateNotSi)) 
+				AND D.IsCopy = 0
+        END
+ 
+			
+		-- xử lý trường hợp tháng trước Lao dong giam do om dau, nghi viec rieng chỉ mới báo giảm, tháng nay bao tăng
+		IF EXISTS(SELECT TOP(1) 1 FROM #AdjSI WHERE EmployeeID = @EmployeeID AND NumAdd = 6)
+		BEGIN
+
+			IF NOT EXISTS(SELECT TOP(1) 1 FROM #AdjSI WHERE EmployeeID = @EmployeeID AND NumAdd = 14) and @KowType not in (9,19)
+			BEGIN
+				-- 2021.12.22
+				-- Nếu Sau khoảng thoi gian nghi không lương, nhan vien quyet dinh nghi việc có ngày nghỉ sau ngày làm căn cứ báo giảm
+				-- Ví dụ: nghỉ ngay 27.10 --> tháng 11 báo giảm nghỉ việc cho nhan vien
+				IF @EndDate Between Dateadd(month, -1, Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar))) AND @TDate
+				BEGIN
+					IF CONVERT(VARCHAR(7), @EndDate, 111) = CONVERT(VARCHAR(7), @AdjDowCode, 111)
+						GOTO DEDUCTION_BY_COUNT_KOWDS
+					ELSE
+						GOTO DEDUCTION_AFTER_CHECK_KOWDS
+				end
+				
+				SET @Num_Add = 14
+	
+				-- 27.10.2021: Báo tang sau khi nghi khong luong từ 4.5 --> full (linfox)
+				INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+					SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+					CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+					SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+					MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi,
+					RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate) 
+				VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+					Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+					@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+					Round(@mTyleBHXHCN * @SalaryInsO/100,@decp), Round(@mTyleBHXHCT * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+					Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+					@AdjDowCode, case when @Num_Add = 13 then CONVERT(varchar(7), @MaxEndDate, 111) else '' end, 0, 
+					@mTyleBHXHCN + @mTyleBHXHCT + @mTyleBHYTCN + @mTyleBHYTCT + @mTyleBHTNCN + @mTyleBHTNCT, 
+					@mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi,
+					@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate)
+
+            END
+            
+		end
+
+		-- 2021.08.24: Nếu nghỉ việc tháng trước tuy nhiên, đủ điều kiện đóng theo công, tháng này báo giảm lại
+		if exists(select top(1) 1 from #SI where EmployeeID = @EmployeeID)
+			and (convert(varchar(7), @EndDate, 111) = @PrevAdjDowCode)
+		begin
+			goto DEDUCTION_AFTER_CHECK_KOWDS
+		end
+		
+		-- 2021.08.24: Nếu nghỉ việc tháng trước và báo giam rầu thì không xử lý gì nữa.
+		if not exists(select top(1) 1 from #SI where EmployeeID = @EmployeeID)
+			and (convert(varchar(7), @EndDate, 111) <= @PrevAdjDowCode)
+		begin
+							
+			-- Neu vua nghi xong thai san, nghi viec luon thi phai bao giam do nghi ts
+			if not exists( select top(1) 1 from (
+				select top(1) NumAdd 
+				from HR_SocialInsAdjust with (nolock) where EmployeeID = @EmployeeID and AdjDowCode < @AdjDowCode
+				AND NumAdd NOT IN (27,28)
+				order by AdjDowCode desc
+			) as R where NumAdd = 5)
+				continue;
+		end
+
+		-- 2021.12.29: 14 ngày công di làm này sẽ ko bao gồm các loại nghỉ mà đc tính để báo giảm như là KL, ốm, tai nạn,.....
+		if exists(select top(1) 1 from HR_SysSettingsForCustomers with (nolock) where KeyCode = 'Linfox_JoinDate_EndDate_TheSame' and Value = 1)
+		BEGIN
+			IF @EndDate between @FDate and @TDate AND @YYYYMMJoinDate = @AdjDowCode
+			BEGIN
+			
+				;WITH tblA AS (
+					SELECT LTRIM(RTRIM(CAST(data AS VARCHAR(20)))) AS KowCode FROM dbo.HR_FNSplitString_varchar(@PRSIPaidDayKowCodes, ',')
+				)
+				SELECT @tmpDayNum = ISNULL(SUM(T.DayNum), 0)
+				FROM dbo.HR_TSKowDs AS T WITH (NOLOCK) INNER JOIN tblA AS T1 ON T.KowCode = T1.KowCode
+				WHERE T.EmployeeID = @EmployeeID AND T.WorkDate BETWEEN @OfficialDate AND @EndDate - 1
+
+				IF @tmpDayNum < 14 --PRSITotalDayNotPay AND @PRSITotalPaidDays > 0
+					CONTINUE;
+            END 
+        END
+
+		--case 1: nhan vien nghi viec trong thang. 
+		--Tuy nhiên, nếu trong tháng có tổng số ngày >= 14 và ngày nghỉ việc thuộc kỳ dương lịch thì báo giảm luon
+		-- interdist dang không dùng --> cần thiet lap option rieng
+		IF ((@EndDate > @Eff_DayOffSi) And (@EndDate <= Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar), 102)))
+		BEGIN
+
+			IF CONVERT(VARCHAR(7), @EndDate, 111) = CONVERT(VARCHAR(7), @AdjDowCode, 111)
+				GOTO DEDUCTION_BY_COUNT_KOWDS
+
+	DEDUCTION_AFTER_CHECK_KOWDS:
+					
+			-- Nghỉ việc trong tháng nhưng chưa trích nộp lần nào thì return. (tức là vào làm truoc Giá trị ngày nghỉ việc làm căn cứ báo giảm trong tháng
+			-- còn nếu vào làm trước Giá trị ngày nghỉ việc làm căn cứ báo giảm trong tháng vẫn báo giảm bình thường
+			--IF not exists(select top(1) 1 from HR_SocialIns WITH (NOLOCK) where EmployeeID = @EmployeeID AND DowCode >= @YYYYMMJoinDate)
+			--	and @YYYYMMJoinDate = @AdjDowCode
+			IF not exists(select top(1) 1 from HR_SocialIns WITH (NOLOCK) where EmployeeID = @EmployeeID)
+				and @YYYYMMJoinDate >= @AdjDowCode
+
+				continue;
+				
+			-- Nếu tháng trước đã báo giảm rồi thì tháng này bỏ qua không xử lý nữa.
+			if exists(select top(1) 1 from HR_SocialInsAdjust WITH (NOLOCK) where EmployeeID = @EmployeeID and (NumAdd = 11 or NumAdd = 12) 
+				AND AdjDowCode >= @YYYYMMJoinDate)
+				continue;
+
+
+			SELECT TOP(1) @MaxEndDate = ReturnKCBDate, @IsReturnKCB = IsReturnKCB 
+			FROM HR_VwEmployees with (nolock) WHERE (EmployeeID = @EmployeeID)
+			
+			IF @ReturnKCBDate IS NULL OR @ReturnKCBDate = ''
+			BEGIN					
+				--SET @Num_add = 12
+				---- Phat sinh mot dong tang vao (IV)
+				--INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				--							  SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				--							  CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns,
+				--							  SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+				--							  MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi) 
+				--VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				--Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				--Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				--Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, 
+				--@Num_Add, @NumAdj, @AdjDowCode, CONVERT(varchar(7), @MaxEndDate, 111), datediff(month, @FDate, @MaxEndDate) + 1, @mTyleBHYTCN + @mTyleBHYTCT,
+				--@mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi)
+				-- nghỉ việc báo trễ
+				--insert into #tmp_auto_adj(EmployeeID, mType) values(@EmployeeID, 2)
+				-- 
+
+				if exists(select top(1) 1 from HR_SysSettingsForCustomers with (nolock) where KeyCode = 'Linfox_KhongTraTheMacDinhTraThe' and Value = 1)
+					SET @Num_add = 2
+				ELSE 
+					SET @Num_add = 4
+			END
+			ELSE
+			BEGIN
+			
+				IF datediff(day, Convert(datetime,@AdjDowCode + '/' + cast(@PRSIDayReturnHI as varchar)), @ReturnKCBDate) > 0
+				BEGIN
+					-- Nghi viec, va tre the khong kip thoi han
+					--hphoa print ' Ngay tra the BHXH: ' + cast(@ReturnKCBDate as varchar)
+					--SET @Num_add = 11
+					---- Phat sinh mot dong tang vao (IV)
+					--INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+					--							  SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+					--							  CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+					--							  SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+					--							  MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi) 
+					--VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+					--Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp),
+					--Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+					--Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, 
+					--@Num_Add, @NumAdj, @AdjDowCode, CONVERT(varchar(7), @MaxEndDate, 111), datediff(month, @FDate, @MaxEndDate) + 1, @mTyleBHYTCN + @mTyleBHYTCT,
+					--@mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi)
+					-- nghỉ việc báo trễ
+					--insert into #tmp_auto_adj(EmployeeID, mType) values(@EmployeeID, 2)
+					--
+					SET @Num_add = 3
+				END
+				ELSE
+					SET @Num_add = 2
+			END
+
+			-- 2020.08.11. plvtmi note
+			-- Trong trường hợp nghỉ việc --> nếu nhân viên nghỉ việc trước ngày 16 thì lấy mức lương cũ.
+			IF @EndDate < DATEADD(MONTH, 1, @Eff_DayOffSi) AND @Num_Add = 4
+			BEGIN
+				DECLARE @PrevDowCode VARCHAR(7)
+				SET @PrevDowCode = CONVERT(VARCHAR(7), DATEADD(MONTH, -1, @AdjDowCode + '/01'), 111)
+				
+				-- cap nhat lai config
+				UPDATE #Employee_Config SET Eff_DateNotSi = DATEADD(MONTH, -1, Eff_DateNotSi), Eff_DayOffSi = DATEADD(MONTH, -1, Eff_DayOffSi)
+				WHERE EmployeeID = @EmployeeID
+				-- tính lại phụ cấp
+				DELETE #tblSiAllowance WHERE EmployeeID = @EmployeeID
+				INSERT INTO #tblSiAllowance(EmployeeID, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, Amount, AmountF)
+				EXEC HR_spGetSiAllowance @PrevDowCode, @EmployeeID
+	
+				-- tính lại bhxh
+				DELETE @tblGetDeductionSI WHERE EmployeeID = @EmployeeID
+				INSERT into @tblGetDeductionSI(EmployeeID, MinSalary, CoeffSalary, Real_Salary, EndDate, mTyleBHXH, mTyleBHYT, 
+						mTyleBHTN, mAmountSI, mBHXHMax, mBHYTMax, mBHTNMax, SalaryInsO, SalaryInsO_YT, SalaryInsO_TN,
+						JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo, Amount, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo,
+						DateNum, KowType, mTyleBHXHCN, mTyleBHXHCT, mTyleBHYTCN, mTyleBHYTCT, mTyleBHTNCN, mTyleBHTNCT, AmountF,
+						Active, ReturnKCBDate, GroupType, bs_EffectDate)
+				EXEC HR_spGetDeductionSI_BySalary @PrevDowCode, @EmployeeID
+
+				SELECT @MinSalary = MinSalary, @CoeffSalary = CoeffSalary, @Real_Salary = Real_Salary, @mTyleBHXH = mTyleBHXH, @mTyleBHYT = mTyleBHYT, @mTyleBHTN = mTyleBHTN, 
+					@mAmountSI = mAmountSI, @mBHXHMax = mBHXHMax, @mBHYTMax = mBHYTMax, @mBHTNMax = mBHTNMax, @SalaryInsO = SalaryInsO, @SalaryInsO_YT = SalaryInsO_YT, @SalaryInsO_TN = SalaryInsO_TN, 
+					@JobAllo = JobAllo, @SeniorAllo = SeniorAllo, @SeniorOverAllo = SeniorOverAllo, @OtherAllo = OtherAllo, @Amount = Amount, @CoeffJobAllo = CoeffJobAllo, @CoeffSeniorAllo = CoeffSeniorAllo, 
+					@CoeffSeniorOverAllo = CoeffSeniorOverAllo, @CoeffOtherAllo = CoeffOtherAllo, @TotalCoeffAllo = TotalCoeffAllo, 
+					@mTyleBHXHCN = 0, @mTyleBHXHCT = 0, @mTyleBHYTCN = mTyleBHYTCN, 
+					@mTyleBHYTCT = mTyleBHYTCT, @mTyleBHTNCN = 0, @mTyleBHTNCT = 0, 
+					@AmountF = AmountF
+				FROM @tblGetDeductionSI
+				WHERE EmployeeID = @EmployeeID
+            end
+			
+			set @mTyleBHXHCN = 0
+			set @mTyleBHXHCT = 0
+			set @mTyleBHTNCN = 0
+			set @mTyleBHTNCT = 0
+
+			--IF @IsReturnKCB = 0
+			--BEGIN
+				SET @RateEmp = 0
+				SET @RateCo = 0
+				SELECT TOP(1) @RateEmp = RateEmp, @RateCo = RateCo FROM dbo.HR_LSInsuranceTypeDetail WITH (NOLOCK) 
+				WHERE SICode = @HICode and CONVERT(VARCHAR(7), FromYear, 111) <= @AdjDowCode ORDER BY FromYear desc				
+
+				-- 2021.01.28: Nếu nhân vien nghỉ việc không trả thẻ kịp thời thì nếu tỷ lệ bảo hiểm cá nhân vs công ty có nhập
+				-- thì tổng tỷ lệ đóng bhxh do cá nhân đóng (nghison dùng option này)
+				-- Nếu user chỉ thiết lập % cho cá nhân hoặc chỉ cho công ty thì lấy theo thiết lập tương ứng (phl dùng) 
+				IF @RateEmp <> 0 AND @RateCo <> 0
+				begin
+				
+					-- 2021.01.28: Nếu nhân vien nghỉ việc không trả thẻ kịp thời thì nếu tỷ lệ bảo hiểm cá nhân vs công ty có nhập
+					-- thì tổng tỷ lệ đóng bhxh do cá nhân đóng (nghison dùng option này)
+					if exists(select top(1) 1 from HR_SysSettingsForCustomers with (nolock) where KeyCode = 'VAS_NVNghiViecKhongTraThe' and Value = 1)
+					begin
+						SET @mTyleBHYTCN = @mTyleBHYTCN + @mTyleBHYTCT
+						SET @mTyleBHYTCT = 0
+					end
+					-- nguoc lai, ty le cua ai, nguoi nay dong
+				end
+				ELSE
+				
+				begin
+					SET @mTyleBHYTCN = @RateEmp
+					SET @mTyleBHYTCT = @RateCo
+				END
+			--end
+			--ELSE
+			--BEGIN
+			print 'aaa1'
+				IF @Num_Add = 2
+				BEGIN 
+					SET @mTyleBHYTCN = 0
+					SET @mTyleBHYTCT = 0
+				END 
+			--	--SET @Num_Add = 2
+			--end
+
+			-- phat sinh mot dong giam vao vung (II)
+			
+			INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+				SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC,
+				BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+				SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+				CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO, 
+				SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+				MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi,
+				RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate)  
+			VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp),
+				Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), 
+				Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				@mTyleBHXHCN, @mTyleBHYTCN, @mTyleBHTNCN, Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, 
+				@Num_Add, @NumAdj, @AdjDowCode, '', datediff(month, @FDate, @TDate) + 1, @mTyleBHYT, @mTyleBHYTCN, 0, 0, @mTyleBHYTCT, 0, 0, @KowType, @KowTypePreM, @IsReduceSiUi,
+				@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate)
+			-- Xet nhan vien ke tiep
+			CONTINUE
+		END
+						
+		-- Trích nộp nếu Tổng số ngày công hưởng lương >=
+		IF @PRSITotalPaidDays > 0 AND ISNULL(@PRSIPaidDayKowCodes, '') <> ''
+		BEGIN
+DEDUCTION_BY_COUNT_KOWDS:
+		
+			DECLARE @fBegDay DATETIME, @fEndDay DATETIME
+			
+			SET @tmpDayNum = 0
+
+			-- Tháng trích nộp
+			IF @PRSIAdjDowCodeType = 0
+			begin
+				SET @fBegDay = @FDate
+				SET @fEndDay = @TDate
+			END
+            ELSE
+            BEGIN
+				SELECT TOP(1) @fBegDay = FromDate, @fEndDay = ToDate FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+            END
+            
+			IF @OfficialDate IS NOT NULL AND @fBegDay < @OfficialDate
+				SET @fBegDay = @OfficialDate
+
+			-- Tổng số ngày công hưởng lương
+			IF @PRSITotalPaidDaysType = 1
+				SELECT TOP(1) @tmpPRSITotalPaidDays = (@PRSITotalPaidDays * StandardWD / 100) * @TSHoursPerWD FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+			ELSE IF @PRSITotalPaidDaysType = 0
+				set @tmpPRSITotalPaidDays = @PRSITotalPaidDays
+			ELSE IF @PRSITotalPaidDaysType = 2
+				SELECT TOP(1) @tmpPRSITotalPaidDays = (StandardWD - @PRSITotalPaidDays) * @TSHoursPerWD FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+			ELSE
+				SET @tmpPRSITotalPaidDays = 0
+
+			-- Đối với nhân viên nghỉ việc thì đếm: công thực tế từ ngày đầu kỳ lương đến ngày báo cáo (ngày hiện tại) + công mặc định từ ngày hiện tại đến ngày nghỉ việc
+			IF (@EndDate Between dateadd(day, 1, @Eff_DayOffSi) AND @TDate) --OR (@EndDate > @TDate)
+			BEGIN 
+				SET @fEndDay = CONVERT(VARCHAR(10), @GenDate, 111)
+				SET @tmpDayNum = @tmpDayNum + @TSHoursPerWD * dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @fEndDay + 1, @EndDate - 1, 3)
+			END 
+			ELSE
+            BEGIN
+				/*
+					Nhân sự đang làm việc : từ ngày bắt đầu kỳ công đến ngày cuối cùng của tkỳ công/ngày làm việc cuối cùng
+					(công tực tế tính đến ngày trích + công dự kiến theo ngày làm việc)> NCC -14 công nghỉ
+				*/
+				SET @tmpDatetime = CONVERT(VARCHAR(10), @GenDate, 111)
+				SET @tmpDayNum = @tmpDayNum + @TSHoursPerWD * dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @tmpDatetime + 1, @fEndDay, 3)
+				SET @fEndDay = @tmpDatetime
+            END 
+
+			--
+			
+			;WITH tblA AS (
+				SELECT LTRIM(RTRIM(CAST(data AS VARCHAR(20)))) AS KowCode FROM dbo.HR_FNSplitString_varchar(@PRSIPaidDayKowCodes, ',')
+			)
+			SELECT @tmpDayNum = @tmpDayNum + ISNULL(SUM(T.DayNum), 0)
+			FROM dbo.HR_TSKowDs AS T WITH (NOLOCK) INNER JOIN tblA AS T1 ON T.KowCode = T1.KowCode
+			WHERE T.EmployeeID = @EmployeeID AND T.WorkDate BETWEEN @fBegDay AND @fEndDay
+
+			IF @tmpDayNum > @tmpPRSITotalPaidDays AND @PRSITotalPaidDays > 0
+			begin
+				if (@KowType = 9 Or @KowType = 19)
+					GOTO NGHI_VIEC_NHUNG_NGHI_KHONG_LUONG
+				else 
+					GOTO CONTINUE_DEDUCTION
+			END
+            else
+			begin
+
+				IF CONVERT(VARCHAR(7), @EndDate, 111) = CONVERT(VARCHAR(7), @AdjDowCode, 111)
+				BEGIN
+							
+					/*
+						2022.06.13. Vừa nghỉ việc, vừa nghỉ không lương. 
+						Nếu > ngày căn cứ báo giảm thì đểm thêm công nghỉ không lương từ ngày nghỉ việc đến cuối kỳ lương
+					*/
+					if @EndDate > Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar), 102)
+						set @DateNum = @DateNum + dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @EndDate, @GenDate, 3)
+
+					-- Propzy_BHXH:Điều chỉnh trích nộp bhxh trong trường hợp nghỉ không lương, nghỉ việc cùng tháng
+					-- Yêu cầu: thực hiện trích hợp báo giảm không lương cho tháng trích nộp. Qua tháng tiếp theo thì báo giảm cho nhân viên.
+					IF @DateNum >= @PRSITotalDayNotPay
+						GOTO NGHI_VIEC_NHUNG_NGHI_KHONG_LUONG
+					else
+					begin
+
+						-- 2022.06.13: nhân viên mới vào làm và nghỉ việc sau ngày 14.
+						IF not exists(select top(1) 1 from HR_SocialIns WITH (NOLOCK) where EmployeeID = @EmployeeID and DowCode < @AdjDowCode)
+							and @EndDate is not null
+						begin
+						
+							-- nếu vào làm trong tháng
+							if @JoinDate >= Dateadd(month, -1, Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar)))
+							begin
+								--IF DATEDIFF(DAY, @JoinDate, @EndDate) <= @PRSITotalPaidDays
+								--	CONTINUE;
+								--if @EndDate > Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar), 102)
+								--	GOTO CONTINUE_DEDUCTION
+								--else 
+								--if @EndDate <= Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar), 102)
+									continue;
+							end
+							else -- vào làm trước đó, nhưng bây giờ  mới vận hành hệ thống 
+							begin
+								if @EndDate <= Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar), 102)
+									GOTO DEDUCTION_AFTER_CHECK_KOWDS
+								else
+									GOTO CONTINUE_DEDUCTION
+							end
+						end
+						else 
+						BEGIN
+						
+							-- 2022.06.30: nghỉ việc trong tháng, tuy nhien, trong tháng nghỉ ts >= 14 --> tháng sau mới giam hản
+							IF (@EndDate BETWEEN @FDate AND @TDate AND 
+								dbo.HR_fnDemCongTSBatKy(@EmployeeID, @AdjDowCode, @FDate, @TDate, @Eff_DateNotSi, @PRSITotalDayNotPay) >= @PRSITotalDayNotPay
+							)
+							BEGIN
+								CONTINUE
+							END
+							ELSE
+							begin
+								GOTO DEDUCTION_AFTER_CHECK_KOWDS
+							end
+						end
+					end
+				end
+				
+				-- Nếu không đủ công thì không trích
+				/*
+					2022.06.13. Nếu không đủ công và nếu nghỉ quá 14 ngày theo quy định BHXH thì vẫn báo giảm.
+					Và trong trường hợp, không khai báo nghỉ báo giảm trong dayoff thì theo rule không trích 
+					trong trường hợp không đủ công
+				*/
+
+				IF @PRSITotalPaidDays > 0 AND @KowType NOT IN (9,19) and @DateNum < @PRSITotalDayNotPay
+				begin
+					-- nếu nhân viên làm lâu năm và là tháng setup khởi tạo thì tạo mới dòng tăng ảo
+					if @JoinDate <= Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayDecrease as varchar))
+						and not exists(select top(1) 1 from HR_SocialIns with (nolock) 
+							where DowCode < @AdjDowCode)
+					begin
+						GOTO CONTINUE_DEDUCTION
+					end
+					ELSE
+                    BEGIN
+						set @DateNum = @DateNum + dbo.HR_fnDemCongTS(@EmployeeID, @AdjDowCode, @FDate, @TDate, @Eff_DateNotSi, @PRSITotalDayNotPay)
+						IF @DateNum >= @PRSITotalDayNotPay
+							GOTO NGHI_VIEC_NHUNG_NGHI_KHONG_LUONG
+						else
+							CONTINUE;
+					end
+				end
+			end
+        END
+
+		--case 2: Nhan vien nghi trong thang qua 15 ngay 
+		IF @DateNum >= @PRSITotalDayNotPay --Xet neu nhan vien co tong ngay nghi trong thang vuot qua quy dinh bao giam thi bao giam thuong la 15			
+		BEGIN
+		
+NGHI_VIEC_NHUNG_NGHI_KHONG_LUONG:
+			IF NOT EXISTS(SELECT TOP(1) 1 FROM HR_SocialIns where EmployeeID = @EmployeeID AND DowCode < @AdjDowCode)
+				CONTINUE;
+			/*
+				-	Căn cứ vào ngày thực hiện nghiệp vụ "Trích nộp BH" của hệ thống so với ngày 01 của tháng đang báo cáo, nếu:
+				•	Ngày thực hiện < ngày 01 của tháng báo cáo thì giảm hết cả 3 loại: BHXH, BHYT, BHTN, ngược lại,
+				•	Ngày thực hiện >= ngày 01 của tháng báo cáo thì giảm BHXH, BHTN còn BHYT thì đóng theo tỷ lệ.
+				•	Nếu thời gian nghỉ liên tục và giảm từ 2 tháng trở lên thì theo nguyên tắc trên chỉ đóng BHYT cho tháng đầu tiên, qua tháng thứ 2 trở đi sẽ giảm cả 3 loại BH: BHXH, BHTN, BHYT
+
+				2019.06.10 IC-comment: 
+					Loại công nghỉ = nghỉ khác ==> Giảm 2 loại, 
+					các loại nghỉ khác (nghỉ chế độ bảo hiểm): 7,10,11,12,13,18,20,21,22,23 ==> giảm 3 loại
+			*/
+			DECLARE @mTyleBHXH_old FLOAT, @mTyleBHXHCN_old FLOAT, @mTyleBHXHCT_old FLOAT
+			DECLARE @mTyleBHTN_old FLOAT, @mTyleBHTNCN_old FLOAT, @mTyleBHTNCT_old FLOAT
+			DECLARE @mTyleBHYT_old FLOAT, @mTyleBHYTCN_old FLOAT, @mTyleBHYTCT_old FLOAT
+
+			-- Ngày thực hiện >= ngày 01 của tháng báo cáo thì giảm BHXH, BHTN còn BHYT thì đóng theo tỷ lệ.				
+			SET @mTyleBHXH_old = @mTyleBHXH
+			SET @mTyleBHXHCN_old = @mTyleBHXHCN
+			SET @mTyleBHXHCT_old = @mTyleBHXHCT
+			SET @mTyleBHTN_old = @mTyleBHTN
+			SET @mTyleBHTNCN_old = @mTyleBHTNCN
+			SET @mTyleBHTNCT_old = @mTyleBHTNCT
+			SET @mTyleBHYTCN_old = @mTyleBHYTCN
+			SET @mTyleBHYTCT_old = @mTyleBHYTCT
+
+			-- lặp lần 1. Xử lý case nghỉ không lương có nhập Ngày nộp BHXH
+			IF @DateNum >= @PRSIDayDecrease AND (@KowType = 9 Or @KowType = 19)
+			begin
+				SET @Num_Add = 5
+			end
+			ELSE
+			BEGIN 
+				SET @Num_Add = 6
+				/*
+					2.1: Nhập ngày kê khai < 01/04/2021 -> kết quả trích nằm tại option LĐ giảm do ốm đau, nghỉ việc riêng với mức trích = 0
+					2.2: Nhập ngày kê khai >= 01/04/2021 -> kết quả trích nằm tại option LĐ giảm do ốm đau, nghỉ việc riêng với mức trích tại cột Nhân viên chịu 4.5% BHYT 
+						+ số tiền trích tương ứng
+				*/
+				IF @KowType = 27 OR EXISTS(SELECT TOP(1) 1 FROM dbo.HR_LSKOW WITH (NOLOCK) 
+					WHERE KowCode = @KowCode AND KowType = 4 AND IsInPayrollSI = 0 AND BasicSalRateSI = 0)
+				BEGIN
+					
+					IF @InsReportingDate IS NOT NULL AND @InsReportingDate >= 
+						Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayReturnHI as varchar), 102)
+					BEGIN
+						IF EXISTS(SELECT TOP(1) 1 FROM dbo.HR_SysSettingsForCustomers WITH (NOLOCK) WHERE KeyCode = 'AQua_KowType4_SharingSIRate' AND Value = 1)
+						BEGIN
+							SET @mTyleBHYTCN = @mTyleBHYTCN_old
+							set @mTyleBHYTCT = @mTyleBHYTCT_old
+                        END
+						ELSE 
+						begin
+							SET @mTyleBHYTCN = @mTyleBHYTCN_old + @mTyleBHYTCT_old
+							set @mTyleBHYTCT = 0
+						end
+                    END
+					else
+					begin
+						SET @mTyleBHYTCN = 0
+						set @mTyleBHYTCT = 0
+					end
+                END
+			END
+
+			IF @Num_Add = 6
+			BEGIN
+				if EXISTS(
+					SELECT R.EmployeeID, HIRateE, HIRateC, HIAmountE, HIAmountC, InsAmountE, InsAmountC 
+					FROM (
+						SELECT T.RecID, T.EmployeeID, T.NumAdd, T.HIRateE, T.HIRateC, T.HIAmountE, T.HIAmountC, T.InsAmountE, T.InsAmountC, T.FromDowCode, T.ToDowCode, 
+							ROW_NUMBER() OVER(PARTITION BY T.EmployeeID ORDER BY T.AdjDowCode desc) as RowID
+						FROM HR_SocialInsAdjust AS T WITH (NOLOCK)
+							INNER JOIN (
+								SELECT EmployeeID FROM #HR_SocialInsAdjust WHERE NumAdd = 6 AND EmployeeID = @EmployeeID
+							) AS T1 ON T.EmployeeID = T1.EmployeeID
+						WHERE T.AdjDowCode < @AdjDowCode AND T.EmployeeID = @EmployeeID --AND (T.FromDowCode <> '' AND T.ToDowCode <> '')
+					) AS R WHERE (R.RowID = 1 AND (R.NumAdd = 6)) OR (R.RowID = 2 AND (R.NumAdd = 6))
+				)
+					CONTINUE;
+            end
+
+			if CONVERT(VARCHAR(10), GETDATE(), 111) >= @AdjDowCode + '/01' AND (@KowType NOT IN (9, 19))
+			BEGIN
+
+				SET @PreDowCode = CONVERT(VARCHAR(7), DATEADD(MONTH, -1, CAST(@AdjDowCode + '/01' AS DATETIME)), 111)
+				IF NOT EXISTS(SELECT TOP(1) 1 FROM HR_SocialInsAdjust WHERE EmployeeID = @EmployeeID AND AdjDowCode = @PreDowCode AND IsReduceSiUi = 1)
+				BEGIN
+				
+					SET @mTyleBHXH = 0
+					SET @mTyleBHXHCN = 0
+					SET @mTyleBHXHCT = 0
+					SET @mTyleBHTN = 0
+					SET @mTyleBHTNCN = 0
+					SET @mTyleBHTNCT = 0
+
+					-- không dong bhyt
+					IF @KowType IN (7,10,11,12,13,18,20,21,22,23)
+					BEGIN
+						IF @InsReportingDate IS NOT NULL AND @InsReportingDate >= 
+							Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayReturnHI as varchar), 102)
+						BEGIN
+							SET @mTyleBHYT = @mTyleBHYT_old
+							SET @mTyleBHYTCN = @mTyleBHYTCN_old
+							SET @mTyleBHYTCT = @mTyleBHYTCT_old
+						END
+						ELSE
+						begin
+							SET @mTyleBHYT = 0
+							SET @mTyleBHYTCN = 0
+							SET @mTyleBHYTCT = 0
+						end
+                    end
+
+					SET @IsReduceSiUi = 1
+
+					----Phat sinh bao hiem cho nhan vien  
+					-- 2022.07.28
+					--SET @Num_Add = 9				
+					--INSERT INTO #HR_SocialIns(EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+					--							  TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+					--							  TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+					--							  HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns)
+					--VALUES(@EmployeeID, @AdjDowCode, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+					--Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @AmountF, Round(@mBHXHMax,@decp), Round(@mBHYTMax,@decp), Round(@mBHTNMax,@decp), Round(@Real_Salary + @Amount,@decp), @TotalCoeffAllo, 
+					--Round(@SalaryInsO,@decp), Round(@SalaryInsO_YT,@decp), Round(@SalaryInsO_TN,@decp), @mTyleBHXHCN, @mTyleBHXHCT, @mTyleBHYTCN, @mTyleBHYTCT, @mTyleBHTNCN, @mTyleBHTNCT, 
+					--Round(@mTyleBHXHCN * @SalaryInsO / 100,@decp), Round(@mTyleBHXHCT * @SalaryInsO / 100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT / 100,@decp), 
+					--Round(@mTyleBHYTCT * @SalaryInsO_YT / 100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN / 100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN / 100,@decp),
+					--Round((@mTyleBHXHCN*@SalaryInsO/100) + (@mTyleBHYTCN*@SalaryInsO_YT/100) + (@mTyleBHTNCN*@SalaryInsO_TN/100),@decp), 
+					--Round((@mTyleBHXHCT*@SalaryInsO/100) + (@mTyleBHYTCT*@SalaryInsO_YT/100) + (@mTyleBHTNCT*@SalaryInsO_TN/100),@decp),
+					--Round(case when @mTyleBHXHCN + @mTyleBHXHCT > 0 then @PRTUnionRateCo else 0 end * @SalaryInsO/100,@decp), @Num_Add, @note, @SalaryInsO)
+
+					-- dong bhxh, bhtn
+					IF @KowType NOT IN (7,10,11,12,13,18,20,21,22,23)
+					begin
+						SET @mTyleBHXH = @mTyleBHXH_old
+						SET @mTyleBHXHCN = @mTyleBHXHCN_old
+						SET @mTyleBHXHCT = @mTyleBHXHCT_old
+						SET @mTyleBHTN = @mTyleBHTN_old
+						SET @mTyleBHTNCN = @mTyleBHTNCN_old
+						SET @mTyleBHTNCT = @mTyleBHTNCT_old
+					END
+                    
+					-- 2021.04.13. linfox
+					--SET @mTyleBHYT = 0
+					--SET @mTyleBHYTCN = 0
+					--SET @mTyleBHYTCT = 0
+				END 
+            END
+            
+			SET @PreDowCode = CONVERT(VARCHAR(7), DATEADD(MONTH, -1, CAST(@AdjDowCode + '/01' AS DATETIME)), 111)
+			IF EXISTS(SELECT TOP(1) 1 FROM HR_SocialInsAdjust WHERE EmployeeID = @EmployeeID AND AdjDowCode = @PreDowCode AND IsReduceSiUi = 1)
+			BEGIN
+				-- Nếu thời gian nghỉ liên tục và giảm từ 2 tháng trở lên thì theo nguyên tắc trên chỉ đóng BHYT cho tháng đầu tiên, qua tháng thứ 2 trở đi sẽ giảm cả 3 loại BH: BHXH, BHTN, BHYT
+				SET @IsReduceSiUi = 1
+            END
+            
+			-- lặp lần 1. Xử lý case nghỉ không lương có nhập Ngày nộp BHXH
+			IF @DateNum >= @PRSIDayDecrease AND (@KowType = 9 Or @KowType = 19)
+			begin
+				SET @Num_Add = 5
+				set @mTyleBHXHCN = 0
+				set @mTyleBHXHCT = 0
+				set @mTyleBHTNCN = 0
+				set @mTyleBHTNCT = 0
+				SET @mTyleBHYTCN = 0
+				SET @mTyleBHYTCT = 0
+			end
+			ELSE
+			BEGIN 
+				SET @Num_Add = 6
+
+				INSERT INTO #HCSSI_SocialInsAdjust_v2(EmployeeID, SIRateE, HIRateE, UIRateE, SIRateC, HIRateC, UIRateC, 
+					SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC)
+				VALUES(@EmployeeID, @mTyleBHXHCN, @mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCT, @mTyleBHYTCT, @mTyleBHTNCT,
+					ROUND((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+					Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp))
+
+				set @mTyleBHXHCN = 0
+				set @mTyleBHXHCT = 0
+				set @mTyleBHTNCN = 0
+				set @mTyleBHTNCT = 0
+
+				/*
+					2.1: Nhập ngày kê khai < 01/04/2021 -> kết quả trích nằm tại option LĐ giảm do ốm đau, nghỉ việc riêng với mức trích = 0
+					2.2: Nhập ngày kê khai >= 01/04/2021 -> kết quả trích nằm tại option LĐ giảm do ốm đau, nghỉ việc riêng với mức trích tại cột Nhân viên chịu 4.5% BHYT 
+						+ số tiền trích tương ứng
+				*/
+				IF @KowType = 27 OR EXISTS(SELECT TOP(1) 1 FROM dbo.HR_LSKOW WITH (NOLOCK) 
+					WHERE KowCode = @KowCode AND KowType = 4 AND IsInPayrollSI = 0 AND BasicSalRateSI = 0)
+				BEGIN
+					
+					IF @InsReportingDate IS NOT NULL AND @InsReportingDate >= 
+						Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayReturnHI as varchar), 102)
+					BEGIN
+						IF EXISTS(SELECT TOP(1) 1 FROM dbo.HR_SysSettingsForCustomers WITH (NOLOCK) WHERE KeyCode = 'AQua_KowType4_SharingSIRate' AND Value = 1)
+						BEGIN
+							SET @mTyleBHYTCN = @mTyleBHYTCN_old
+							set @mTyleBHYTCT = @mTyleBHYTCT_old
+                        END
+						ELSE 
+						begin
+							SET @mTyleBHYTCN = @mTyleBHYTCN_old + @mTyleBHYTCT_old
+							set @mTyleBHYTCT = 0
+						end
+                    END
+					else
+					begin
+						SET @mTyleBHYTCN = 0
+						set @mTyleBHYTCT = 0
+					end
+                END
+			END
+		
+			if @Num_Add = 6
+			begin
+				/*
+					KowType. 7: CO, 4: KL
+					CO >= 14 --> báo CO
+					ML >= 14 --> báo ML
+					Neu tong ngay nghi > 14 bao KL
+				*/
+				if @DateNum >= @PRSITotalDayNotPay and @KowType = 7
+				BEGIN
+					DECLARE @tmpDateNum FLOAT
+                    SET @tmpDateNum = 0
+					SET @tmpDateNum = dbo.HR_fnDemCongOM(@EmployeeID, @AdjDowCode, @FDate, @TDate, @Eff_DateNotSi, @PRSITotalDayNotPay)
+					
+					IF @tmpDateNum >= @PRSITotalDayNotPay
+					begin
+						SET @KowType = 7
+					end
+					ELSE
+					begin
+						SET @KowType = 4
+
+						IF @InsReportingDate IS NOT NULL AND @InsReportingDate >= 
+							Convert(datetime, @AdjDowCode + '/' + cast(@PRSIDayReturnHI as varchar), 102)
+						BEGIN
+							IF EXISTS(SELECT TOP(1) 1 FROM dbo.HR_SysSettingsForCustomers WITH (NOLOCK) WHERE KeyCode = 'AQua_KowType4_SharingSIRate' AND Value = 1)
+							BEGIN
+								SET @mTyleBHYTCN = @mTyleBHYTCN_old
+								set @mTyleBHYTCT = @mTyleBHYTCT_old
+							END
+							ELSE 
+							begin
+								SET @mTyleBHYTCN = @mTyleBHYTCN_old + @mTyleBHYTCT_old
+								set @mTyleBHYTCT = 0
+							end
+						END
+						else
+						begin
+							SET @mTyleBHYTCN = 0
+							set @mTyleBHYTCT = 0
+						end
+					end
+				END
+			END
+           
+
+			--Phat sinh bao hiem cho nhan vien  
+			-- 2022.07.28
+			-- SET @Num_Add = 9		
+		
+			INSERT INTO #HR_SocialIns(EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+											TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+											TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+											HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns)
+			VALUES(@EmployeeID, @AdjDowCode, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+			Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @AmountF, Round(@mBHXHMax,@decp), Round(@mBHYTMax,@decp), Round(@mBHTNMax,@decp), Round(@Real_Salary + @Amount,@decp), @TotalCoeffAllo, 
+			Round(@SalaryInsO,@decp), Round(@SalaryInsO_YT,@decp), Round(@SalaryInsO_TN,@decp), @mTyleBHXHCN, @mTyleBHXHCT, @mTyleBHYTCN, @mTyleBHYTCT, @mTyleBHTNCN, @mTyleBHTNCT, 
+			Round(@mTyleBHXHCN * @SalaryInsO / 100,@decp), Round(@mTyleBHXHCT * @SalaryInsO / 100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT / 100,@decp), 
+			Round(@mTyleBHYTCT * @SalaryInsO_YT / 100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN / 100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN / 100,@decp),
+			Round((@mTyleBHXHCN*@SalaryInsO/100) + (@mTyleBHYTCN*@SalaryInsO_YT/100) + (@mTyleBHTNCN*@SalaryInsO_TN/100),@decp), 
+			Round((@mTyleBHXHCT*@SalaryInsO/100) + (@mTyleBHYTCT*@SalaryInsO_YT/100) + (@mTyleBHTNCT*@SalaryInsO_TN/100),@decp),
+			Round(case when @mTyleBHXHCN + @mTyleBHXHCT > 0 then @PRTUnionRateCo else 0 end * @SalaryInsO/100,@decp), 9, @note, @SalaryInsO)
+
+			-- 30 fields
+			-- Phat sinh dong moi voi muc cu (II)
+			
+			INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+				SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC,
+				BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+				SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+				CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO, 
+				SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+				MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi, EffDateAdjSal,
+				RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate)  
+			VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp),
+				Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp),
+				Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+				@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				@mTyleBHXHCN, @mTyleBHYTCN, @mTyleBHTNCN, Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+				@AdjDowCode, '', 0, @mTyleBHXH, @mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi, @Dayoff_EndDate,
+				@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate) 
+
+			SELECT @MaxEndDate = MAX(ToTime) FROM HR_EmpHICard WITH (NOLOCK) WHERE (EmployeeID = @EmployeeID and IsCopy = 0) GROUP BY EmployeeID
+		
+			IF @MaxEndDate IS NOT NULL AND DATEDIFF(day, @Eff_DayOffSi, @MaxEndDate) > 0
+			BEGIN
+				-- Phat sinh dong moi voi muc moi (IV)
+				IF @Num_Add = 5
+					SET @Num_Add = 13
+				ELSE
+					SET @Num_Add = 14
+
+				if @Num_Add = 13 and @PRIsSI1RowForDescreaseML = 1 -- Nghỉ Thai sản chỉ phát sinh 1 dòng giảm
+				begin
+		
+					continue;
+				end
+
+				SET @mTyleBHTNCN = 0
+				SET @mTyleBHTNCT = 0
+				SET @mTyleBHXHCN = 0
+				SET @mTyleBHXHCT = 0
+				
+				INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+					SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+					CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+					SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+					MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi, EffDateAdjSal,
+					RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate) 
+				VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+					Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+					@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+					Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+					Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+					@AdjDowCode, case when @Num_Add = 13 then CONVERT(varchar(7), @MaxEndDate, 111) else '' end, 0, @mTyleBHYT, @mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi, @Dayoff_EndDate, 
+					@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate)
+			END
+			--Xet nhan vien ke tiep
+			Continue
+		END
+
+CONTINUE_DEDUCTION:
+		--Phat sinh bao hiem cho nhan vien  
+
+		SET @Num_Add = 9				
+		INSERT INTO #HR_SocialIns(EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+									  TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+									  TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+									  HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns)
+		VALUES(@EmployeeID, @AdjDowCode, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+		Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @AmountF, Round(@mBHXHMax,@decp), Round(@mBHYTMax,@decp), Round(@mBHTNMax,@decp), Round(@Real_Salary + @Amount,@decp), @TotalCoeffAllo, 
+		Round(@SalaryInsO,@decp), Round(@SalaryInsO_YT,@decp), Round(@SalaryInsO_TN,@decp), @mTyleBHXHCN, @mTyleBHXHCT, @mTyleBHYTCN, @mTyleBHYTCT, @mTyleBHTNCN, @mTyleBHTNCT, 
+		Round(@mTyleBHXHCN * @SalaryInsO / 100,@decp), Round(@mTyleBHXHCT * @SalaryInsO / 100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT / 100,@decp), 
+		Round(@mTyleBHYTCT * @SalaryInsO_YT / 100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN / 100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN / 100,@decp),
+		Round((@mTyleBHXHCN*@SalaryInsO/100) + (@mTyleBHYTCN*@SalaryInsO_YT/100) + (@mTyleBHTNCN*@SalaryInsO_TN/100),@decp), 
+		Round((@mTyleBHXHCT*@SalaryInsO/100) + (@mTyleBHYTCT*@SalaryInsO_YT/100) + (@mTyleBHTNCT*@SalaryInsO_TN/100),@decp),
+		Round(case when @mTyleBHXHCN + @mTyleBHXHCT > 0 then @PRTUnionRateCo else 0 end * @SalaryInsO/100,@decp), @Num_Add, @note, @SalaryInsO)
+
+		-- tổng tỷ lệ bh
+		set @totCurrPercentPay = @mTyleBHTNCN + @mTyleBHTNCT + @mTyleBHXHCN + @mTyleBHXHCT + @mTyleBHYTCN + @mTyleBHYTCT
+		--hphoa print ' Phat sinh muc I or III'
+		SET @RealSalSI = @SalaryInsO
+		SET @RealSalHI = @SalaryInsO_YT
+		SET @RealSalUI = @SalaryInsO_TN
+
+		IF @OldRealSalSI IS NULL
+		BEGIN
+
+			-- 2022.01.10: Nếu thai sản đi làm lại, mà trước đó có tăng lương trong thời gian thai sản --> bị mất vết --> khôi phục lại status
+			-- 2022.06.15: Khi TS đi làm lại, có điều chỉnh lương.
+			IF @KowType <> -1 and EXISTS(
+				SELECT TOP (1) 1
+				FROM (
+					SELECT TOP(1) NumAdd, KowType FROM dbo.HR_SocialInsAdjust WITH (NOLOCK) 
+					WHERE EmployeeID = @EmployeeID AND AdjDowCode < @AdjDowCode AND NumAdd NOT IN (27,28) ORDER BY AdjDowCode DESC, KowType desc
+				) AS R WHERE R.NumAdd = 5 AND R.KowType IN (9,19)
+			)
+			BEGIN
+				SET @KowType = -1
+				SET @KowTypePreM = 9
+            END 
+
+			SET @Num_Add = 1
+			-- Phat sinh dong moi voi muc moi (I)
+			
+			INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+				SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+				MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi, EffDateAdjSal,
+				RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate)  
+			VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+				@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+				@AdjDowCode, '', 0, @mTyleBHXH, @mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi, @bs_EffectDate,
+				@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate)
+
+			-- Tự động tính truy thu BHXH
+			insert into #tmp_auto_adj(EmployeeID, mType) values(@EmployeeID, 1)
+		END		
+		ELSE IF @OldRealSalSI <> @RealSalSI OR @OldRealSalHI <> @RealSalHI OR @OldRealSalUI <> @RealSalUI
+		BEGIN
+			
+			-- 2021.09.30: Nếu hiệu lực là của payback thì không xư lý
+			IF CONVERT(VARCHAR(7), @bs_EffectDate, 111) < @AdjDowCode AND EXISTS(
+				SELECT TOP(1) 1
+				FROM (
+					SELECT SignedDate, ROW_NUMBER() OVER(ORDER BY SignedDate desc) as RowID 
+					FROM dbo.HR_EmpBasicSalary WITH (NOLOCK) 
+					WHERE EmployeeID = @EmployeeID AND EffectDate = @bs_EffectDate
+				) AS R WHERE R.RowID = 1 AND SignedDate IS NOT NULL AND CONVERT(VARCHAR(7), SignedDate, 111) = @AdjDowCode
+			)
+			begin
+				CONTINUE;
+			end
+			-- Xét xem mức lương này, tháng trước có áp dụng được không. Nếu không áp dụng được thì không phải là điều chỉnh
+			-- Propzy sử dụng option, lương đóng bhxh căn cứ số công thực tế đi làm để xét định mức lương cũ hay mới.
+			IF @PRSITotalPaidDays > 0
+			BEGIN
+				SET @tmpDayNum = 0
+				DECLARE @tmpDowCode VARCHAR(7)
+				SET @tmpDowCode = CONVERT(VARCHAR(7), @bs_EffectDate, 111)
+
+				IF @PRSIAdjDowCodeType = 1
+				BEGIN
+					SELECT TOP(1) @tmpDatetime = ToDate FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @tmpDowCode
+				END
+				else
+					set @tmpDatetime = DATEADD(MONTH, -1, @Eff_DateNotSi)
+
+				-- Tổng số ngày công hưởng lương
+				IF @PRSITotalPaidDaysType = 1
+					SELECT TOP(1) @tmpPRSITotalPaidDays = (@PRSITotalPaidDays * StandardWD / 100) * @TSHoursPerWD FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+				ELSE IF @PRSITotalPaidDaysType = 0
+					SET @tmpPRSITotalPaidDays = @PRSITotalPaidDays
+				ELSE IF @PRSITotalPaidDaysType = 2
+					SELECT TOP(1) @tmpPRSITotalPaidDays = (StandardWD - @PRSITotalPaidDays) * @TSHoursPerWD FROM dbo.HR_ConfigTSEmpStandardWD WITH (NOLOCK) WHERE EmployeeID = @EmployeeID AND DowCode = @AdjDowCode
+				ELSE
+					SET @tmpPRSITotalPaidDays = 0
+
+				-- Đối với nhân viên nghỉ việc thì đếm: công thực tế từ ngày đầu kỳ lương đến ngày báo cáo (ngày hiện tại) + công mặc định từ ngày hiện tại đến ngày nghỉ việc
+				IF (@EndDate Between dateadd(day, 1, @Eff_DayOffSi) AND @TDate) --OR (@EndDate > @TDate)
+				BEGIN 
+					SET @tmpDatetime = CONVERT(VARCHAR(10), @GenDate, 111)
+					SET @tmpDayNum = @tmpDayNum + @TSHoursPerWD * dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @tmpDatetime + 1, @EndDate - 1, 3)
+				END
+				ELSE
+				BEGIN
+					/*
+						Nhân sự đang làm việc : từ ngày bắt đầu kỳ công đến ngày cuối cùng của tkỳ công/ngày làm việc cuối cùng
+						(công tực tế tính đến ngày trích + công dự kiến theo ngày làm việc)> NCC -14 công nghỉ
+					*/
+					SET @fEndDay = @tmpDatetime
+					SET @tmpDatetime = CONVERT(VARCHAR(10), @GenDate, 111)
+					SET @tmpDayNum = @tmpDayNum + @TSHoursPerWD * dbo.HR_fnFGetht_DemCongMacDinh(@EmployeeID, @AdjDowCode, @tmpDatetime + 1, @fEndDay, 3)
+				END 
+
+				;WITH tblA AS (
+					SELECT LTRIM(RTRIM(CAST(data AS VARCHAR(20)))) AS KowCode FROM dbo.HR_FNSplitString_varchar(@PRSIPaidDayKowCodes, ',')
+				)
+				SELECT @tmpDayNum = @tmpDayNum + ISNULL(SUM(T.DayNum), 0)
+				FROM dbo.HR_TSKowDs AS T WITH (NOLOCK) INNER JOIN tblA AS T1 ON T.KowCode = T1.KowCode
+				WHERE T.EmployeeID = @EmployeeID AND T.WorkDate BETWEEN @bs_EffectDate AND @tmpDatetime
+
+
+				IF @tmpDayNum <= @tmpPRSITotalPaidDays
+				BEGIN
+					CONTINUE;
+				END		
+			END 
+
+
+			IF @OldRealSalSI > @RealSalSI OR @OldRealSalHI > @RealSalHI OR @OldRealSalUI > @RealSalUI
+				SET @Num_Add = 8
+			ELSE
+				SET @Num_Add = 7	
+			
+			-- Phat sinh dong moi voi muc moi va cu (III)
+			SET @DowCode_SI = left(Convert(varchar, dateadd(month, -1, Convert(datetime, @AdjDowCode + '/01', 102)), 111),7)
+			
+			INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns,
+				SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+				BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+				SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+				CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+				SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, 
+				HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi, EffDateAdjSal,
+				RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate) 
+			SELECT @EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+				@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+				@AdjDowCode, '', datediff(month, @AdjDowCode + '/01', @TDate) + 1, @mTyleBHXH,
+				Round(BasicSalContract,@decp), CoeffSalContract, Round(RealSalContract,@decp), Round(JobAllo,@decp), Round(SeniorAllo,@decp), Round(SeniorOverAllo,@decp), Round(OtherAllo,@decp),
+				Round(TotalAllo,@decp), CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffIns, Round(TotalSalIns,@decp), Round(MaxSalSI,@decp),  Round(RealSalSI,@decp),
+				SIRateE + SIRateC as SIRateEO, HIRateE + HIRateC as HIRateEO, UIRateE + UIRateC as UNPrivateO, 
+				Round(SIAmountE,@decp) as SIAmountEO, Round(SIAmountC,@decp) as SIAmountCO, 
+				Round(HIAmountE,@decp) as HIAmountEO, Round(HIAmountC,@decp) as HIAmountCO,
+				Round(UIAmountE,@decp) as UIAmountEO, Round(UIAmountC,@decp) as UIAmountCO,
+				@mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi, @bs_EffectDate,
+				@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate
+			FROM HR_SocialIns Where EmployeeID = @EmployeeID and DowCode = @DowCode_SI
+
+			IF DAY(@bs_EffectDate) > DAY(@Eff_DateNotSi)
+				SET @bs_EffectDate = DATEADD(MONTH, 1, @bs_EffectDate)
+
+			-- Tự động tính truy thu BHXH
+			IF CONVERT(VARCHAR(7), @bs_EffectDate, 111) <> @AdjDowCode
+				INSERT into #tmp_auto_adj(EmployeeID, mType) values(@EmployeeID, 3)
+		END
+		ELSE IF abs(@totPrevPercentPay - @totCurrPercentPay) = @mUN -- Tăng hay giảm tỷ lệ thất nghiệp
+		begin
+
+			if @totCurrPercentPay > @totPrevPercentPay
+				set @Num_Add = 15 -- Tăng bảo hiểm thất nghiệp
+			else
+				set @Num_Add = 20 -- Giảm bảo hiểm thất nghiệp
+			-- Phat sinh dong moi voi muc moi (I)
+			INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+				SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, 
+				MonthNum, TotalInsRate, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi,
+				RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate)  
+			VALUES(@EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+				@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+				@AdjDowCode, '', 0, @mTyleBHTN, @mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, @KowType, @KowTypePreM, @IsReduceSiUi,
+				@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate)
+		end
+
+
+THAISAN_COTANGLUONG:
+
+		-- 2020.08.12: Xử lý trường hợp nhân viên đang nghỉ thai sản, có quyết định tăng lương
+		IF @Flag_THAISAN_COTANGLUONG = 1
+		BEGIN
+		
+			SET @IsReduceSiUi = 0
+
+			SELECT TOP(1) @mSSL = mSSL, @Eff_DateNotSi = Eff_DateNotSi, @Eff_DayOffSi = Eff_DayOffSi, @PRSIDayDecrease = PRSIDayDecrease,
+				@PRSITotalDayNotPay = PRSITotalDayNotPay, @PRSIDayReturnHI = PRSIDayReturnHI, @PRIsSI1RowForDescreaseML = PRIsSI1RowForDescreaseML,
+				@PRTUnionRateCo = PRTUnionRateCo, @mUN = UI_RateEmp + UI_RateCo, @PRCurrencyForPay = PRCurrencyForPay
+			FROM #Employee_Config WHERE EmployeeID = @EmployeeID
+
+			if @CurrencyCode = @PRCurrencyForPay
+				set @decp = 0
+			else
+				set @decp = @mSSL
+
+			----Phat sinh bao hiem cho nhan vien  
+			--SET @Num_Add = 9				
+			--INSERT INTO #HR_SocialIns(EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+			--							  TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+			--							  TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+			--							  HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns)
+			--VALUES(@EmployeeID, @AdjDowCode, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+			--Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, @CoeffOtherAllo, @AmountF, Round(@mBHXHMax,@decp), Round(@mBHYTMax,@decp), Round(@mBHTNMax,@decp), Round(@Real_Salary + @Amount,@decp), @TotalCoeffAllo, 
+			--Round(@SalaryInsO,@decp), Round(@SalaryInsO_YT,@decp), Round(@SalaryInsO_TN,@decp), @mTyleBHXHCN, @mTyleBHXHCT, @mTyleBHYTCN, @mTyleBHYTCT, @mTyleBHTNCN, @mTyleBHTNCT, 
+			--Round(@mTyleBHXHCN * @SalaryInsO / 100,@decp), Round(@mTyleBHXHCT * @SalaryInsO / 100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT / 100,@decp), 
+			--Round(@mTyleBHYTCT * @SalaryInsO_YT / 100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN / 100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN / 100,@decp),
+			--Round((@mTyleBHXHCN*@SalaryInsO/100) + (@mTyleBHYTCN*@SalaryInsO_YT/100) + (@mTyleBHTNCN*@SalaryInsO_TN/100),@decp), 
+			--Round((@mTyleBHXHCT*@SalaryInsO/100) + (@mTyleBHYTCT*@SalaryInsO_YT/100) + (@mTyleBHTNCT*@SalaryInsO_TN/100),@decp),
+			--Round(case when @mTyleBHXHCN + @mTyleBHXHCT > 0 then @PRTUnionRateCo else 0 end * @SalaryInsO/100,@decp), @Num_Add, @note, @SalaryInsO)
+
+
+			IF @OldRealSalSI > @RealSalSI OR @OldRealSalHI > @RealSalHI OR @OldRealSalUI > @RealSalUI
+				SET @Num_Add = 28
+			ELSE
+				SET @Num_Add = 27
+												
+			-- Phat sinh dong moi voi muc moi va cu (III)			
+			INSERT INTO #HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+				SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+				CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns,
+				SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+				BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+				SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+				CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+				SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, 
+				HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi, EffDateAdjSal,
+				RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate)  
+			SELECT @EmployeeID, Round(@MinSalary,@decp), @CoeffSalary, Round(@Real_Salary,@decp), Round(@JobAllo,@decp), Round(@SeniorAllo,@decp), Round(@SeniorOverAllo,@decp), 
+				Round(@OtherAllo,@decp), Round(@Amount,@decp), @CoeffJobAllo, @CoeffSeniorAllo, @CoeffSeniorOverAllo, 
+				@CoeffOtherAllo, @TotalCoeffAllo, Round(@mAmountSI,@decp), Round(@mBHXHMax,@decp), Round(@SalaryInsO,@decp), 
+				Round((@mTyleBHXHCN) * @SalaryInsO/100,@decp), Round((@mTyleBHXHCT) * @SalaryInsO/100,@decp), Round(@mTyleBHYTCN * @SalaryInsO_YT/100,@decp),
+				Round(@mTyleBHYTCT * @SalaryInsO_YT/100,@decp), Round(@mTyleBHTNCN * @SalaryInsO_TN/100,@decp), Round(@mTyleBHTNCT * @SalaryInsO_TN/100,@decp), @note, @AdjDowCode, @Num_Add, @NumAdj,
+				@AdjDowCode, '', datediff(month, @AdjDowCode + '/01', @TDate) + 1, @mTyleBHXH,
+				Round(BasicSalContract,@decp), CoeffSalContract, Round(RealSalContract,@decp), Round(JobAllo,@decp), Round(SeniorAllo,@decp), Round(SeniorOverAllo,@decp), Round(OtherAllo,@decp),
+				Round(TotalAllo,@decp), CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffIns, Round(TotalSalIns,@decp), Round(MaxSalSI,@decp),  Round(RealSalSI,@decp),
+				SIRateE + SIRateC as SIRateEO, HIRateE + HIRateC as HIRateEO, UIRateE + UIRateC as UNPrivateO, 
+				Round(SIAmountE,@decp) as SIAmountEO, Round(SIAmountC,@decp) as SIAmountCO, 
+				Round(HIAmountE,@decp) as HIAmountEO, Round(HIAmountC,@decp) as HIAmountCO,
+				Round(UIAmountE,@decp) as UIAmountEO, Round(UIAmountC,@decp) as UIAmountCO,
+				@mTyleBHYTCN, @mTyleBHTNCN, @mTyleBHXHCN, @mTyleBHYTCT, @mTyleBHTNCT, @mTyleBHXHCT, 
+				@KowType, @KowTypePreM, @IsReduceSiUi, @bs_EffectDate,
+				@SalaryInsO, @SalaryInsO_YT, @SalaryInsO_TN, @KowCode, @InsReportingDate
+			FROM dbo.HR_SocialInsAdjust 
+			Where EmployeeID = @EmployeeID and AdjDowCode = @DowCode_SI
+
+			-- Tự động tính truy thu BHXH
+			insert into #tmp_auto_adj(EmployeeID, mType) values(@EmployeeID, 3)
+		END
+        
+	END
+
+	CLOSE employee_cursor_bhxh  
+	DEALLOCATE employee_cursor_bhxh
+	-- Xứ lý trường hợp báo giảm liên tục, tháng trước (hoặc liền kề trước) đã báo giảm
+	-- VD: nghỉ KL từ 12/2019, vẫn còn xuất hiện tên trong DS giảm KL tháng 2/2020
+
+	IF EXISTS(SELECT TOP(1) 1 FROM #HR_SocialInsAdjust WHERE NumAdd = 6)
+	BEGIN
+		SELECT ce.* INTO #HCSPR_SalCoeffEmp FROM (
+			SELECT T.EmployeeID, SUM(T.Coefficient) AS Coefficient
+			FROM dbo.HR_PRSalCoeffEmp AS T WITH (NOLOCK) INNER JOIN #Employee_Config AS T1 ON T.EmployeeID = T1.EmployeeID
+				INNER JOIN (SELECT CoeffCode FROM dbo.HR_LSSalCoeff WHERE SalCoeffType = 3) AS T2 ON T.CoeffCode = T2.CoeffCode
+			WHERE T.DowCode = @AdjDowCode
+			GROUP BY T.EmployeeID
+		) AS ce
+	
+		SELECT R.EmployeeID, R.AdjDowCode, HIRateE, HIRateC, HIAmountE, HIAmountC, InsAmountE, InsAmountC INTO #tmp
+		FROM (
+			SELECT T.RecID, T.AdjDowCode, T.EmployeeID, T.NumAdd, T.HIRateE, T.HIRateC, T.HIAmountE, T.HIAmountC, T.InsAmountE, T.InsAmountC, 
+				ROW_NUMBER() OVER(PARTITION BY T.EmployeeID ORDER BY T.AdjDowCode desc) as RowID
+			FROM HR_SocialInsAdjust AS T WITH (NOLOCK)
+				INNER JOIN (
+					SELECT EmployeeID FROM #HR_SocialInsAdjust WHERE NumAdd = 6
+				) AS T1 ON T.EmployeeID = T1.EmployeeID
+			WHERE T.AdjDowCode < @AdjDowCode
+		) AS R WHERE R.RowID = 1 AND R.NumAdd = 6
+
+		DELETE T
+		FROM #tmp AS T INNER JOIN dbo.HR_SocialIns AS T1 WITH (NOLOCK) ON T.EmployeeID = T1.EmployeeID
+		AND T1.DowCode < @AdjDowCode AND T1.DowCode > T.AdjDowCode
+
+		DELETE T
+		FROM #HR_SocialInsAdjust AS T INNER JOIN #tmp AS T1 ON T.EmployeeID = T1.EmployeeID
+			LEFT JOIN #HCSPR_SalCoeffEmp AS T2 ON T.EmployeeID = T2.EmployeeID
+		WHERE (T2.EmployeeID IS NULL) OR (T2.EmployeeID IS NOT NULL AND T.NumAdd = 14)
+
+		UPDATE T SET T.HIRateE = T2.HIRateE, T.HIRateC = T2.HIRateC, T.HIAmountE = T2.HIAmountE, T.HIAmountC = T2.HIAmountC
+		FROM #HR_SocialInsAdjust AS T INNER JOIN #HCSPR_SalCoeffEmp AS T1 ON T.EmployeeID = T1.EmployeeID
+			INNER JOIN #HCSSI_SocialInsAdjust_v2 AS T2 ON T.EmployeeID = T2.EmployeeID
+
+		DELETE T
+		FROM #HR_SocialInsAdjust AS T INNER JOIN #tmp AS T1 ON T.EmployeeID = T1.EmployeeID
+		where T.NumAdd = 1
+
+		DELETE T
+		FROM #HR_SocialIns AS T INNER JOIN #tmp AS T1 ON T.EmployeeID = T1.EmployeeID
+			LEFT JOIN #HCSPR_SalCoeffEmp AS T2 ON T.EmployeeID = T2.EmployeeID
+		WHERE T2.EmployeeID IS NULL 
+    end
+
+	IF EXISTS(SELECT TOP(1) 1 FROM #HR_SocialInsAdjust WHERE NumAdd = 14)
+	BEGIN
+		DELETE T
+		FROM #HR_SocialInsAdjust AS T 
+		WHERE T.NumAdd = 1 AND EmployeeID IN (
+			SELECT EmployeeID
+			FROM #HR_SocialInsAdjust
+			WHERE NumAdd = 14
+		)
+	end
+
+	IF EXISTS(SELECT TOP(1) 1 FROM #HR_SocialInsAdjust WHERE NumAdd in (2,3,4))
+	BEGIN
+		DELETE T
+		FROM #HR_SocialInsAdjust AS T 
+		where NumAdd = 14
+	end 
+	
+
+	-- insert danh sach nv tham gia trich nop BHXH vao bang chinh
+	insert into HR_SocialInsAdjust(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+		SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+		CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+		SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC,
+		Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+		BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+		SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+		CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+		SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi,
+		EffDateAdjSal, RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate, IsTmp, GenDate) 
+	select A.EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+		SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+		CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns,  
+		SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, A.SIAmountE + A.HIAmountE + A.UIAmountE, A.SIAmountC + A.HIAmountC + A.UIAmountC, 
+		Note, AdjDowCode, NumAdd, NumAdj, A.FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+		BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+		SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+		CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+		SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, 
+		HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC,
+		KowType, KowTypePreM, IsReduceSiUi,
+		A.EffDateAdjSal, A.RealSalSI, A.RealSalHI, A.RealSalUI, A.KowCode, A.InsReportingDate, @IsTmp, @GenDate
+	from #HR_SocialInsAdjust as A left join #employee_filters as E on A.EmployeeID = E.EmployeeID
+	
+	---- insert danh sach nv tham gia trich nop BHXH vao bang chinh
+	--	select A.EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+	--		TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+	--		TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+	--		HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns, @IsTmp, @GenDate
+	--from #HR_SocialIns as A left join #employee_filters as E on A.EmployeeID = E.EmployeeID	
+
+	--select * from #HR_SocialIns
+	insert into HR_SocialIns(EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+			TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+			TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+			HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns, IsTmp, GenDate)
+	select A.EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+			TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+			TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+			HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns, @IsTmp, @GenDate
+	from #HR_SocialIns as A left join #employee_filters as E on A.EmployeeID = E.EmployeeID	
+	
+	
+
+REMOVE_WHEN_EXEC_PAYBACK:
+	if exists(select top(1) 1 from HR_ConfigPRSubAutoBackCollectSI WITH (NOLOCK))
+	begin
+		
+		-- Các option tương ứng nghỉ việc báo trễ.
+		select ce.* into #tmp_numadd from (
+			select cast(data as int) as iNumAdd from dbo.HR_FNSplitString('2,3,4,11,12', ',')
+		) as ce
+		
+		if exists(select top(1) 1 from HR_ConfigPRSubAutoBackCollectSI WITH (NOLOCK) where AddAdjType = 2)
+		begin
+			-- Tìm những nhân viên nghỉ việc báo trễ.
+			insert into #tmp_auto_adj(EmployeeID, mType)
+			select A.EmployeeID, 2
+			from #employee_filters as A left join (
+				select E.EmployeeID 
+				from #employee_filters as E inner join HR_SocialInsAdjust as A WITH (NOLOCK) on E.EmployeeID = A.EmployeeID
+					inner join #tmp_numadd as N on A.NumAdd = N.iNumAdd
+				where E_EndDate is not NULL
+				group by E.EmployeeID
+			) as R on A.EmployeeID = R.EmployeeID
+			where A.E_EndDate is not null and R.EmployeeID is null and A.E_EndDate <= @Eff_DateNotSi
+			group by A.EmployeeID
+		end
+
+		if exists(select top(1) 1 from HR_ConfigPRSubAutoBackCollectSI WITH (NOLOCK) where AddAdjType = 22)
+		begin
+			-- Nhân viên nghỉ thai sản.
+			select EmployeeID, Convert(varchar(7), BeginDate, 111) as YYYYMM, BeginDate into #TMP_ThaiSan from (
+				select E.EmployeeID, D.BeginDate, ROW_NUMBER() OVER(PARTITION BY E.EmployeeID ORDER BY D.BeginDate desc) as Row_ID
+				from #employee_filters as E inner join HR_EmpDayOff as D with (nolock) on E.EmployeeID = D.EmployeeID
+					inner join dbo.HR_LSKOW as K with (nolock) on D.KowCode = K.KowCode AND (K.BUCodes IS NULL OR (K.BUCodes IS NOT NULL AND K.BUCodes LIKE '%,' + E.BUCode + ',%'))
+				where K.KowType in (9,19) and @Eff_DateNotSi between D.BeginDate and isnull(D.REndDate, D.EndDate) and D.IsCopy = 0	
+			) as ce where Row_ID = 1
+
+			insert into #tmp_auto_adj(EmployeeID, mType)
+			select A.EmployeeID, 22
+			from #TMP_ThaiSan as A left join (
+				select E.EmployeeID 
+				from #TMP_ThaiSan as E 
+					inner join HR_SocialInsAdjust as A WITH (NOLOCK) on E.EmployeeID = A.EmployeeID and A.AdjDowCode >= E.YYYYMM
+					inner join #tmp_numadd as N on A.NumAdd = N.iNumAdd
+				where A.KowType in (9, 19)
+				group by E.EmployeeID
+			) as B on A.EmployeeID = B.EmployeeID
+			where A.BeginDate < dateadd(month, -1, @Eff_DateNotSi) and B.EmployeeID is null
+			group by A.EmployeeID
+		end
+
+		if exists(select top(1) 1 from HR_ConfigPRSubAutoBackCollectSI WITH (NOLOCK) where AddAdjType = 5)
+		begin
+			-- Trả thẻ BHYT sau khi nghỉ việc
+			insert into #tmp_auto_adj(EmployeeID, mType)
+			select A.EmployeeID, 5
+			from #employee_filters as A left join (
+				select E.EmployeeID 
+				from #employee_filters as E inner join HR_SocialInsAdjust as A WITH (NOLOCK) on E.EmployeeID = A.EmployeeID
+				where E.E_ReturnKCBDate_YYYYMM = @AdjDowCode and E.E_Active = 1 and A.NumAdd in (4,12)
+				group by E.EmployeeID
+			) as R on A.EmployeeID = R.EmployeeID
+			where A.E_ReturnKCBDate_YYYYMM = @AdjDowCode and A.E_Active = 1 and R.EmployeeID is not null 
+			group by A.EmployeeID
+		end
+
+	end
+	
+	-- Xử lý bổ sung
+	IF EXISTS(SELECT TOP(1) 1 FROM HR_ConfigPRSubAutoBackCollectSI WITH (NOLOCK) WHERE AddAdjType IN (7, 8))
+	BEGIN
+		/* 
+			Ví dụ: Tháng 7 (chu kỳ lương 1-31)
+			Ngày 15.07 --> nhân viên trích nộp bhxh bình thường
+			Ngày 31.07 --> Tính lương, phát hiện không đủ công (không vượt quá 50%) --> khong tính bhxh khi tính lương
+			Ngày 15.08 --> Báo giảm trễ bổ sung		
+		
+		*/
+		SELECT ce.EmployeeID INTO #HCSPR_PayIncome FROM (
+			SELECT T.EmployeeID, SUM(HIAmountE + SIAmountE + UIAmountE) AS AmountE
+			FROM dbo.HR_PayIncome AS T WITH (NOLOCK) INNER JOIN #tmpEmps AS T1 ON T.EmployeeID = T1.EmployeeID AND T.DowCode = @PrevAdjDowCode
+			GROUP BY T.EmployeeID
+		) AS ce WHERE ce.AmountE = 0
+
+		-- Điều chỉnh giảm trễ (do cuối tháng xét công >= 50%)
+		INSERT INTO #tmp_auto_adj(EmployeeID, mType)
+		SELECT R.EmployeeID, 4
+		FROM #HCSPR_PayIncome AS R LEFT JOIN (
+			select T.EmployeeID
+			FROM dbo.HR_SocialInsAdjust AS T WITH (NOLOCK) INNER JOIN #HCSPR_PayIncome AS T1 ON T.EmployeeID = T1.EmployeeID
+			WHERE T.AdjDowCode = @PrevAdjDowCode AND T.NumAdd IN (6, 14)
+			GROUP BY T.EmployeeID
+		) AS R1 ON R.EmployeeID = R1.EmployeeID
+		WHERE R1.EmployeeID IS NULL 
+	end
+
+	-- Tự động tính truy thu BHXH
+	/*
+		1. Bổ sung cho các tháng chưa nộp
+		2. Nghỉ việc báo trễ
+		3. Điều chỉnh mức đóng BHXH
+		4. Trả thẻ BHYT sau khi nghỉ việc không trả thẻ
+		5. Trường hợp Thai sản: chỉ phát sinh 1 dòng giảm
+	*/
+	declare @mType int
+	DECLARE employee_cursor_bhxh CURSOR FOR
+		select EmployeeID, mType from #tmp_auto_adj
+	OPEN employee_cursor_bhxh
+	WHILE 1 = 1  
+	BEGIN
+		FETCH NEXT FROM employee_cursor_bhxh INTO @EmployeeID, @mType
+		IF @@FETCH_STATUS != 0
+			BREAK;
+		
+		-- Tự động tính truy thu BHXH
+		exec HR_spAdjustSIAuto @UserID, @mType, @AdjDowCode, @NumAdj, @note, @EmployeeID
+	END
+	CLOSE employee_cursor_bhxh
+	DEALLOCATE employee_cursor_bhxh
+	
+	-- Xử lý Tự động tính truy thu BHXH cho trường hợp: Ốm đau, nghỉ việc riêng báo trễ
+	EXEC HR_spSaveTExceptsAfterDeduction4ExceptionCase @AdjDowCode, @FDate, @TDate, @strEmps, 6
+
+	/*
+		2022.05.19: Tạo data backup để ghi nhận data trích tạm
+	*/
+	IF @IsTmp <> 0
+	BEGIN
+		-- Lay ve danh sach nhan vien chuan bi thuc hien trich nop BHXH va xoa di du lieu cu thoa dk where 
+		DELETE FROM SI FROM dbo.HR_SocialIns_Layer as SI INNER JOIN #employee_filters F on SI.EmployeeID = F.EmployeeID
+		where SI.DowCode = @AdjDowCode
+
+		-- Lay ve danh sach nhan vien chuan bi thuc hien trich nop BHXH va xoa di du lieu cu thoa dk where 
+		DELETE FROM SIA from dbo.HR_SocialInsAdjust_Layer as SIA with (nolock) INNER JOIN #employee_filters F on SIA.EmployeeID = F.EmployeeID 
+		WHERE AdjDowCode = @AdjDowCode AND NumAdj = @NumAdj
+
+		-- insert danh sach nv tham gia trich nop BHXH vao bang chinh
+		insert into HR_SocialInsAdjust_Layer(EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+			SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+			CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns, 
+			SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC,
+			Note, AdjDowCode, NumAdd, NumAdj, FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+			BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+			SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+			CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+			SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi,
+			EffDateAdjSal, RealSalSI, RealSalHI, RealSalUI, KowCode, InsReportingDate, IsTmp, GenDate) 
+		select A.EmployeeID, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, 
+			SeniorOverAllo, OtherAllo, TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, 
+			CoeffOtherAllo, TotalCoeffAllo, TotalSalIns, MaxSalSI, SalaryIns,  
+			SIAmountE, SIAmountC, HIAmountE, HIAmountC, UIAmountE, UIAmountC, A.SIAmountE + A.HIAmountE + A.UIAmountE, A.SIAmountC + A.HIAmountC + A.UIAmountC, 
+			Note, AdjDowCode, NumAdd, NumAdj, A.FromDowCode, ToDowCode, MonthNum, TotalInsRate,
+			BasicSalContractO, CoeffSalContractO, RealSalContractO, JobAlloO, SeniorAlloO, 
+			SeniorOverAlloO, OtherAlloO, TotalAlloO, CoeffJobAlloO, CoeffSeniorAlloO, CoeffSeniorOverAlloO, 
+			CoeffOtherAlloO, TotalCoeffAlloO, TotalSalInsO, MaxSalSIO, SalaryInsO, SIRateEO, HIRateEO, UIRateEO,  
+			SIAmountEO, SIAmountCO, HIAmountEO, HIAmountCO, UIAmountEO, UIAmountCO, 
+			HIRateE, UIRateE, SIRateE, HIRateC, UIRateC, SIRateC, KowType, KowTypePreM, IsReduceSiUi,
+			A.EffDateAdjSal, A.RealSalSI, A.RealSalHI, A.RealSalUI, A.KowCode, A.InsReportingDate, @IsTmp, @GenDate
+		from HR_SocialInsAdjust as A WITH (NOLOCK) inner join #employee_filters as E on A.EmployeeID = E.EmployeeID
+		WHERE A.AdjDowCode = @AdjDowCode --AND A.IsTmp = 0
+	
+		-- insert danh sach nv tham gia trich nop BHXH vao bang chinh
+		insert into HR_SocialIns_Layer(EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+			TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+			TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+			HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns, IsTmp, GenDate)
+		select A.EmployeeID, DowCode, BasicSalContract, CoeffSalContract, RealSalContract, JobAllo, SeniorAllo, SeniorOverAllo, OtherAllo,
+			TotalAllo, CoeffJobAllo, CoeffSeniorAllo, CoeffSeniorOverAllo, CoeffOtherAllo, TotalCoeffAllo, MaxSalSI, MaxSalHI, MaxSalUI, TotalSalIns,
+			TotalCoeffIns, RealSalSI, RealSalHI, RealSalUI, SIRateE, SIRateC, HIRateE, HIRateC, UIRateE, UIRateC, SIAmountE, SIAmountC,
+			HIAmountE, HIAmountC, UIAmountE, UIAmountC, InsAmountE, InsAmountC, TUnionAmountC, NumAdd, Note, SalaryIns, @IsTmp, @GenDate
+		from HR_SocialIns as A WITH (NOLOCK) inner join #employee_filters as E on A.EmployeeID = E.EmployeeID
+		WHERE a.DowCode = @AdjDowCode --AND a.IsTmp = 0
+    END
+
+end
+
+
