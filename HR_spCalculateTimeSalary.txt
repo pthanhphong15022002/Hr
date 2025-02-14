@@ -1,0 +1,1513 @@
+call public."HR_spCalSalaryLevel"(
+'2024/12',
+'2404020001',
+'PRTP19',
+0.0000,
+FALSE,
+'Error_HR_spCalSalaryLevel',
+'',
+'100084',
+1
+)
+
+--select *from "HR_PayIncome"
+
+
+
+
+
+-- PROCEDURE: public.HR_spCalculateTimeSalary(citext, citext, citext, citext, citext, citext, citext, timestamp without time zone, timestamp without time zone, numeric, numeric, numeric, numeric, numeric, numeric, numeric, boolean, boolean, numeric, citext, numeric, numeric, numeric, numeric, citext, citext, numeric, citext, integer, numeric, timestamp without time zone, timestamp without time zone, numeric, numeric, numeric, citext, citext, citext, boolean, integer, integer, numeric, citext, citext, integer)
+
+-- DROP PROCEDURE IF EXISTS public."HR_spCalculateTimeSalary"(citext, citext, citext, citext, citext, citext, citext, timestamp without time zone, timestamp without time zone, numeric, numeric, numeric, numeric, numeric, numeric, numeric, boolean, boolean, numeric, citext, numeric, numeric, numeric, numeric, citext, citext, numeric, citext, integer, numeric, timestamp without time zone, timestamp without time zone, numeric, numeric, numeric, citext, citext, citext, boolean, integer, integer, numeric, citext, citext, integer);
+
+CREATE OR REPLACE PROCEDURE public."HR_spCalculateTimeSalary"(
+	IN p_memployee citext,
+	IN p_departmentcode citext,
+	IN p_jobposcode citext,
+	IN p_jobwcode citext,
+	IN p_emptypecode citext,
+	IN p_assignregioncode citext,
+	IN p_dowcode citext,
+	IN p_mbegindate timestamp without time zone,
+	IN p_menddate timestamp without time zone,
+	IN p_mbasicsal numeric,
+	IN p_mbasic numeric,
+	IN p_mratio numeric,
+	IN p_mdaynumkh numeric,
+	IN p_fsckh numeric,
+	IN p_mproducsal numeric,
+	IN p_mexchange numeric,
+	IN p_mistwosal boolean,
+	IN p_misseconds boolean,
+	IN p_munitot numeric,
+	IN p_currencycode citext,
+	IN p_jwbasic numeric,
+	IN p_jwsalary numeric,
+	IN p_inssalary numeric,
+	IN p_piecewage numeric,
+	IN p_kowcodenor citext,
+	IN p_mkowdoff citext,
+	IN p_fsckhy numeric,
+	IN p_mkowcodelate citext,
+	IN p_absenceregular integer,
+	IN p_gsgmc numeric,
+	IN p_fbegindate timestamp without time zone,
+	IN p_fenddate timestamp without time zone,
+	IN p_ratepercent numeric,
+	IN p_compa_ratio numeric,
+	IN p_jwcompa_ratio numeric,
+	IN p_mmyyyy citext,
+	IN p_tableerror citext,
+	IN p_groupsalcode citext,
+	IN p_gapp_istotalkowsal boolean,
+	IN p_gbaseamtdec integer,
+	IN p_gforgcurramtdec integer,
+	IN p_mexchangebh numeric,
+	IN p_workcentercode citext,
+	IN p_bucode citext,
+	IN p_labourtype integer)
+LANGUAGE 'plpgsql'
+AS $BODY$
+
+	declare v_sql citext;	
+ v_mLawAllo                numeric(18,4);
+
+ curtg1 cursor
+		for SELECT SUM(KD."DayNum"), KD."KowCode"
+			FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON KD."KowCode" = KL."KowCode"
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+			WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10)) AND 
+				KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND KL."KowType" <> 5 AND KL."BasicSalRate" = 0
+			GROUP BY KD."KowCode";
+
+ curtg2 cursor
+		for SELECT SUM(KD."DayNum") AS "DayNum",KD."KowCode",KL."IsInPayroll" 
+            FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON KD."KowCode" = KL."KowCode" 
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+            WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10)) 
+				AND (KL."PayLoc" = 0 OR KL."PayLoc"= 3 OR KL."PayLoc"= 2) AND KD."EmployeeID" = p_mEmployee 
+            GROUP BY KD."KowCode",KL."IsInPayroll";
+
+ curtg3 cursor 
+		for SELECT SUM(KD."DayNum"), KD."KowCode",KL."BasicSalRate",KL."IsInPayroll"
+            FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON  KD."KowCode" =  KL."KowCode"
+            LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+            WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10)) and
+				KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND KL."KowType" <> 5 AND KL."BasicSalRate" > 0 AND KL."BasicSalRate" <> 100
+            GROUP BY KD."KowCode",KL."BasicSalRate",KL."IsInPayroll";
+
+ curtg4 cursor
+			for SELECT SUM(KD."DayNum"),KD."KowCode", KL."BasicSalRate",KL."IsInPayroll" FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON  KD."KowCode" =  KL."KowCode"
+				LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F
+					ON KD."KowCode" = F."ListCode"
+				WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND ("IsPay" = 0) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10)) AND 
+				KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND KL."KowType" = 5 GROUP BY KD."KowCode",KL."BasicSalRate",KL."IsInPayroll";
+
+ curtg5 cursor 
+		for 
+			SELECT SUM(KD."DayNum"),KD."KowCode",KL."KowType",KL."BasicSalRate","IsInPayroll" FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON KD."KowCode" = KL."KowCode" 
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+			WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10))
+				AND KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND ((KD."IsPay" =0 AND KL."KowType" = 5) OR KL."KowType" <> 5) AND (("KowType" <> 5 AND v_gPRIsImportOT = 1) OR v_gPRIsImportOT <> 1)
+			GROUP BY KD."KowCode",KL."BasicSalRate",KL."KowType",KL."IsInPayroll";
+  v_mTotalSalAmount         numeric(18,4);
+  v_mRiceAllowan            numeric(18,4);
+  v_mTotalAllo              numeric(18,4);
+  v_mDayNum                 numeric(18,4);
+  v_mSalKow                 numeric(18,4);
+  v_mOvertimeSal            numeric(18,4);
+  v_mKowAmount              numeric(18,4);
+  v_mKowAmountOT            numeric(18,4);
+  v_mAddToSal numeric(18,4);
+  v_mAdvSal numeric(18,4);
+  v_mSubToSal numeric(18,4);
+  v_mAddToSalVND numeric(18,4);
+  v_mAdvSalVND numeric(18,4);
+  v_mSubToSalVND numeric(18,4);
+  v_mFlag                   boolean;
+  v_PRIsYearSalary		boolean;
+  v_mAmount				numeric(18,4);
+  v_gTSIsNightByHour boolean;
+  v_gTSIsOTByHour boolean;
+  v_gSSLNC  numeric(18,4);
+  v_gPRIsImportOT boolean;
+  v_gPRIsUnitOT boolean;
+  v_gTSStandardWDOfOT numeric(18,4);
+  v_PRIsCalJobWSal boolean;
+  v_cur_DayNum numeric(18,4);
+  v_IsReCalculateDailySalary boolean;
+  v_mTotalAllo1 numeric(18,4);
+  v_mTotalAllo2 numeric(18,4);
+  v_mTotalAllo3 numeric(18,4);
+  v_mTotalAllo4 numeric(18,4);
+  v_mTotalAllo5 numeric(18,4);
+  v_mDayNumKHCalAllowance numeric(18,4);
+  v_KowNum numeric(18,4);
+  v_cur_mKow citext;
+  v_IsInPayroll1 boolean;
+  v_cur_KowID citext;
+  v_cur_BasicSalRate numeric(18,4);
+  v_cur_Is_Overtime int;
+  v_IsInPayroll boolean;
+  v_AmountExceptAdd numeric(18,4);
+  v_AmountExceptSub numeric(18,4);
+  v_AmountKow numeric(18,4);
+  v_AmountOT numeric(18,4);
+  v_TotalAllo numeric(18,4);
+  v_xFromTime TIMESTAMP(3);
+  v_xToTime TIMESTAMP(3);
+  v_MainPaid boolean;
+  v_mmGrossal numeric(18,4);
+  v_mmNetSal numeric(18,4);
+BEGIN v_mLawAllo:=0;
+    v_mTotalSalAmount:=0;
+    v_mRiceAllowan:=0;
+    v_mTotalAllo:=0;
+    v_mDayNum:=0;
+    v_mSalKow:=0;
+    v_mOvertimeSal:=0;
+    v_mKowAmount:=0;
+    v_mKowAmountOT:=0;
+ v_mAddToSal := 0; 
+ v_mAdvSal := 0; 
+ v_mSubToSal := 0; 
+ v_mAddToSalVND := 0; 
+	v_mAdvSalVND := 0; 
+ v_mSubToSalVND := 0;
+ v_mAmount:=0;
+ -- SQLINES DEMO ***  gio
+ -- SQLINES DEMO *** eo gio 
+ -- SQLINES DEMO ***  đc nhập khẩu từ Excel
+ -- SQLINES DEMO ***  tính theo đơn giá tiền lương riêng
+ -- SQLINES DEMO *** c danh cho nhan vien
+
+	v_PRIsCalJobWSal := FALSE;
+	select coalesce("TSIsOTByHour",FALSE),"TSIsNightByHour",
+			"TSDecPlaceWD",
+			coalesce("TSStandardWDOfOT",0) into v_gTSIsOTByHour, v_gTSIsNightByHour, v_gSSLNC, v_gTSStandardWDOfOT
+	from "HR_ConfigTS"
+	WHERE ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = p_BUCode));
+
+	SELECT "PRIsImportOT", "PRIsUnitOT", "PRIsYearSalary", "IsReCalculateDailySalary" INTO v_gPRIsImportOT, v_gPRIsUnitOT, v_PRIsYearSalary, v_IsReCalculateDailySalary
+	FROM "HR_ConfigPR"
+	WHERE ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = p_BUCode))
+	LIMIT 1;
+	
+	--31/07/2007 doi tu thu tuc bat dau tinh luong sang thu tuc nay vi co truong hop trong thang co 2 QD luong
+    v_mTotalAllo1 := 0;
+    v_mTotalAllo2 := 0;
+    v_mTotalAllo3 := 0;
+    v_mTotalAllo4 := 0;
+    v_mTotalAllo5 := 0;
+    v_mDayNumKHCalAllowance:=p_mDayNumKH;    
+    if p_gApp_IsTotalKowSal = FALSE then
+		p_mDayNumKH:=p_fSCKH;
+    end if;
+    
+	--1. Tinh tong cac loai phu cap duoc tinh vao luong để tính công
+
+	call "HR_spCalAllowanceHard"(p_memployee,p_currencycode,p_mexchange,p_dowcode, p_bucode,p_mbegindate,
+		p_menddate,p_mbasic,p_mbasicsal,p_jwbasic,p_jwsalary,p_inssalary,p_piecewage,
+		v_gTSIsNightByHour,p_gsgmc,v_gTSIsOTByHour,p_fsckh,p_ratepercent,p_tableerror, p_groupsalcode,
+		p_fsckhy, p_mproducsal, p_gbaseamtdec, p_gforgcurramtdec,
+		v_mTotalAllo1,v_mTotalAllo2,v_mTotalAllo3,v_mTotalAllo4,v_mTotalAllo5,v_mLawAllo
+	);
+	--tien luong trong khoan cong mDayNumKH\
+
+    if (v_PRIsYearSalary = FALSE)
+	then
+        if(v_PRIsCalJobWSal = FALSE) then v_mKowAmount := ((p_mBasicSal + v_mLawAllo) / p_fSCKH) * p_mDayNumKH; end if;
+        if(v_PRIsCalJobWSal = TRUE) then v_mKowAmount := ((p_mBasicSal + p_JWSalary + v_mLawAllo) / p_fSCKH) * p_mDayNumKH; end if;        
+    else
+        if(v_PRIsCalJobWSal = FALSE) then v_mKowAmount := p_mBasicSal + v_mLawAllo; end if;
+        if(v_PRIsCalJobWSal = TRUE) then v_mKowAmount := p_mBasicSal + p_JWSalary + v_mLawAllo; end if;        
+    End if;
+    -- Tien luong tinh don gia ngoai gio
+	if(v_PRIsCalJobWSal = FALSE) then v_mKowAmountOT := p_mBasicSal + v_mLawAllo; end if;
+	if(v_PRIsCalJobWSal = TRUE) then v_mKowAmountOT := p_mBasicSal + p_JWSalary + v_mLawAllo; end if;
+	
+	-- tao bang tạm chứa danh sách các loai cong co thiết lập công thức.
+	DROP TABLE IF EXISTS "tmp_HCSLS_FomulaSystem";
+	create temporary table "tmp_HCSLS_FomulaSystem" as
+select ce.* from (
+		SELECT distinct "ListCode" from "HR_SysFormula" where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW'
+	) as CE;
+
+	--2. Tinh luong theo loai cong ' Tinh luong theo kieu  nghi ngay nao tru ngay do
+	--Neu tinh luong chi can so sanh Tong cong (khong ke cong ngoai gio) > Ngay cong chuan trong thang thi: Luong trong thang theo ngay cong = Luong co ban quy dinh
+	--Ghi vao table HCSPR_PaySalary luong chi tiet theo loai ngay cong binh thuong xem nhu nhan vien di lam du
+
+	if (p_gApp_IsTotalKowSal=TRUE) 		
+	then
+	
+		--Ktra trong bảng công có tồn tại ít nhất 1 loại công do cty trả, có tỷ lệ >0 de tinh luong cho nhan vien
+		SELECT SUM("DayNum") INTO v_KowNum 
+		FROM "HR_TSKowDs" K INNER JOIN "HR_vwKOW" L ON K."KowCode" = L."KowCode"
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON K."KowCode" = F."ListCode"
+        WHERE "EmployeeID" = p_mEmployee AND "PayLoc" = 1 AND "BasicSalRate" > 0 AND ("WorkDate" BETWEEN p_mBeginDate AND p_mEndDate ) 
+			AND (("IsUserFormula" = 0) OR ("ListCode" is null));
+		if ((v_KowNum is null) Or v_KowNum = 0 or v_mKowAmount =0) then 
+			-- BEGIN CAL_ALL
+			if (p_mIsTwoSal=1)
+			then
+				if (p_mIsSecondS=1)
+				then
+					call	"HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode, v_mExchange, v_DowCode, v_BUCode,v_mBeginDate,
+							v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,1,
+							v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+							v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+					v_mDayNum := 0;
+					call	"HR_spCalWorkLateMonth"(v_mEmployee,v_mBeginDate,v_mEndDate,v_mDayNum );				
+				else
+					call "HR_spCalAllowanceNotHard"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode,v_BUCode,v_mBeginDate,v_mEndDate,
+				v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,	v_mIsTwoSal,
+				v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_TableError,
+				v_mTotalAllo1, v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+	
+			-- 2015.09.09. hphoa: Tính biệt lệ chay theo quyet dinh lương .ttvinh 2015.10.15
+			call "HR_spCalTExceptFormulaInCalTimeStored"(NULL, v_mEmployee, v_GroupSalCode, v_DowCode, v_mBeginDate, 
+				v_CurrencyCode, v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_InsSalary, v_JWSalary, v_JWBasic, v_JwCompa_Ratio, v_mUnitOT, 
+				v_mBeginDate, v_mEndDate, v_DepartmentCode, v_WorkCenterCode,
+				v_AmountExceptAdd,v_AmountExceptSub);
+		
+			IF v_AmountExceptAdd is null THEN v_AmountExceptAdd:= 0; END IF;
+			If v_AmountExceptSub is null Then v_AmountExceptSub:= 0; End if;
+		
+
+			-- Tính lương ngày
+			if exists(select 1 from "HR_SysFormulaUser" where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1) limit 1)
+			THEN			
+				-- cập nhật vào qđ 2
+				IF EXISTS(SELECT 1 FROM "tmp_tblListOfEmp_FillData" WHERE "EmployeeID" = p_mEmployee AND "ToTime" = p_mEndDate AND "RowID" = 1 LIMIT 1)
+				THEN
+					-- có tính lại lương ngày hay không
+					IF v_IsReCalculateDailySalary = 1
+					THEN
+	
+						SELECT
+							CASE WHEN R1."GetDataFrom" = 3 then
+								CAST(SUBSTR(TO_CHAR (INTERVAL '-1 MONTH' + p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" as citext) AS TIMESTAMP(3))
+							ELSE p_fBeginDate END,
+	
+							CASE WHEN R1."GetDataFrom" = 3 then
+								CAST(SUBSTR(TO_CHAR (p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" - 1 AS citext) AS TIMESTAMP(3))
+							ELSE p_fEndDate END INTO v_xFromTime, v_xToTime
+						FROM (
+							SELECT "ListCode", "IsCalcByDay" from "HR_SysFormulaUser"
+							where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+							GROUP BY "ListCode", "IsCalcByDay"
+							LIMIT 1
+						) AS R INNER JOIN "HR_LSKOW" AS R1 ON R."ListCode" = R1."KowCode";
+	
+						v_xFromTime := COALESCE(v_xFromTime, p_mBeginDate);
+						v_xToTime := COALESCE(v_xToTime, p_mEndDate);
+	
+						CALL "HR_spCalSalaryLevelByDay"(v_DowCode, v_xFromTime, v_xToTime, 0, '', v_TableError, v_GroupSalCode, v_mEmployee);
+					END IF;
+
+					-- sum dữ liệu lương theo ngày vào table ghi nhận lương theo tháng
+					INSERT INTO "HR_PaySalary"("DowCode", "EmployeeID", "KowCode", "FromTime", "ToTime", "DayNum", "Amount", "AmountF", "CreatedOn", "CreatedBy")
+					SELECT p_DowCode, "EmployeeID", "KowCode", p_mBeginDate as "FromTime", p_mEndDate as "ToTime",
+						SUM("DayNum") AS "DayNum", SUM("Amount") as "Amount", Sum("AmountF") as "AmountF", NOW(), 'application'
+					From "HR_PaySalaryByDay" 
+					WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode --WorkDate BETWEEN @mBeginDate AND @mEndDate
+					Group By "EmployeeID", "KowCode";
+
+					--
+					SELECT Sum("AmountF") INTO v_AmountKow
+					From "HR_PaySalaryByDay" 
+					WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; -- AND WorkDate BETWEEN @mBeginDate AND @mEndDate
+
+					v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+				END IF;
+			end if;
+
+			-- hphoa: tinh ngay cong theo cong thuc tu dinh nghia.	Ham tra ve gia tri tong tien luong theo cong do nguoi dung tu dinh nghia
+			call "HCSPR_spCalcKowFormula"(v_mEmployee, v_DowCode, v_MMYYYY, v_BUCode, v_gBaseAmtDec,v_gForgCurrAmtDec,
+			v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_JWSalary, v_JWBasic, 
+			v_JwCompa_Ratio, v_mUnitOT, 1, v_mBeginDate,v_mEndDate, v_DepartmentCode, v_GroupSalCode, v_InsSalary, v_mProducSal, v_fSCKH, v_WorkCenterCode,
+			v_AmountKow, v_TotalAllo);
+
+			v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			v_mTotalAllo := coalesce(v_mTotalAllo,0) + coalesce(v_TotalAllo,0);
+		
+			SELECT SUM(COALESCE("Amount",0)) INTO v_mOvertimeSal FROM "HR_PaySalary" S
+				inner JOIN "HR_vwKOW" K ON S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "FromTime" = p_mBeginDate AND "ToTime" = p_mEndDate;
+		
+			-- TTVINh 2013.11.08 Tính thu nhập cho tiền công tháng trước chi trả tháng này - HCSPR_PaySalaryLastPayroll
+			if v_mOvertimeSal is null then
+				v_mOvertimeSal := 0;
+			end if;
+        
+			--ttvinh 2017.12.12
+		 	v_MainPaid:=0;
+			v_mAmount :=0; 
+
+			--set @mAddToSal =0 set @mAdvSal =0 set @mSubToSal =0 set @mAddToSalVND =0 set @mAdvSalVND =0 set @mSubToSalVND =0
+			if ((p_mIsTwoSal=1 and p_mIsSecondS=1) or p_mIsTwoSal<>1)
+			then
+	
+				v_MainPaid:=1;
+				if p_mIsTwoSal = 1
+				then
+					--4. Tinh tong phu cap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+					SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+					WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+						AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2 and "AlloType" <> 14;
+					v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+				else
+					--4. Tinh tong phu cap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+					SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+					WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+						AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2; 
+					v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+				end if;
+
+				--5. Tinh tong phu cap khong tinh vao luong cung - la PC com va duoc tra trong Bang luong
+				v_mAmount :=0;
+				-- PC IsManual=0 lay theo ngay, IsManual=1 thì lay theo DowID cho QD lương thứ 2
+				SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+				WHERE "EmployeeID" = p_mEmployee AND (("IsManual"= FALSE AND "FromTime" = p_mBeginDate) OR
+					("IsManual"= TRUE and "DowCode"=p_DowCode ))	
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 2; 
+				v_mRiceAllowan := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+
+				--6. Tinh biet le	
+				--DECLARE @Amount_Except numeric(18,4), @AmountVND_Except numeric(18,4), @AddSub bit, @IsBeforeTax bit
+				-- CalType = 2 Được tính động theo quyết định lương mới nhất (được xử lý riêng)
+				--2017.12.12 estimate code
+				SELECT 
+	 v_mAddToSal + coalesce(sum(case when L."AddSub" <>0 then CE."AmountF" else 0 end),0),
+	 v_mAddToSalVND + coalesce(sum(case when L."AddSub" <>0 then CE."Amount" else 0 end),0),
+	 v_mAdvSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."AmountF" else 0 end),0),
+	 v_mAdvSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."Amount" else 0 end),0),
+	 v_mSubToSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."AmountF" else 0 end),0),
+	 v_mSubToSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."Amount" else 0 end),0) INTO v_mAddToSal, v_mAddToSalVND, v_mAdvSal, v_mAdvSalVND, v_mSubToSal, v_mSubToSalVND
+				FROM "HR_LSException" L INNER JOIN "HR_PayTExcept" CE ON L."ExceptCode" = CE."ExceptCode"
+				WHERE CE."EmployeeID" = p_mEmployee AND CE."DowCode"=p_DowCode AND CE."Amount" <> 0 and "IsInPayroll" <> 0 AND L."CalType" <> 4;
+			
+				v_AmountKow:=0; v_AmountOT:=0;
+				--update HCSPR_PaySalaryLastPayroll set FromTime = @mBeginDate , To_Time = @mEndDate 
+				--WHERE EmployeeID = @mEmployee AND DowCode = @DowCode 
+			
+				SELECT SUM(COALESCE("Amount",0)) INTO v_AmountKow FROM "HR_PaySalaryLastPayroll" S
+				inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."IsInPayroll"=1
+				WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+				
+				v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			
+				SELECT SUM(COALESCE("Amount",0)) INTO v_AmountOT FROM "HR_PaySalaryLastPayroll" S
+				inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+				WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+				v_mOvertimeSal := v_mOvertimeSal + coalesce(v_AmountOT,0);
+			ELSIF (p_mIsTwoSal=1 and p_mIsSecondS=0)
+			then
+				--4. Tinh tong phu cap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+				SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+				WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+					AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 14;
+				v_mAmount := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+				update "HR_PayIncome"
+				set "GrossSal" = GrossSal + v_mAmount,"GrossSalVND"=Round("GrossSalVND" + v_mAmount* p_mExchange,p_gForgCurrAmtDec),"NetSal"="NetSal" + v_mAmount,"NetSalVND"=Round("NetSalVND"+ v_mAmount* p_mExchange,p_gForgCurrAmtDec),"TotalAllowance"="TotalAllowance" + v_mAmount
+					where "EmployeeID"=p_mEmployee and "MainPaid"=1 and "DowCode" = p_DowCode;
+			Else
+				v_mAddToSal := v_AmountExceptAdd;
+				v_mAddToSalVND := v_AmountExceptAdd;
+				v_mSubToSal := v_AmountExceptSub;
+				v_mSubToSalVND := v_AmountExceptSub;
+			end if;
+		
+			--7. Ghi nhan vao Bang thu nhap cho nhan vien
+			v_mmGrossal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal, p_gBaseAmtDec);
+			v_mmNetSal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal - v_mAdvSal - v_mSubToSal, p_gBaseAmtDec);
+		
+			begin
+				-- 2013-05-13: đã bỏ điều kiện @mGross > 0. Mục đích: khi nv không có công trong tháng hoặc trong tháng có công nhưng là công không hưởng lương --> hệ thống vẫn insert 1 dòng vào incomes
+				-- 2023.09.07: Không cần xử lý data cho field TotalOTSal. Vì trong salarylevel đã xử lý trường này (cộng dồn vào qđ cuối cùng)
+				--set @mOvertimeSal = 0
+				insert into "HR_PayIncome"
+				(	"DowCode", "EmployeeID", "OrgUnitID","JobLevel","PositionID","EmpTypeCode", "AssignRegionCode","FromTime","ToTime","ExRate","BasicSalary","JobWSalary", "InsSalary",
+					"CoeffBasicSal","MainSal","UnitOT","GrossofNetSal","LawSal", "TotalKowSal","TotalOTSal","RiceAllowance", "TotalAllowance","ProductSal","AddToSal","AdvanceSal",
+					"SubToSal","AddToSalVND","AdvanceSalVND","SubToSalVND","GrossSal","GrossSalVND", "NetSal","NetSalVND", "DowNum", "BasicSalaryMin", "JobWSalaryMin", "CoeffJobWSal", 
+					"PieceWage", "GroupSalCode","ExRateSI", "CreatedBy", "CreatedOn", "WorkCenterCode", "MainPaid", "LabourType", "CurrencyCode"
+				)
+				values 
+				(
+					p_DowCode,p_mEmployee,p_DepartmentCode,p_JobPosCode,p_JobWCode,p_EmpTypeCode, p_AssignRegionCode,p_mBeginDate,p_mEndDate,p_mExchange,p_mBasicSal,p_JWSalary,p_InsSalary,
+					p_mRatio,Round(p_mBasicSal * p_mExchange, p_gForgCurrAmtDec),Round(p_mUnitOT, p_gBaseAmtDec),0,v_mLawAllo,
+					Round(v_mTotalSalAmount,p_gBaseAmtDec), 0, Round(v_mRiceAllowan, p_gBaseAmtDec),
+					Round(v_mTotalAllo,p_gBaseAmtDec),Round(p_mProducSal,p_gBaseAmtDec),Round(v_mAddToSal,p_gBaseAmtDec),Round(v_mAdvSal,p_gBaseAmtDec),
+					Round(v_mSubToSal,p_gBaseAmtDec),Round(v_mAddToSalVND,p_gForgCurrAmtDec),Round(v_mAdvSalVND,p_gForgCurrAmtDec),Round(v_mSubToSalVND,p_gForgCurrAmtDec),
+					v_mmGrossal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND,p_gForgCurrAmtDec),
+					v_mmNetSal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND - v_mAdvSalVND - v_mSubToSalVND,p_gForgCurrAmtDec),
+					p_fSCKH, p_mBasic, p_JWBasic, p_JwCompa_Ratio, p_PieceWage, p_GroupSalCode,
+					p_mExchangeBH, 'application', NOW(), p_WorkCenterCode, v_MainPaid, p_LabourType, p_CurrencyCode
+				);
+		
+			exception when others then
+				v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('''||cast(p_mEmployee as citext)|| ''',N''Lỗi khi tính lương theo công (hrm_pr_Incomes) :'' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+				execute (v_sql);
+			end;
+			-- END CAL_ALL
+			end if;
+		else
+			call   "HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode, v_BUCode,v_mBeginDate,
+					v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic, v_JWSalary,v_InsSalary,v_PieceWage,0,
+					v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+					v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+		end if;
+		
+		end if; 
+
+		begin
+			insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+			values (p_mEmployee,p_KowCodeNor,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+			p_mDayNumKH,Round(v_mKowAmount * p_mExchange,p_gForgCurrAmtDec),Round(v_mKowAmount,p_gBaseAmtDec),NOW(),'application');
+		exception when others then	
+			v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(p_KowCodeNor as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+			execute (v_sql);
+		end;
+		v_mTotalSalAmount := Round(v_mKowAmount, p_gBaseAmtDec);
+		--Tinh so ngay cong khong lam viec cua nhan vien gom: cong khong tinh luong va ngay nghi khong theo quy dinh khong ton tai trong HCSTS_KowDs
+		-- Tinh so ngay nhan vien nghi khong luong: gom nhung cong ma co ty le chi tra = 0 ton tai trong bang cong ngay + Ngay do di lam nhung nhan vien khong co cong
+		v_mDayNum := 0;
+		call "HR_spCalDayoffMonth"(v_mEmployee,v_mBeginDate,v_mEndDate,v_mDayNum);
+        
+		--LAM THEM PHAN NAY KHI NGUOI DUNG KO NHAP NGAY NGHI KHONG LUONG
+		if((not exists (SELECT 1 FROM "HR_TSKowDs" KD 
+			INNER JOIN "HR_vwKOW" KL ON KD."KowCode" = KL."KowCode"
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+			WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10)) AND 
+				KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND KL."KowType" <> 5 AND KL."BasicSalRate" = 0 LIMIT 1)) And (v_mDayNum > 0) And (p_mKowDOff <> '0'))
+		then
+			begin 
+			if (v_PRIsYearSalary=0) then
+                if (v_mDayNum >= p_mDayNumKH) then
+                    v_mSalKow := - Round(v_mKowAmount,p_gBaseAmtDec);
+                else
+                    v_mSalKow := - Round(((v_mKowAmount / p_mDayNumKH) * v_mDayNum), p_gBaseAmtDec);
+                end if;
+            elsif
+			 (v_mDayNum >= p_fSCKHY) then
+                    v_mSalKow := - Round(v_mKowAmount,p_gBaseAmtDec);
+                elsif
+                    (p_gSGMC <> 1) then
+                        v_mSalKow := -Round(((v_mKowAmount * 12) / p_fSCKHY * v_mDayNum), p_gBaseAmtDec);
+                    else
+                        v_mSalKow := -Round(((v_mKowAmount * 12) / (p_fSCKHY * 8) * v_mDayNum), p_gBaseAmtDec);
+			end if;
+            IF v_mSalKow <>0 
+            then
+				insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+				values (p_mEmployee,p_mKowDOff,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+						v_mDayNum,Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+			end if;
+			exception when others then				
+				v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(p_mKowDOff as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+				execute (v_sql);
+			end; 
+			v_mTotalSalAmount := v_mTotalSalAmount + v_mSalKow;
+            v_mDayNum := 0;
+		end if;
+
+		v_mFlag := 1; --su dung co nhu mot cach nhan dien viec chi tinh cho lan dau tien trong recordset trong truong hop ko nhap cong nghi ko luong, hoac vua co nhap lai vua ko nhap ...
+		open curtg1;
+		fetch next from curtg1 into v_cur_DayNum,v_cur_mKow;
+		while FOUND
+		loop			
+			if(v_mFlag=1)
+			then
+				if (v_cur_mKow <> p_mKowDOff)
+				then
+					begin
+	                    if (v_PRIsYearSalary=0) then
+	                        if (v_mDayNum >= p_mDayNumKH) then
+	                            v_mSalKow := -Round(v_mKowAmount, p_gBaseAmtDec);
+	                        else
+	                            v_mSalKow := -Round(((v_mKowAmount / p_mDayNumKH) * v_mDayNum), p_gBaseAmtDec);
+	                        end if;
+	                    elsif (v_mDayNum >= p_fSCKHY) 
+						then
+	                        v_mSalKow := -Round(v_mKowAmount, p_gBaseAmtDec);
+	                    elsif (p_gSGMC <> 1) 
+						then
+	                        v_mSalKow := -Round(((v_mKowAmount * 12) / p_fSCKHY * v_mDayNum), p_gBaseAmtDec);
+	                    else
+	                        v_mSalKow := -Round(((v_mKowAmount * 12) / (p_fSCKHY * 8) * v_mDayNum),p_gBaseAmtDec);
+	                    end if;
+						IF v_mSalKow <>0
+						then
+							insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+							values (p_mEmployee,p_mKowDOff,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+									v_mDayNum,Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+						end if;
+						exception when others then			
+							v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('''||cast(p_mEmployee as citext)|| ''',N''Lỗi khi tính lương theo công :' || CAST( v_cur_mKow as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+							execute (v_sql);
+					end;
+					v_mTotalSalAmount := v_mTotalSalAmount + v_mSalKow;
+                    --GAN LAI SO NGAY CONG THEO SO CONG NGHI SUM DUOC TU BANG CHAM CONG NGAY VA TINH BINH THUONG
+					v_mDayNum := Round(COALESCE(v_cur_DayNum,0),v_gSSLNC); --tong cong khong duoc tinh luong+ngay nghi khong phai theo quy dinh
+				else
+                    v_mDayNum := Round(COALESCE(v_cur_DayNum, 0),v_gSSLNC);
+				end if;  --tong cong khong duoc tinh luong+ngay nghi khong phai theo quy dinh
+			else
+                v_mDayNum := Round(COALESCE(v_cur_DayNum, 0),v_gSSLNC);
+			end if;  --tong cong khong duoc tinh luong+ngay nghi khong phai theo quy dinh
+                
+			v_mFlag := 0;
+			if (v_PRIsYearSalary=0) then
+                if (v_mDayNum >= p_mDayNumKH) then
+                    v_mSalKow := -Round(v_mKowAmount,p_gBaseAmtDec);
+                else
+                    v_mSalKow := -Round(((v_mKowAmount / p_mDayNumKH) * v_mDayNum), p_gBaseAmtDec);
+                end if;
+            elsif (v_mDayNum >= p_fSCKHY) 
+			then
+                v_mSalKow := -Round(v_mKowAmount, p_gBaseAmtDec);
+            elsif (p_gSGMC <> 1) 
+			then
+                v_mSalKow := -Round(((v_mKowAmount * 12) / p_fSCKHY * v_mDayNum), p_gBaseAmtDec);
+            else
+                v_mSalKow := -Round(((v_mKowAmount * 12) / (p_fSCKHY * 8) * v_mDayNum), p_gBaseAmtDec);
+			end if;
+			
+            IF v_mSalKow <>0
+            then
+				begin
+					insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+					values (p_mEmployee,v_cur_mKow,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+						v_mDayNum,Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+				exception when others then				
+					v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || v_cur_mKow || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+					execute (v_sql);
+				end;
+			end if;
+			fetch next from curtg1 into v_cur_DayNum,v_cur_mKow;
+		end loop;
+		close curtg1;
+		--IsInPayroll=1 :luong ngoai gio co tra trong Bang thanh toan luong
+		--TINH CONG BI TRU KHI NHAN VIEN DI TRE
+        if (COALESCE(p_mKowCodeLate, '') = '') 
+		then
+			-- BEGIN NEXT_KOW
+		open curtg2;
+		fetch next from curtg2 into v_cur_DayNum,v_cur_KowID,v_IsInPayroll1;
+		while FOUND
+		loop
+			begin
+			v_mDayNum := Round(v_cur_DayNum, v_gSSLNC);
+			if (v_PRIsYearSalary=0) then
+                if (v_mDayNum >= p_mDayNumKH) then
+                    v_mSalKow := -Round(v_mKowAmount,p_gBaseAmtDec);
+                else
+                    v_mSalKow := -Round(((v_mKowAmount / p_mDayNumKH) * v_mDayNum), p_gBaseAmtDec);
+                end if;
+            elsif
+                (v_mDayNum >= p_fSCKHY) then
+                    v_mSalKow := -Round(v_mKowAmount,p_gBaseAmtDec);
+                else
+                    --doi... SQLINES DEMO ***
+                    v_mSalKow := -Round((((v_mKowAmount * 12) / p_fSCKHY) * v_mDayNum), p_gBaseAmtDec);
+			end if;
+		
+            if v_IsInPayroll1 =1 then v_mTotalSalAmount := v_mTotalSalAmount + v_mSalKow; end if;
+            IF v_mSalKow <>0
+            then
+				insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+				values (p_mEmployee,v_cur_KowID,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+				Round(v_mDayNum,v_gSSLNC),Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+			end if;
+			exception when others then
+			--pri... SQLINES DEMO ***
+				v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(v_cur_mKow as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+				execute (v_sql);
+			end;
+			fetch next from curtg2 into v_cur_DayNum,v_cur_KowID,v_IsInPayroll1;
+		end loop;
+		close curtg2;
+		-- SQLINES DEMO *** NG LOAI CONG < 100% (TRU LUONG) VA NHUNG LOAI CONG > 100% (CONG LUONG) NHUNG KHONG PHAI LA CONG NGOAI GIO
+		open curtg3;
+		fetch next from curtg3 into v_cur_DayNum,v_cur_KowID,v_cur_BasicSalRate,v_IsInPayroll1;
+		while FOUND
+		loop
+			begin
+			v_mDayNum := Round(COALESCE(v_cur_DayNum, 0), v_gSSLNC);  -- SQLINES DEMO *** oc tinh luong+ngay nghi khong phai theo quy dinh
+            if (v_cur_BasicSalRate < 100) then -- SQLINES DEMO *** UNG SX CHI TINH 70% NEN NHAN VIEN BI TRU THEM 30%LUONG
+                if (v_PRIsYearSalary=0) then
+                    v_mSalKow := -Round(((v_mKowAmount / p_mDayNumKH) * v_mDayNum * (100 - v_cur_BasicSalRate) / 100), p_gBaseAmtDec);
+                elsif
+                    (p_gSGMC <> 1) then
+                        v_mSalKow := -Round((((v_mKowAmount * 12) / p_fSCKHY) * v_mDayNum * (100 - v_cur_BasicSalRate) / 100),p_gBaseAmtDec);
+                    else
+                        v_mSalKow := -Round((((v_mKowAmount * 12) / (p_fSCKHY * 8)) * v_mDayNum * (100 - v_cur_BasicSalRate) / 100), p_gBaseAmtDec);
+                end if;
+             elsif -- SQLINES DEMO ***  TINH 130% NEN NHAN VIEN DUOC CONG THEM 30% LUONG
+                (v_PRIsYearSalary=0) then
+                    v_mSalKow := Round(((v_mKowAmount / p_mDayNumKH) * v_mDayNum * (v_cur_BasicSalRate - 100) / 100),p_gBaseAmtDec);
+                elsif
+                    (p_gSGMC <> 1) then
+                        v_mSalKow := Round((((v_mKowAmount * 12) / p_fSCKHY) * v_mDayNum * (v_cur_BasicSalRate - 100) / 100),p_gBaseAmtDec);
+                    else
+                        v_mSalKow := Round((((v_mKowAmount * 12) / (p_fSCKHY * 8)) * v_mDayNum * (v_cur_BasicSalRate - 100) / 100), p_gBaseAmtDec);
+            end if;
+            IF v_mSalKow <> 0
+            then
+				insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+				values (p_mEmployee,v_cur_KowID,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+					v_mDayNum,Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+			end if;
+			if v_IsInPayroll1 =1 then v_mTotalSalAmount := v_mTotalSalAmount + v_mSalKow; end if;       
+			exception when others then				
+			--pri... SQLINES DEMO ***
+				v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(v_cur_mKow as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+				execute (v_sql);
+			end;   
+			fetch next from curtg3 into v_cur_DayNum,v_cur_KowID,v_cur_BasicSalRate,v_IsInPayroll1;
+		end loop;
+		close curtg3;
+		
+		-- SQLINES DEMO *** o duoc import tu excel		
+        if (v_gPRIsImportOT=1)
+		then
+			v_mOvertimeSal := 0;
+			if exists (SELECT 1 FROM "HR_PaySalary" WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "KowCode" IN (SELECT "KowCode" FROM "HR_vwKOW" WHERE "KowType" =5 and "IsInPayroll"=1 )
+LIMIT 1)
+			then
+				SELECT SUM(COALESCE("Amount",0)) INTO v_mOvertimeSal FROM "HR_PaySalary" WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "KowCode" IN (SELECT "KowCode" FROM "HR_vwKOW" WHERE "KowType" =5 and "IsInPayroll"=1);
+			end if;    
+	    v_mTotalSalAmount := v_mTotalSalAmount + v_mOvertimeSal;
+		else
+			if not exists (SELECT 1 FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON  KD."KowCode" = KL."KowCode"
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+			WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND ("IsPay" = 0) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10)) AND 
+				KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND KL."KowType" = 5
+LIMIT 1)	
+			then
+				if (p_mIsTwoSal=1)
+		then
+			if (p_mIsSecondS=1)
+			then
+				call	"HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode, v_mExchange, v_DowCode, v_BUCode,v_mBeginDate,
+						v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,1,
+						v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+						v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+				v_mDayNum := 0;
+				call	"HR_spCalWorkLateMonth"(v_mEmployee,v_mBeginDate,v_mEndDate,v_mDayNum );				
+			else
+				call "HR_spCalAllowanceNotHard"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode,v_BUCode,v_mBeginDate,v_mEndDate,
+			v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,	v_mIsTwoSal,
+			v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_TableError,
+			v_mTotalAllo1, v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+		
+		
+		-- SQLINES DEMO *** : Tính biệt lệ chay theo quyet dinh lương .ttvinh 2015.10.15
+		call "HR_spCalTExceptFormulaInCalTimeStored"(NULL, v_mEmployee, v_GroupSalCode, v_DowCode, v_mBeginDate, 
+			v_CurrencyCode, v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_InsSalary, v_JWSalary, v_JWBasic, v_JwCompa_Ratio, v_mUnitOT, 
+			v_mBeginDate, v_mEndDate, v_DepartmentCode, v_WorkCenterCode,
+			v_AmountExceptAdd,v_AmountExceptSub);
+            
+		IF v_AmountExceptAdd is null THEN v_AmountExceptAdd:= 0; END IF;
+		If v_AmountExceptSub is null Then v_AmountExceptSub:= 0; End if;
+		
+
+		-- Tí... SQLINES DEMO ***
+		if exists(select 1 from "HR_SysFormulaUser"
+				where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+limit 1)
+		THEN			
+			-- cậ... SQLINES DEMO ***
+			IF EXISTS(SELECT 1 FROM "tmp_tblListOfEmp_FillData" WHERE "EmployeeID" = p_mEmployee AND "ToTime" = p_mEndDate AND "RowID" = 1
+LIMIT 1)
+			THEN
+				-- SQLINES DEMO ***  ngày hay không
+				IF v_IsReCalculateDailySalary = 1
+				THEN
+
+					SELECT
+						CASE WHEN R1."GetDataFrom" = 3 then
+							CAST(SUBSTR(TO_CHAR (INTERVAL '-1 MONTH' + p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" AS citext) AS TIMESTAMP(3))
+						ELSE p_fBeginDate END,
+
+						CASE WHEN R1."GetDataFrom" = 3 then
+							CAST(SUBSTR(TO_CHAR (p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" - 1 AS citext) AS TIMESTAMP(3))
+						ELSE p_fEndDate END INTO v_xFromTime, v_xToTime
+					FROM (
+						SELECT "ListCode", "IsCalcByDay" from "HR_SysFormulaUser"
+						where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+						GROUP BY "ListCode", "IsCalcByDay"
+						LIMIT 1
+					) AS R INNER JOIN "HR_LSKOW" AS R1 ON R."ListCode" = R1."KowCode";
+
+					v_xFromTime := COALESCE(v_xFromTime, p_mBeginDate);
+					v_xToTime := COALESCE(v_xToTime, p_mEndDate);
+
+					CALL "HR_spCalSalaryLevelByDay"(v_DowCode, v_xFromTime, v_xToTime, 0, '', v_TableError, v_GroupSalCode, v_mEmployee);
+				END IF;
+
+				-- SQLINES DEMO ***  theo ngày vào table ghi nhận lương theo tháng
+				INSERT INTO "HR_PaySalary"("DowCode", "EmployeeID", "KowCode", "FromTime", "ToTime", "DayNum", "Amount", "AmountF", "CreatedOn", "CreatedBy")
+				SELECT p_DowCode, "EmployeeID", "KowCode", p_mBeginDate as "FromTime", p_mEndDate as "ToTime",
+					SUM("DayNum") AS "DayNum", SUM("Amount") as "Amount", Sum("AmountF") as "AmountF", NOW(), 'application'
+				From "HR_PaySalaryByDay" 
+				WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode -- SQLINES DEMO *** mBeginDate AND @mEndDate
+				Group By "EmployeeID", "KowCode";
+
+				--
+				SELECT Sum("AmountF") INTO v_AmountKow
+				From "HR_PaySalaryByDay" 
+				WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; -- SQLINES DEMO *** EEN @mBeginDate AND @mEndDate
+
+				v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			END IF;
+		end if;
+
+		-- SQLINES DEMO *** cong theo cong thuc tu dinh nghia.	Ham tra ve gia tri tong tien luong theo cong do nguoi dung tu dinh nghia
+		call "HCSPR_spCalcKowFormula"(v_mEmployee, v_DowCode, v_MMYYYY, v_BUCode, v_gBaseAmtDec,v_gForgCurrAmtDec,
+		v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_JWSalary, v_JWBasic, 
+		v_JwCompa_Ratio, v_mUnitOT, 1, v_mBeginDate,v_mEndDate, v_DepartmentCode, v_GroupSalCode, v_InsSalary, v_mProducSal, v_fSCKH, v_WorkCenterCode,
+		v_AmountKow, v_TotalAllo);
+
+		v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+		v_mTotalAllo := coalesce(v_mTotalAllo,0) + coalesce(v_TotalAllo,0);
+		
+		SELECT SUM(COALESCE("Amount",0)) INTO v_mOvertimeSal FROM "HR_PaySalary" S
+			inner JOIN "HR_vwKOW" K ON S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+		WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "FromTime" = p_mBeginDate AND "ToTime" = p_mEndDate;
+		
+		-- SQLINES DEMO ***  Tính thu nhập cho tiền công tháng trước chi trả tháng này - HCSPR_PaySalaryLastPayroll
+		if v_mOvertimeSal is null then
+			v_mOvertimeSal := 0;
+		end if;
+        
+		--ttv... SQLINES DEMO ***
+	 v_MainPaid:=0;
+		v_mAmount :=0; 
+
+		-- SQLINES DEMO *** set @mAdvSal =0 set @mSubToSal =0 set @mAddToSalVND =0 set @mAdvSalVND =0 set @mSubToSalVND =0
+		if ((p_mIsTwoSal=1 and p_mIsSecondS=1) or p_mIsTwoSal<>1)
+		then
+
+			v_MainPaid:=1;
+			if p_mIsTwoSal = 1
+			then
+			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2 and "AlloType" <> 14;
+			v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+			else
+			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2; 
+			v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+			end if;
+
+			 -- SQLINES DEMO *** ap khong tinh vao luong cung - la PC com va duoc tra trong Bang luong
+			v_mAmount :=0;
+			-- SQLINES DEMO ***  theo ngay, IsManual=1 thì lay theo DowID cho QD lương thứ 2
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR
+				("IsManual"=1 and "DowCode"=p_DowCode ))	
+			AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 2; 
+			v_mRiceAllowan := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+
+			--6. ... SQLINES DEMO ***
+			-- SQLINES DEMO *** cept numeric(18,4), @AmountVND_Except numeric(18,4), @AddSub bit, @IsBeforeTax bit
+			-- SQLINES DEMO *** tính động theo quyết định lương mới nhất (được xử lý riêng)
+			-- SQLINES DEMO *** e code
+			SELECT 
+ v_mAddToSal + coalesce(sum(case when L."AddSub" <>0 then CE."AmountF" else 0 end),0),
+ v_mAddToSalVND + coalesce(sum(case when L."AddSub" <>0 then CE."Amount" else 0 end),0),
+ v_mAdvSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."AmountF" else 0 end),0),
+ v_mAdvSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."Amount" else 0 end),0),
+ v_mSubToSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."AmountF" else 0 end),0),
+ v_mSubToSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."Amount" else 0 end),0) INTO v_mAddToSal, v_mAddToSalVND, v_mAdvSal, v_mAdvSalVND, v_mSubToSal, v_mSubToSalVND
+			FROM "HR_LSException" L INNER JOIN "HR_PayTExcept" CE ON L."ExceptCode" = CE."ExceptCode"
+			WHERE CE."EmployeeID" = p_mEmployee AND CE."DowCode"=p_DowCode AND CE."Amount" <> 0 and "IsInPayroll" <> 0 AND L."CalType" <> 4;
+			
+			v_AmountKow:=0; v_AmountOT:=0;
+			-- SQLINES DEMO *** laryLastPayroll set FromTime = @mBeginDate , To_Time = @mEndDate 
+			-- SQLINES DEMO ***  @mEmployee AND DowCode = @DowCode 
+			
+			SELECT SUM(COALESCE("Amount",0)) INTO v_AmountKow FROM "HR_PaySalaryLastPayroll" S
+			inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."IsInPayroll"=1
+			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+			
+			v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			
+			SELECT SUM(COALESCE("Amount",0)) INTO v_AmountOT FROM "HR_PaySalaryLastPayroll" S
+			inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+			v_mOvertimeSal := v_mOvertimeSal + coalesce(v_AmountOT,0);
+		ELSIF (p_mIsTwoSal=1 and p_mIsSecondS=0)
+		then
+			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 14;
+			v_mAmount := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+			update "HR_PayIncome"
+			set "GrossSal" = GrossSal + v_mAmount,"GrossSalVND"=Round("GrossSalVND" + v_mAmount* p_mExchange,p_gForgCurrAmtDec),"NetSal"="NetSal" + v_mAmount,"NetSalVND"=Round("NetSalVND"+ v_mAmount* p_mExchange,p_gForgCurrAmtDec),"TotalAllowance"="TotalAllowance" + v_mAmount
+				where "EmployeeID"=p_mEmployee and "MainPaid"=1 and "DowCode" = p_DowCode;
+		Else
+			v_mAddToSal := v_AmountExceptAdd;
+			v_mAddToSalVND := v_AmountExceptAdd;
+			v_mSubToSal := v_AmountExceptSub;
+			v_mSubToSalVND := v_AmountExceptSub;
+		end if;
+		
+		-- SQLINES DEMO *** ng thu nhap cho nhan vien
+		v_mmGrossal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal, p_gBaseAmtDec);
+		v_mmNetSal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal - v_mAdvSal - v_mSubToSal, p_gBaseAmtDec);
+		
+		begin
+		
+			-- SQLINES DEMO ***  điều kiện @mGross > 0. Mục đích: khi nv không có công trong tháng hoặc trong tháng có công nhưng là công không hưởng lương --> hệ thống vẫn insert 1 dòng vào incomes
+			-- SQLINES DEMO ***  cần xử lý data cho field TotalOTSal. Vì trong salarylevel đã xử lý trường này (cộng dồn vào qđ cuối cùng)
+			-- SQLINES DEMO *** = 0
+			-- in... SQLINES DEMO ***
+			insert into "HR_PayIncome"
+			(	"DowCode", "EmployeeID", "OrgUnitID","JobLevel","PositionID","EmpTypeCode", "AssignRegionCode","FromTime","ToTime","ExRate","BasicSalary","JobWSalary", "InsSalary",
+				"CoeffBasicSal","MainSal","UnitOT","GrossofNetSal","LawSal", "TotalKowSal","TotalOTSal","RiceAllowance", "TotalAllowance","ProductSal","AddToSal","AdvanceSal",
+				"SubToSal","AddToSalVND","AdvanceSalVND","SubToSalVND","GrossSal","GrossSalVND", "NetSal","NetSalVND", "DowNum", "BasicSalaryMin", "JobWSalaryMin", "CoeffJobWSal", 
+				"PieceWage", "GroupSalCode","ExRateSI", "CreatedBy", "CreatedOn", "WorkCenterCode", "MainPaid", "LabourType", "CurrencyCode"
+			)
+			values 
+			(
+				p_DowCode,p_mEmployee,p_DepartmentCode,p_JobPosCode,p_JobWCode,p_EmpTypeCode, p_AssignRegionCode,p_mBeginDate,p_mEndDate,p_mExchange,p_mBasicSal,p_JWSalary,p_InsSalary,
+				p_mRatio,Round(p_mBasicSal * p_mExchange, p_gForgCurrAmtDec),Round(p_mUnitOT, p_gBaseAmtDec),0,v_mLawAllo,
+				Round(v_mTotalSalAmount,p_gBaseAmtDec), 0, Round(v_mRiceAllowan, p_gBaseAmtDec),
+				Round(v_mTotalAllo,p_gBaseAmtDec),Round(p_mProducSal,p_gBaseAmtDec),Round(v_mAddToSal,p_gBaseAmtDec),Round(v_mAdvSal,p_gBaseAmtDec),
+				Round(v_mSubToSal,p_gBaseAmtDec),Round(v_mAddToSalVND,p_gForgCurrAmtDec),Round(v_mAdvSalVND,p_gForgCurrAmtDec),Round(v_mSubToSalVND,p_gForgCurrAmtDec),
+				v_mmGrossal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND,p_gForgCurrAmtDec),
+				v_mmNetSal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND - v_mAdvSalVND - v_mSubToSalVND,p_gForgCurrAmtDec),
+				p_fSCKH, p_mBasic, p_JWBasic, p_JwCompa_Ratio, p_PieceWage, p_GroupSalCode,
+				p_mExchangeBH, 'application', NOW(), p_WorkCenterCode, v_MainPaid, p_LabourType, p_CurrencyCode
+			);
+		
+		exception when others then
+		-- SQLINES DEMO *** r_message(),'''','''''')
+			v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('''||cast(p_mEmployee as citext)|| ''',N''Lỗi khi tính lương theo công (hrm_pr_Incomes) :'' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+			execute (v_sql);
+		end;
+			end if;
+		else
+			call   "HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode, v_BUCode,v_mBeginDate,
+					v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic, v_JWSalary,v_InsSalary,v_PieceWage,0,
+					v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+					v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+		end if;
+			end if;
+			open curtg4;
+			fetch next from curtg4 into v_cur_DayNum,v_cur_KowID,v_cur_BasicSalRate,v_IsInPayroll1;
+			while FOUND
+			loop
+				begin
+				v_mDayNum := Round(v_cur_DayNum,v_gSSLNC);
+                if (v_gPRIsUnitOT=1) then-- SQLINES DEMO *** ai gio theo don gia luong
+                   v_mSalKow := Round(p_mUnitOT * v_mDayNum * v_cur_BasicSalRate / 100, p_gBaseAmtDec);
+				else
+                    if (v_PRIsYearSalary=0)
+					then
+                        if (v_gTSStandardWDOfOT > 0) then-- SQLINES DEMO *** được tính theo ngày công chuẩn riêng
+                            if ((v_gTSIsOTByHour=1) And (p_gSGMC > 1 )) then-- SQLINES DEMO *** gio tinh theo gio va so gio mot cong > 1 (tinh theo cong)
+								v_mSalKow := Round((((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum) / (v_gTSStandardWDOfOT * p_gSGMC)), p_gBaseAmtDec);
+                            else
+                                v_mSalKow := Round(((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum / v_gTSStandardWDOfOT),p_gBaseAmtDec);
+                            end if;
+                           
+                        elsif
+                            (v_gTSIsOTByHour=1 And p_gSGMC > 1) then-- SQLINES DEMO *** gio tinh theo gio va so gio mot cong > 1 (tinh theo cong)
+                                v_mSalKow := Round((((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum) / (p_fSCKHY * p_gSGMC)), p_gBaseAmtDec);
+                            else
+                                v_mSalKow := Round(((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum / p_fSCKHY), p_gBaseAmtDec);
+                        end if;
+					else
+                        if (v_gTSStandardWDOfOT > 0) then
+                            --doi... SQLINES DEMO ***
+                            v_mSalKow := Round(((v_mKowAmountOT * 12) / (v_gTSStandardWDOfOT * 8) * v_mDayNum * v_cur_BasicSalRate / 100), p_gBaseAmtDec);
+                        else
+                            v_mSalKow := Round(((v_mKowAmountOT * 12) / (p_fSCKHY * 8) * v_mDayNum * v_cur_BasicSalRate / 100), p_gBaseAmtDec);
+                        end if;
+					end if;
+				end if;
+				
+				IF v_mSalKow <>0
+				then	
+					insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+					values (p_mEmployee,v_cur_KowID,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+							v_mDayNum,Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+				end if;
+				if(v_IsInPayroll1=1)
+				then
+					v_mOvertimeSal := v_mOvertimeSal + v_mSalKow;
+					v_mTotalSalAmount := v_mSalKow + v_mTotalSalAmount;
+				end if;
+				exception when others then
+				--pri... SQLINES DEMO ***
+					v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(v_cur_mKow as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+					execute (v_sql);
+				end; 
+				fetch next from curtg4 into v_cur_DayNum,v_cur_KowID,v_cur_BasicSalRate,v_IsInPayroll1;
+			end loop;
+			close curtg4;
+		end if;	
+	else
+
+		-- 2 Tinh luong theo kieu lam bao nhieu thi huong bay nhieu
+        -- Tinh tien luong theo tung loai cong
+		if not exists (SELECT 1 FROM "HR_TSKowDs" KD INNER JOIN "HR_vwKOW" KL ON KD."KowCode" = KL."KowCode" 
+			LEFT OUTER JOIN "tmp_HCSLS_FomulaSystem" as F ON KD."KowCode" = F."ListCode"
+			WHERE (("IsUserFormula" = 0) OR ("ListCode" is null)) AND (substr(to_char(KD."WorkDate",'yyyy/mm/dd'), 1, 10) BETWEEN substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10) AND substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10))
+				AND KL."PayLoc" = 1 AND KD."EmployeeID" = p_mEmployee AND KD."IsPay" =0
+LIMIT 1 ) then 
+if (p_mIsTwoSal=1)
+		then
+			if (p_mIsSecondS=1)
+			then
+				call	"HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode, v_mExchange, v_DowCode, v_BUCode,v_mBeginDate,
+						v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,1,
+						v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+						v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+				v_mDayNum := 0;
+				call	"HR_spCalWorkLateMonth"(v_mEmployee,v_mBeginDate,v_mEndDate,v_mDayNum );				
+			else
+				call "HR_spCalAllowanceNotHard"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode,v_BUCode,v_mBeginDate,v_mEndDate,
+			v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,	v_mIsTwoSal,
+			v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_TableError,
+			v_mTotalAllo1, v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+		
+		
+		-- SQLINES DEMO *** : Tính biệt lệ chay theo quyet dinh lương .ttvinh 2015.10.15
+		call "HR_spCalTExceptFormulaInCalTimeStored"(NULL, v_mEmployee, v_GroupSalCode, v_DowCode, v_mBeginDate, 
+			v_CurrencyCode, v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_InsSalary, v_JWSalary, v_JWBasic, v_JwCompa_Ratio, v_mUnitOT, 
+			v_mBeginDate, v_mEndDate, v_DepartmentCode, v_WorkCenterCode,
+			v_AmountExceptAdd,v_AmountExceptSub);
+            
+		IF v_AmountExceptAdd is null THEN v_AmountExceptAdd:= 0; END IF;
+		If v_AmountExceptSub is null Then v_AmountExceptSub:= 0; End if;
+		
+
+		-- Tí... SQLINES DEMO ***
+		if exists(select 1 from "HR_SysFormulaUser"
+				where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+limit 1)
+		THEN			
+			-- cậ... SQLINES DEMO ***
+			IF EXISTS(SELECT 1 FROM "tmp_tblListOfEmp_FillData" WHERE "EmployeeID" = p_mEmployee AND "ToTime" = p_mEndDate AND "RowID" = 1
+LIMIT 1)
+			THEN
+				-- SQLINES DEMO ***  ngày hay không
+				IF v_IsReCalculateDailySalary = 1
+				THEN
+
+					SELECT
+						CASE WHEN R1."GetDataFrom" = 3 then
+							CAST(SUBSTR(TO_CHAR (INTERVAL '-1 MONTH' + p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" AS citext) AS TIMESTAMP(3))
+						ELSE p_fBeginDate END,
+
+						CASE WHEN R1."GetDataFrom" = 3 then
+							CAST(SUBSTR(TO_CHAR (p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" - 1 AS citext) AS TIMESTAMP(3))
+						ELSE p_fEndDate END INTO v_xFromTime, v_xToTime
+					FROM (
+						SELECT "ListCode", "IsCalcByDay" from "HR_SysFormulaUser"
+						where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+						GROUP BY "ListCode", "IsCalcByDay"
+						LIMIT 1
+					) AS R INNER JOIN "HR_LSKOW" AS R1 ON R."ListCode" = R1."KowCode";
+
+					v_xFromTime := COALESCE(v_xFromTime, p_mBeginDate);
+					v_xToTime := COALESCE(v_xToTime, p_mEndDate);
+
+					CALL "HR_spCalSalaryLevelByDay"(v_DowCode, v_xFromTime, v_xToTime, 0, '', v_TableError, v_GroupSalCode, v_mEmployee);
+				END IF;
+
+				-- SQLINES DEMO ***  theo ngày vào table ghi nhận lương theo tháng
+				INSERT INTO "HR_PaySalary"("DowCode", "EmployeeID", "KowCode", "FromTime", "ToTime", "DayNum", "Amount", "AmountF", "CreatedOn", "CreatedBy")
+				SELECT p_DowCode, "EmployeeID", "KowCode", p_mBeginDate as "FromTime", p_mEndDate as "ToTime",
+					SUM("DayNum") AS "DayNum", SUM("Amount") as "Amount", Sum("AmountF") as "AmountF", NOW(), 'application'
+				From "HR_PaySalaryByDay" 
+				WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode -- SQLINES DEMO *** mBeginDate AND @mEndDate
+				Group By "EmployeeID", "KowCode";
+
+				--
+				SELECT Sum("AmountF") INTO v_AmountKow
+				From "HR_PaySalaryByDay" 
+				WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; -- SQLINES DEMO *** EEN @mBeginDate AND @mEndDate
+
+				v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			END IF;
+		end if;
+
+		-- SQLINES DEMO *** cong theo cong thuc tu dinh nghia.	Ham tra ve gia tri tong tien luong theo cong do nguoi dung tu dinh nghia
+		call "HCSPR_spCalcKowFormula"(v_mEmployee, v_DowCode, v_MMYYYY, v_BUCode, v_gBaseAmtDec,v_gForgCurrAmtDec,
+		v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_JWSalary, v_JWBasic, 
+		v_JwCompa_Ratio, v_mUnitOT, 1, v_mBeginDate,v_mEndDate, v_DepartmentCode, v_GroupSalCode, v_InsSalary, v_mProducSal, v_fSCKH, v_WorkCenterCode,
+		v_AmountKow, v_TotalAllo);
+
+		v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+		v_mTotalAllo := coalesce(v_mTotalAllo,0) + coalesce(v_TotalAllo,0);
+		
+		SELECT SUM(COALESCE("Amount",0)) INTO v_mOvertimeSal FROM "HR_PaySalary" S
+			inner JOIN "HR_vwKOW" K ON S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+		WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "FromTime" = p_mBeginDate AND "ToTime" = p_mEndDate;
+		
+		-- SQLINES DEMO ***  Tính thu nhập cho tiền công tháng trước chi trả tháng này - HCSPR_PaySalaryLastPayroll
+		if v_mOvertimeSal is null then
+			v_mOvertimeSal := 0;
+		end if;
+        
+		--ttv... SQLINES DEMO ***
+	 v_MainPaid:=0;
+		v_mAmount :=0; 
+
+		-- SQLINES DEMO *** set @mAdvSal =0 set @mSubToSal =0 set @mAddToSalVND =0 set @mAdvSalVND =0 set @mSubToSalVND =0
+		if ((p_mIsTwoSal=1 and p_mIsSecondS=1) or p_mIsTwoSal<>1)
+		then
+
+			v_MainPaid:=1;
+			if p_mIsTwoSal = 1
+			then
+			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2 and "AlloType" <> 14;
+			v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+			else
+			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2; 
+			v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+			end if;
+
+			 -- SQLINES DEMO *** ap khong tinh vao luong cung - la PC com va duoc tra trong Bang luong
+			v_mAmount :=0;
+			-- SQLINES DEMO ***  theo ngay, IsManual=1 thì lay theo DowID cho QD lương thứ 2
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR
+				("IsManual"=1 and "DowCode"=p_DowCode ))	
+			AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 2; 
+			v_mRiceAllowan := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+
+			--6. ... SQLINES DEMO ***
+			-- SQLINES DEMO *** cept numeric(18,4), @AmountVND_Except numeric(18,4), @AddSub bit, @IsBeforeTax bit
+			-- SQLINES DEMO *** tính động theo quyết định lương mới nhất (được xử lý riêng)
+			-- SQLINES DEMO *** e code
+			SELECT 
+ v_mAddToSal + coalesce(sum(case when L."AddSub" <>0 then CE."AmountF" else 0 end),0),
+ v_mAddToSalVND + coalesce(sum(case when L."AddSub" <>0 then CE."Amount" else 0 end),0),
+ v_mAdvSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."AmountF" else 0 end),0),
+ v_mAdvSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."Amount" else 0 end),0),
+ v_mSubToSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."AmountF" else 0 end),0),
+ v_mSubToSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."Amount" else 0 end),0) INTO v_mAddToSal, v_mAddToSalVND, v_mAdvSal, v_mAdvSalVND, v_mSubToSal, v_mSubToSalVND
+			FROM "HR_LSException" L INNER JOIN "HR_PayTExcept" CE ON L."ExceptCode" = CE."ExceptCode"
+			WHERE CE."EmployeeID" = p_mEmployee AND CE."DowCode"=p_DowCode AND CE."Amount" <> 0 and "IsInPayroll" <> 0 AND L."CalType" <> 4;
+			
+			v_AmountKow:=0; v_AmountOT:=0;
+			-- SQLINES DEMO *** laryLastPayroll set FromTime = @mBeginDate , To_Time = @mEndDate 
+			-- SQLINES DEMO ***  @mEmployee AND DowCode = @DowCode 
+			
+			SELECT SUM(COALESCE("Amount",0)) INTO v_AmountKow FROM "HR_PaySalaryLastPayroll" S
+			inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."IsInPayroll"=1
+			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+			
+			v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			
+			SELECT SUM(COALESCE("Amount",0)) INTO v_AmountOT FROM "HR_PaySalaryLastPayroll" S
+			inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+			v_mOvertimeSal := v_mOvertimeSal + coalesce(v_AmountOT,0);
+		ELSIF (p_mIsTwoSal=1 and p_mIsSecondS=0)
+		then
+			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 14;
+			v_mAmount := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+			update "HR_PayIncome"
+			set "GrossSal" = GrossSal + v_mAmount,"GrossSalVND"=Round("GrossSalVND" + v_mAmount* p_mExchange,p_gForgCurrAmtDec),"NetSal"="NetSal" + v_mAmount,"NetSalVND"=Round("NetSalVND"+ v_mAmount* p_mExchange,p_gForgCurrAmtDec),"TotalAllowance"="TotalAllowance" + v_mAmount
+				where "EmployeeID"=p_mEmployee and "MainPaid"=1 and "DowCode" = p_DowCode;
+		Else
+			v_mAddToSal := v_AmountExceptAdd;
+			v_mAddToSalVND := v_AmountExceptAdd;
+			v_mSubToSal := v_AmountExceptSub;
+			v_mSubToSalVND := v_AmountExceptSub;
+		end if;
+		
+		-- SQLINES DEMO *** ng thu nhap cho nhan vien
+		v_mmGrossal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal, p_gBaseAmtDec);
+		v_mmNetSal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal - v_mAdvSal - v_mSubToSal, p_gBaseAmtDec);
+		
+		begin
+		
+			-- SQLINES DEMO ***  điều kiện @mGross > 0. Mục đích: khi nv không có công trong tháng hoặc trong tháng có công nhưng là công không hưởng lương --> hệ thống vẫn insert 1 dòng vào incomes
+			-- SQLINES DEMO ***  cần xử lý data cho field TotalOTSal. Vì trong salarylevel đã xử lý trường này (cộng dồn vào qđ cuối cùng)
+			-- SQLINES DEMO *** = 0
+			-- in... SQLINES DEMO ***
+			insert into "HR_PayIncome"
+			(	"DowCode", "EmployeeID", "OrgUnitID","JobLevel","PositionID","EmpTypeCode", "AssignRegionCode","FromTime","ToTime","ExRate","BasicSalary","JobWSalary", "InsSalary",
+				"CoeffBasicSal","MainSal","UnitOT","GrossofNetSal","LawSal", "TotalKowSal","TotalOTSal","RiceAllowance", "TotalAllowance","ProductSal","AddToSal","AdvanceSal",
+				"SubToSal","AddToSalVND","AdvanceSalVND","SubToSalVND","GrossSal","GrossSalVND", "NetSal","NetSalVND", "DowNum", "BasicSalaryMin", "JobWSalaryMin", "CoeffJobWSal", 
+				"PieceWage", "GroupSalCode","ExRateSI", "CreatedBy", "CreatedOn", "WorkCenterCode", "MainPaid", "LabourType", "CurrencyCode"
+			)
+			values 
+			(
+				p_DowCode,p_mEmployee,p_DepartmentCode,p_JobPosCode,p_JobWCode,p_EmpTypeCode, p_AssignRegionCode,p_mBeginDate,p_mEndDate,p_mExchange,p_mBasicSal,p_JWSalary,p_InsSalary,
+				p_mRatio,Round(p_mBasicSal * p_mExchange, p_gForgCurrAmtDec),Round(p_mUnitOT, p_gBaseAmtDec),0,v_mLawAllo,
+				Round(v_mTotalSalAmount,p_gBaseAmtDec), 0, Round(v_mRiceAllowan, p_gBaseAmtDec),
+				Round(v_mTotalAllo,p_gBaseAmtDec),Round(p_mProducSal,p_gBaseAmtDec),Round(v_mAddToSal,p_gBaseAmtDec),Round(v_mAdvSal,p_gBaseAmtDec),
+				Round(v_mSubToSal,p_gBaseAmtDec),Round(v_mAddToSalVND,p_gForgCurrAmtDec),Round(v_mAdvSalVND,p_gForgCurrAmtDec),Round(v_mSubToSalVND,p_gForgCurrAmtDec),
+				v_mmGrossal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND,p_gForgCurrAmtDec),
+				v_mmNetSal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND - v_mAdvSalVND - v_mSubToSalVND,p_gForgCurrAmtDec),
+				p_fSCKH, p_mBasic, p_JWBasic, p_JwCompa_Ratio, p_PieceWage, p_GroupSalCode,
+				p_mExchangeBH, 'application', NOW(), p_WorkCenterCode, v_MainPaid, p_LabourType, p_CurrencyCode
+			);
+		
+		exception when others then
+		-- SQLINES DEMO *** r_message(),'''','''''')
+			v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('''||cast(p_mEmployee as citext)|| ''',N''Lỗi khi tính lương theo công (hrm_pr_Incomes) :'' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+			execute (v_sql);
+		end;
+			end if;
+		else
+			call   "HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode, v_BUCode,v_mBeginDate,
+					v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic, v_JWSalary,v_InsSalary,v_PieceWage,0,
+					v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+					v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+		end if;
+		end if;
+		-- SQLINES DEMO *** R_PaySalary luong chi tiet theo loai ngay cong
+		-- SQLINES DEMO *** 09/11/2011: Bo sung phan xet dieu kien neu cong ngoai gio tinh ben ngoai thi thu tuc tinh luong lam bao nhieu huong bay nhieu loai bo nhung cong ngoai gio
+	
+		
+
+		open curtg5;
+		
+		fetch next from curtg5 into v_cur_DayNum,v_cur_KowID,v_cur_Is_Overtime,v_cur_BasicSalRate,v_IsInPayroll;
+		while FOUND
+		loop
+			begin
+			v_mDayNum := Round(v_cur_DayNum, v_gSSLNC);
+			if (v_cur_Is_Overtime=5)-- SQLINES DEMO *** gio thi tinh theo cac cach tinh hien nay chuong trinh co nhu: tinh theo don gia tien luong rieng haoc tinh theo ngya cong chuan rieng
+			then
+				if (v_gPRIsUnitOT=1)-- SQLINES DEMO *** gio theo don gia gio
+					then
+					v_mSalKow := Round(p_mUnitOT * v_mDayNum * v_cur_BasicSalRate/ 100, p_gBaseAmtDec);
+					-- SQLINES DEMO *** inh theo don gia'
+				else
+					if ((v_gTSIsOTByHour=1) And (p_gSGMC > 1)) then-- SQLINES DEMO *** gio  tinh theo gio va so gio mot cong > 1
+						if (v_gTSStandardWDOfOT > 0) -- SQLINES DEMO ***  theo Ngay cong chuan rieng
+						--doi... SQLINES DEMO ***
+							then
+							v_mSalKow := Round((((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum) / (v_gTSStandardWDOfOT * p_gSGMC)), p_gBaseAmtDec);
+							-- SQLINES DEMO *** inh theo ngay cong chuan rieng ' + cast (@mKowAmountOT as varchar) + 'Ty le' + cast(@cur_BasicSalRate as varchar) + 'so cong chuan ' + cast(@gTSStandardWDOfOT as varchar) + ' so gio mot cong ' + cast(@gSGMC as varchar)
+						else -- SQLINES DEMO *** o ngay cong chuan chung
+							v_mSalKow := Round((((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum) / (p_fSCKHY * p_gSGMC)), p_gBaseAmtDec);
+							-- SQLINES DEMO *** inh theo ngay chuan chung ' + cast(@mKowAmountOT as varchar) + ' SGMC ' + cast(@gSGMC as varchar)
+							end if;
+					elsif -- SQLINES DEMO *** So gio mot cong la cu8ng mot don vi tinh: hoac deu la gio hoac deu la cong
+					 (v_gTSStandardWDOfOT > 0) then
+							--doi... SQLINES DEMO ***
+							v_mSalKow := Round(((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum / v_gTSStandardWDOfOT), p_gBaseAmtDec);
+						else
+							v_mSalKow := Round(((v_mKowAmountOT * v_cur_BasicSalRate / 100) * v_mDayNum / p_fSCKHY), p_gBaseAmtDec);
+					end if;
+				end if;
+				if(v_IsInPayroll=1) then v_mOvertimeSal := v_mOvertimeSal + v_mSalKow; end if;
+			else -- SQLINES DEMO ***  ngoai gio thi tinh theo ngay cong chuan binh thuong
+				
+			 -- SQLINES DEMO ***  Chinh sua @fSCKH
+				v_mSalKow := Round(((v_mKowAmount * v_cur_BasicSalRate / 100) * v_mDayNum / p_fSCKH), p_gBaseAmtDec);
+			end if;
+
+			if v_mSalKow <> 0
+			then
+				insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+				values (p_mEmployee,v_cur_KowID,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+						v_mDayNum,Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+			end if;
+			if(v_IsInPayroll=1) then v_mTotalSalAmount := v_mTotalSalAmount + v_mSalKow; end if;
+			exception when others then
+			--pri... SQLINES DEMO ***
+				v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(v_cur_mKow as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+				execute (v_sql);
+			end; 
+			fetch next from curtg5 into v_cur_DayNum,v_cur_KowID,v_cur_Is_Overtime,v_cur_BasicSalRate,v_IsInPayroll;
+		end loop;
+		close curtg5;
+		
+		-- SQLINES DEMO *** 11: Bo sung phan cong lai gia tri tong cong de insert vao Income doi voi truong hop Luong ngoai gio duoc tinh rieng
+		if (v_gPRIsImportOT=1)
+		then
+			v_mOvertimeSal := 0;
+			if exists (SELECT 1 FROM "HR_PaySalary" WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "KowCode" IN (SELECT "KowCode" FROM "HR_vwKOW" WHERE "KowType" =5 and "IsInPayroll"=1 )
+LIMIT 1)
+			then
+				SELECT SUM(COALESCE("Amount",0)) INTO v_mOvertimeSal FROM "HR_PaySalary" WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "KowCode" IN (SELECT "KowCode" FROM "HR_vwKOW" WHERE "KowType" =5 and "IsInPayroll"=1);
+			end if;    
+	    v_mTotalSalAmount := v_mTotalSalAmount + v_mOvertimeSal;
+		end if;
+		
+		end if;
+		v_mDayNum := 0;
+		call "HR_spCalWorkLateMonth"(v_mEmployee,v_mBeginDate,v_mEndDate,v_mDayNum);
+		-- SQLINES DEMO *** 03 them syntax begin end vao ham IF
+		if (v_mDayNum > 0) 
+		THEN
+            if (v_PRIsYearSalary=0) then
+                v_mSalKow := -((v_mKowAmount / p_mDayNumKH) * v_mDayNum);
+            elsif
+                (p_gSGMC <> 1) then
+                    v_mSalKow := -(v_mKowAmount * 12 / p_fSCKHY * v_mDayNum);
+                else
+                    v_mSalKow := -(v_mKowAmount * 12 / (p_fSCKHY * 8) * v_mDayNum);
+            end if;
+			v_mTotalSalAmount := v_mTotalSalAmount + v_mSalKow;
+			IF v_mSalKow <> 0
+			then
+				begin
+				insert into "HR_PaySalary"("EmployeeID","KowCode","DowCode","FromTime","ToTime","DayNum","Amount","AmountF","CreatedOn","CreatedBy")
+				values (p_mEmployee,p_mKowCodeLate,p_DowCode,substr(to_char(p_mBeginDate,'yyyy/mm/dd'), 1, 10),substr(to_char(p_mEndDate,'yyyy/mm/dd'), 1, 10),
+				Round(v_mDayNum,v_gSSLNC),Round(v_mSalKow * p_mExchange,p_gForgCurrAmtDec),v_mSalKow,NOW(),'application');
+				exception when others then
+				--pri... SQLINES DEMO ***
+					v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('||cast(p_mEmployee as citext)|| ',N''Lỗi khi tính lương theo công :' || cast(v_cur_mKow as citext) || ''' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+					execute (v_sql);
+				end;
+			end if;
+		END IF;
+		-- SQLINES DEMO *** HI NHAN VIEN CO TON TAI NHUNG CONG DO BHXH CHI TRA
+		
+		
+	end if;
+	
+	
+	-- SQLINES DEMO ***  phu cap khong cong vao luong cung ma nhan vien duoc huong
+-- 	CAL_ALL:	
+	
+-- 		if (p_mIsTwoSal=1)
+-- 		then
+-- 			if (p_mIsSecondS=1)
+-- 			then
+-- 				call	"HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode, v_mExchange, v_DowCode, v_BUCode,v_mBeginDate,
+-- 						v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,1,
+-- 						v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+-- 						v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+-- 				v_mDayNum := 0;
+-- 				call	"HR_spCalWorkLateMonth"(v_mEmployee,v_mBeginDate,v_mEndDate,v_mDayNum );				
+-- 			else
+-- 				GoTo NEXT_ALL
+-- 			end if;
+-- 		else
+-- 			call   "HR_spCalAllowanceNotHardFix"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode, v_BUCode,v_mBeginDate,
+-- 					v_mEndDate,v_mBasic,v_mBasicSal,v_JWBasic, v_JWSalary,v_InsSalary,v_PieceWage,0,
+-- 					v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_fBeginDate,v_fEndDate,v_TableError,
+-- 					v_mTotalAllo1,v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+-- 		end if;
+-- 	NEXT_ALL:
+
+-- 		call "HR_spCalAllowanceNotHard"(v_mEmployee,v_CurrencyCode,v_mExchange,v_DowCode,v_BUCode,v_mBeginDate,v_mEndDate,
+-- 			v_mBasic,v_mBasicSal,v_JWBasic,v_JWSalary,v_InsSalary,v_PieceWage,	v_mIsTwoSal,
+-- 			v_mDayNumKHCalAllowance,v_gTSIsNightByHour,v_gSGMC,v_gTSIsOTByHour,v_fSCKH,v_AbsenceRegular,v_TableError,
+-- 			v_mTotalAllo1, v_mTotalAllo2, v_mTotalAllo3, v_mTotalAllo4, v_mTotalAllo5);
+		
+		
+-- 		-- SQLINES DEMO *** : Tính biệt lệ chay theo quyet dinh lương .ttvinh 2015.10.15
+-- 		call "HR_spCalTExceptFormulaInCalTimeStored"(NULL, v_mEmployee, v_GroupSalCode, v_DowCode, v_mBeginDate, 
+-- 			v_CurrencyCode, v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_InsSalary, v_JWSalary, v_JWBasic, v_JwCompa_Ratio, v_mUnitOT, 
+-- 			v_mBeginDate, v_mEndDate, v_DepartmentCode, v_WorkCenterCode,
+-- 			v_AmountExceptAdd,v_AmountExceptSub);
+            
+-- 		IF v_AmountExceptAdd is null THEN v_AmountExceptAdd:= 0; END IF;
+-- 		If v_AmountExceptSub is null Then v_AmountExceptSub:= 0; End if;
+		
+
+-- 		-- Tí... SQLINES DEMO ***
+-- 		if exists(select 1 from "HR_SysFormulaUser"
+-- 				where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+-- limit 1)
+-- 		THEN			
+-- 			-- cậ... SQLINES DEMO ***
+-- 			IF EXISTS(SELECT 1 FROM "tmp_tblListOfEmp_FillData" WHERE "EmployeeID" = p_mEmployee AND "ToTime" = p_mEndDate AND "RowID" = 1
+-- LIMIT 1)
+-- 			THEN
+-- 				-- SQLINES DEMO ***  ngày hay không
+-- 				IF v_IsReCalculateDailySalary = 1
+-- 				THEN
+
+-- 					SELECT
+-- 						CASE WHEN R1."GetDataFrom" = 3 then
+-- 							CAST(SUBSTR(TO_CHAR (INTERVAL '-1 MONTH' + p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" AS VARCHAR(30)) AS TIMESTAMP(3))
+-- 						ELSE p_fBeginDate END,
+
+-- 						CASE WHEN R1."GetDataFrom" = 3 then
+-- 							CAST(SUBSTR(TO_CHAR (p_DowCode, 'YYYY/MM/DD'), 1, 7) || '/' || CAST(R1."FixedDay" - 1 AS VARCHAR(30)) AS TIMESTAMP(3))
+-- 						ELSE p_fEndDate END INTO v_xFromTime, v_xToTime
+-- 					FROM (
+-- 						SELECT "ListCode", "IsCalcByDay" from "HR_SysFormulaUser"
+-- 						where "GroupSalCode" = p_GroupSalCode and "ListType" = 'HR_LSKOW' and ("IsCalcByDay" = 1)
+-- 						GROUP BY "ListCode", "IsCalcByDay"
+-- 						LIMIT 1
+-- 					) AS R INNER JOIN "HR_LSKOW" AS R1 ON R."ListCode" = R1."KowCode";
+
+-- 					v_xFromTime := COALESCE(v_xFromTime, p_mBeginDate);
+-- 					v_xToTime := COALESCE(v_xToTime, p_mEndDate);
+
+-- 					CALL "HR_spCalSalaryLevelByDay"(v_DowCode, v_xFromTime, v_xToTime, 0, '', v_TableError, v_GroupSalCode, v_mEmployee);
+-- 				END IF;
+
+-- 				-- SQLINES DEMO ***  theo ngày vào table ghi nhận lương theo tháng
+-- 				INSERT INTO "HR_PaySalary"("DowCode", "EmployeeID", "KowCode", "FromTime", "ToTime", "DayNum", "Amount", "AmountF", "CreatedOn", "CreatedBy")
+-- 				SELECT p_DowCode, "EmployeeID", "KowCode", p_mBeginDate as "FromTime", p_mEndDate as "ToTime",
+-- 					SUM("DayNum") AS "DayNum", SUM("Amount") as "Amount", Sum("AmountF") as "AmountF", NOW(), 'application'
+-- 				From "HR_PaySalaryByDay" 
+-- 				WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode -- SQLINES DEMO *** mBeginDate AND @mEndDate
+-- 				Group By "EmployeeID", "KowCode";
+
+-- 				--
+-- 				SELECT Sum("AmountF") INTO v_AmountKow
+-- 				From "HR_PaySalaryByDay" 
+-- 				WHERE "DowCode" = p_DowCode and "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; -- SQLINES DEMO *** EEN @mBeginDate AND @mEndDate
+
+-- 				v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+-- 			END IF;
+-- 		end if;
+
+-- 		-- SQLINES DEMO *** cong theo cong thuc tu dinh nghia.	Ham tra ve gia tri tong tien luong theo cong do nguoi dung tu dinh nghia
+-- 		call "HCSPR_spCalcKowFormula"(v_mEmployee, v_DowCode, v_MMYYYY, v_BUCode, v_gBaseAmtDec,v_gForgCurrAmtDec,
+-- 		v_mExchange, v_mBasicSal, v_mBasic, v_Compa_Ratio, v_PieceWage, v_JWSalary, v_JWBasic, 
+-- 		v_JwCompa_Ratio, v_mUnitOT, 1, v_mBeginDate,v_mEndDate, v_DepartmentCode, v_GroupSalCode, v_InsSalary, v_mProducSal, v_fSCKH, v_WorkCenterCode,
+-- 		v_AmountKow, v_TotalAllo);
+
+-- 		v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+-- 		v_mTotalAllo := coalesce(v_mTotalAllo,0) + coalesce(v_TotalAllo,0);
+		
+-- 		SELECT SUM(COALESCE("Amount",0)) INTO v_mOvertimeSal FROM "HR_PaySalary" S
+-- 			inner JOIN "HR_vwKOW" K ON S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+-- 		WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode AND "FromTime" = p_mBeginDate AND "ToTime" = p_mEndDate;
+		
+-- 		-- SQLINES DEMO ***  Tính thu nhập cho tiền công tháng trước chi trả tháng này - HCSPR_PaySalaryLastPayroll
+-- 		if v_mOvertimeSal is null then
+-- 			v_mOvertimeSal := 0;
+-- 		end if;
+        
+-- 		--ttv... SQLINES DEMO ***
+-- 	 v_MainPaid:=0;
+-- 		v_mAmount :=0; 
+
+-- 		-- SQLINES DEMO *** set @mAdvSal =0 set @mSubToSal =0 set @mAddToSalVND =0 set @mAdvSalVND =0 set @mSubToSalVND =0
+-- 		if ((p_mIsTwoSal=1 and p_mIsSecondS=1) or p_mIsTwoSal<>1)
+-- 		then
+
+-- 			v_MainPaid:=1;
+-- 			if p_mIsTwoSal = 1
+-- 			then
+-- 			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+-- 			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+-- 			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+-- 				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2 and "AlloType" <> 14;
+-- 			v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+-- 			else
+-- 			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+-- 			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+-- 			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+-- 				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" <> 2; 
+-- 			v_mTotalAllo := v_mTotalAllo + Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+-- 			end if;
+
+-- 			 -- SQLINES DEMO *** ap khong tinh vao luong cung - la PC com va duoc tra trong Bang luong
+-- 			v_mAmount :=0;
+-- 			-- SQLINES DEMO ***  theo ngay, IsManual=1 thì lay theo DowID cho QD lương thứ 2
+-- 			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+-- 			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR
+-- 				("IsManual"=1 and "DowCode"=p_DowCode ))	
+-- 			AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 2; 
+-- 			v_mRiceAllowan := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+
+-- 			--6. ... SQLINES DEMO ***
+-- 			-- SQLINES DEMO *** cept numeric(18,4), @AmountVND_Except numeric(18,4), @AddSub bit, @IsBeforeTax bit
+-- 			-- SQLINES DEMO *** tính động theo quyết định lương mới nhất (được xử lý riêng)
+-- 			-- SQLINES DEMO *** e code
+-- 			SELECT 
+--  v_mAddToSal + coalesce(sum(case when L."AddSub" <>0 then CE."AmountF" else 0 end),0),
+--  v_mAddToSalVND + coalesce(sum(case when L."AddSub" <>0 then CE."Amount" else 0 end),0),
+--  v_mAdvSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."AmountF" else 0 end),0),
+--  v_mAdvSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" =0 then CE."Amount" else 0 end),0),
+--  v_mSubToSal + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."AmountF" else 0 end),0),
+--  v_mSubToSalVND + coalesce(sum(case when L."AddSub" =0 and L."IsBeforeTax" <>0 then CE."Amount" else 0 end),0) INTO v_mAddToSal, v_mAddToSalVND, v_mAdvSal, v_mAdvSalVND, v_mSubToSal, v_mSubToSalVND
+-- 			FROM "HR_LSException" L INNER JOIN "HR_PayTExcept" CE ON L."ExceptCode" = CE."ExceptCode"
+-- 			WHERE CE."EmployeeID" = p_mEmployee AND CE."DowCode"=p_DowCode AND CE."Amount" <> 0 and "IsInPayroll" <> 0 AND L."CalType" <> 4;
+			
+-- 			v_AmountKow:=0; v_AmountOT:=0;
+-- 			-- SQLINES DEMO *** laryLastPayroll set FromTime = @mBeginDate , To_Time = @mEndDate 
+-- 			-- SQLINES DEMO ***  @mEmployee AND DowCode = @DowCode 
+			
+-- 			SELECT SUM(COALESCE("Amount",0)) INTO v_AmountKow FROM "HR_PaySalaryLastPayroll" S
+-- 			inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."IsInPayroll"=1
+-- 			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+			
+-- 			v_mTotalSalAmount := v_mTotalSalAmount + coalesce(v_AmountKow,0);
+			
+-- 			SELECT SUM(COALESCE("Amount",0)) INTO v_AmountOT FROM "HR_PaySalaryLastPayroll" S
+-- 			inner JOIN "HR_LSKOW" K on S."KowCode"=K."KowCode" and K."KowType" =5 and K."IsInPayroll"=1
+-- 			WHERE "EmployeeID" = p_mEmployee AND "DowCode" = p_DowCode; 
+-- 			v_mOvertimeSal := v_mOvertimeSal + coalesce(v_AmountOT,0);
+-- 		ELSIF (p_mIsTwoSal=1 and p_mIsSecondS=0)
+-- 		then
+-- 			-- SQLINES DEMO *** ap khong tinh vao luong cung - ko la PC com va duoc tra trong Bang luong
+-- 			SELECT SUM(coalesce("AmountF",0)) INTO v_mAmount FROM "HR_PayAllowance" T INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+-- 			WHERE "EmployeeID" = p_mEmployee AND (("IsManual"=0 AND "FromTime" = p_mBeginDate) OR ("IsManual"=1 and "DowCode"=p_DowCode ))
+-- 				AND "IsLawSalary" = 0 AND "IsInPayroll" = 1 AND "AlloType" = 14;
+-- 			v_mAmount := Round(COALESCE(v_mAmount,0), p_gBaseAmtDec);
+-- 			update "HR_PayIncome"
+-- 			set "GrossSal" = GrossSal + v_mAmount,"GrossSalVND"=Round("GrossSalVND" + v_mAmount* p_mExchange,p_gForgCurrAmtDec),"NetSal"="NetSal" + v_mAmount,"NetSalVND"=Round("NetSalVND"+ v_mAmount* p_mExchange,p_gForgCurrAmtDec),"TotalAllowance"="TotalAllowance" + v_mAmount
+-- 				where "EmployeeID"=p_mEmployee and "MainPaid"=1 and "DowCode" = p_DowCode;
+-- 		Else
+-- 			v_mAddToSal := v_AmountExceptAdd;
+-- 			v_mAddToSalVND := v_AmountExceptAdd;
+-- 			v_mSubToSal := v_AmountExceptSub;
+-- 			v_mSubToSalVND := v_AmountExceptSub;
+-- 		end if;
+		
+-- 		-- SQLINES DEMO *** ng thu nhap cho nhan vien
+-- 		v_mmGrossal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal, p_gBaseAmtDec);
+-- 		v_mmNetSal := Round(v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan + v_mAddToSal - v_mAdvSal - v_mSubToSal, p_gBaseAmtDec);
+		
+-- 		begin
+		
+-- 			-- SQLINES DEMO ***  điều kiện @mGross > 0. Mục đích: khi nv không có công trong tháng hoặc trong tháng có công nhưng là công không hưởng lương --> hệ thống vẫn insert 1 dòng vào incomes
+-- 			-- SQLINES DEMO ***  cần xử lý data cho field TotalOTSal. Vì trong salarylevel đã xử lý trường này (cộng dồn vào qđ cuối cùng)
+-- 			-- SQLINES DEMO *** = 0
+-- 			-- in... SQLINES DEMO ***
+-- 			insert into "HR_PayIncome"
+-- 			(	"DowCode", "EmployeeID", "OrgUnitID","JobLevel","PositionID","EmpTypeCode", "AssignRegionCode","FromTime","ToTime","ExRate","BasicSalary","JobWSalary", "InsSalary",
+-- 				"CoeffBasicSal","MainSal","UnitOT","GrossofNetSal","LawSal", "TotalKowSal","TotalOTSal","RiceAllowance", "TotalAllowance","ProductSal","AddToSal","AdvanceSal",
+-- 				"SubToSal","AddToSalVND","AdvanceSalVND","SubToSalVND","GrossSal","GrossSalVND", "NetSal","NetSalVND", "DowNum", "BasicSalaryMin", "JobWSalaryMin", "CoeffJobWSal", 
+-- 				"PieceWage", "GroupSalCode","ExRateSI", "CreatedBy", "CreatedOn", "WorkCenterCode", "MainPaid", "LabourType", "CurrencyCode"
+-- 			)
+-- 			values 
+-- 			(
+-- 				p_DowCode,p_mEmployee,p_DepartmentCode,p_JobPosCode,p_JobWCode,p_EmpTypeCode, p_AssignRegionCode,p_mBeginDate,p_mEndDate,p_mExchange,p_mBasicSal,p_JWSalary,p_InsSalary,
+-- 				p_mRatio,Round(p_mBasicSal * p_mExchange, p_gForgCurrAmtDec),Round(p_mUnitOT, p_gBaseAmtDec),0,v_mLawAllo,
+-- 				Round(v_mTotalSalAmount,p_gBaseAmtDec), 0, Round(v_mRiceAllowan, p_gBaseAmtDec),
+-- 				Round(v_mTotalAllo,p_gBaseAmtDec),Round(p_mProducSal,p_gBaseAmtDec),Round(v_mAddToSal,p_gBaseAmtDec),Round(v_mAdvSal,p_gBaseAmtDec),
+-- 				Round(v_mSubToSal,p_gBaseAmtDec),Round(v_mAddToSalVND,p_gForgCurrAmtDec),Round(v_mAdvSalVND,p_gForgCurrAmtDec),Round(v_mSubToSalVND,p_gForgCurrAmtDec),
+-- 				v_mmGrossal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND,p_gForgCurrAmtDec),
+-- 				v_mmNetSal,Round((v_mTotalSalAmount + p_mProducSal + v_mTotalAllo + v_mRiceAllowan) * p_mExchange + v_mAddToSalVND - v_mAdvSalVND - v_mSubToSalVND,p_gForgCurrAmtDec),
+-- 				p_fSCKH, p_mBasic, p_JWBasic, p_JwCompa_Ratio, p_PieceWage, p_GroupSalCode,
+-- 				p_mExchangeBH, 'application', NOW(), p_WorkCenterCode, v_MainPaid, p_LabourType, p_CurrencyCode
+-- 			);
+		
+-- 		exception when others then
+-- 		-- SQLINES DEMO *** r_message(),'''','''''')
+-- 			v_sql :='insert into ' || p_TableError || ' (EmployeeID,ErrorMsg,ErrorMsgCode) values('''||cast(p_mEmployee as varchar(30))|| ''',N''Lỗi khi tính lương theo công (hrm_pr_Incomes) :'' , ''' ||REPLACE(error_message(),'''','''''') || ''' )';
+-- 			execute (v_sql);
+-- 		end;
+END;
+$BODY$;
+ALTER PROCEDURE public."HR_spCalculateTimeSalary"(citext, citext, citext, citext, citext, citext, citext, timestamp without time zone, timestamp without time zone, numeric, numeric, numeric, numeric, numeric, numeric, numeric, boolean, boolean, numeric, citext, numeric, numeric, numeric, numeric, citext, citext, numeric, citext, integer, numeric, timestamp without time zone, timestamp without time zone, numeric, numeric, numeric, citext, citext, citext, boolean, integer, integer, numeric, citext, citext, integer)
+    OWNER TO postgres;
