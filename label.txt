@@ -1,0 +1,19 @@
+cal_all
+
+next_kow
+
+cal_all
+
+cal_all
+
+next_all
+
+
+
+
+trog cal_all chứa next_all
+
+
+next_kow chứa cal_all và next_all
+
+
