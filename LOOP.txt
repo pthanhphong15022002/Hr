@@ -1,0 +1,3099 @@
+-- PROCEDURE: public.HR_spCalSalaryLevel(citext, citext, citext, numeric, boolean, citext, citext, citext, integer)
+
+-- DROP PROCEDURE IF EXISTS public."HR_spCalSalaryLevel"(citext, citext, citext, numeric, boolean, citext, citext, citext, integer);
+
+CREATE OR REPLACE PROCEDURE public."HR_spCalSalaryLevel"(
+	IN p_dowcode citext DEFAULT '2024/10'::citext,
+	IN p_userid citext DEFAULT 'admin'::citext,
+	IN p_functionid citext DEFAULT 'HCSPR03'::citext,
+	IN p_producsal numeric DEFAULT 0,
+	IN p_chkpay boolean DEFAULT false,
+	IN p_tableerror citext DEFAULT 'Error_HR_spCalSalaryLevel'::citext,
+	IN p_pgroupsalcode citext DEFAULT ''::citext,
+	IN p_stremps citext DEFAULT '100084'::citext,
+	IN p_paytimes integer DEFAULT 1)
+LANGUAGE 'plpgsql'
+AS $BODY$
+
+declare v_sql citext;
+
+--@PRIsTotalKowSal: lương tính trên tổng công(không kể công ngoài giờ) và ngày công chuẩn
+ v_PRIsImportOT boolean; v_PRIsTotalKowSal boolean; 
+ v_PRIsTotalKowSal_Adjust boolean; 
+ v_error_message citext; -- Log lỗi 
+-- @PRIsExactByKowForNewEmp: 1:Tính chính xác công khi vào làm giữa kỳ lương . 0:Số ngày công chuẩn - ngày ko đi làm do vào giữa kỳ
+ v_PRIsExactByKowForNewEmp boolean;
+ v_KowCodeNor citext; 
+ v_KowCodeOff citext; 
+ v_KowCodeLate citext; 
+ v_fSCKHY numeric(18,4);
+ v_EmployeeID citext; 
+ v_DepartmentCode_Origin citext;
+ v_GroupType int; 
+ v_DepartmentCode citext; 
+ v_JobWCode citext; 
+ v_EmpTypeCode citext; 
+ v_AssignRegionCode citext; 
+ v_GroupSalCode citext; 
+ v_LabourType int; 
+ v_JobPosCode citext; 
+ v_WorkCenterCode citext;
+ v_GroupType_N int; 
+ v_DepartmentCode_N citext; 
+ v_JobWCode_N citext; 
+ v_EmpTypeCode_N citext; 
+ v_AssignRegionCode_N citext; 
+ v_GroupSalCode_N citext; 
+ v_LabourType_N int; 
+ v_JobPosCode_N citext; 
+ v_WorkCenterCode_N citext;
+ v_IsServiceFee boolean;
+ v_CurrencyCode citext; 
+ v_ExchangeEmp numeric(19,4); 
+ v_ExchangeEmpBH numeric(19,4);
+ v_CoeffSalary numeric(18,4); 
+ v_MinSalary numeric(18,4); v_RealSalary numeric(18,4); 
+ v_InsSalary numeric(18,4); v_PieceWage numeric(18,4); 
+ v_JWMinSalary numeric(18,4); v_JWRealSalary numeric(18,4); 
+ v_JWCoeffSalary numeric(18,4); v_ObjVacaCode 
+ varchar(20); v_IsMonth boolean; v_AddToDate citext;
+ v_FromTime TIMESTAMP; 
+ v_ToTime TIMESTAMP; 
+ v_RatePercent numeric(18,4); 
+ v_UnitOT numeric(18,4); 
+ v_DayNum numeric(18,4); 
+ v_JoinDate TIMESTAMP; 
+ v_EndDate TIMESTAMP;
+ v_TaxCode citext; 
+ v_fSCKH numeric(18,4);
+ v_fBeginDate timestamp; 
+ v_fEndDate TIMESTAMP; 
+ v_gSGMC numeric(18,4); 
+ v_WLeaveDayValue INT; 
+ v_WLeaveDayGroupCode citext;
+ v_PartyFee numeric(18,4);
+ v_TUnionFee numeric(18,4);
+ v_YUnionFee numeric(18,4);
+ v_RealSalaryN numeric(18,4); 
+ v_CoeffSalaryN numeric(18,4);
+ v_RatePercentN numeric(18,4); 
+ v_MinSalaryN numeric(18,4);
+ v_JWMinSalaryN numeric(18,4); 
+ v_JWRealSalaryN numeric(18,4); 
+ v_JwCoeffSalaryN numeric(18,4); 
+ v_InsSalaryN numeric(18,4); 
+ v_PieceWageN numeric(18,4); 
+ v_FromTimeN TIMESTAMP; 
+ v_ToTimeN TIMESTAMP;
+ v_UnitOTN numeric(18,4);
+ v_YYYYMM citext; 
+ v_OfficialDate TIMESTAMP;
+ v_PRIsNotLimitEndDateCalSal boolean;
+ v_gPRIsCalCurrentSal boolean; -- tính theo quyết định lương hiện tại
+ v_gPRDecPlaceExRate int;
+ v_gPRDecPlaceCurrencyForCal int;
+ v_gPRDecPlaceCurrencyForPay int;
+ v_gPRRoundingNumber int; 
+ v_FroMonth citext; v_PerDepend int;
+ v_IsParty boolean; v_IsYUnion boolean; v_IsTUnion boolean;
+ v_PartyRegulation int; v_YUnionRegulation int; v_TUnionRegulation int;
+ v_gPRPartyApplyAll int;v_gPRYUnionApplyAll int;v_gPRTUnionApplyAll int; 
+ v_gPRYUnionAmount numeric(18,4);v_gPRTUnionAmount numeric(18,4); v_gPRPartyAmount numeric(18,4);
+ v_gPRPartyMaxAmount numeric(18,4);v_gPRYUnionMaxAmount numeric(18,4);v_gPRTUnionMaxAmount numeric(18,4);
+ v_PRPartyCalMethod int ;v_PRYUnionCalMethod int;v_PRTUnionCalMethod INT;
+ v_gIs_TotalIncome boolean;v_gIsNetIncome boolean;v_gIsMinsalay boolean;v_gIsSalaryKP boolean;v_gApp_IsSalaryIns boolean;
+ v_PRIsSIByCurrencyForCal boolean; v_SNCCBH smallint;
+ v_InsSalaryAmount numeric(18,4); v_InsSalaryAmountF numeric(18,4); v_PRCurrencyForCal citext; v_PRCurrencyForPay citext;
+ v_AmountTaxTemp numeric(18,4);
+ v_IsAlwaysRunInFormula boolean;
+  v_BUCode citext;
+  v_SubforNextMonth citext;
+  v_IsGrossupNotSocialIns BOOLEAN;
+  v_NextDowCode citext;
+  v_gPRPITFamilyTaxFreeUnit_Peru numeric(18,4);
+  v_gPRPITFamilyTaxFreeOwn_Peru numeric(18,4);
+  v_gPRPITFamilyTaxFreeUnit numeric(18,4);
+  v_gPRPITFamilyTaxFreeOwn numeric(18,4);
+  v_gPRPITHouseRate numeric(18,4);
+  v_gPRIsSIByCurrencyForCal boolean;
+  v_gPRPITType int;
+  v_PRPITHouseRate numeric(18,4);
+  v_gEffectDatePRSIDayDecrease TIMESTAMP;
+  v_gEffectDatePRSIDayEffect TIMESTAMP;
+  v_PRSITotalPaidDays int;
+  v_PRSITotalPaidDaysType INT;
+  v_PRSIPaidDayKowCodes TEXT;
+  v_PRSIAdjDowCodeType int;
+  v_SI_MaxSalary numeric(18,4);
+  v_IsInTaxableIncome_mHouse boolean;
+  v_tmp_GroupSalCode citext;
+  v_DayNum_Temp numeric(18,4);
+  v_DayNumRest numeric(18,4);
+  v_PreM_Amount numeric(18,4);
+  v_mAdvSalAll numeric(18,4);
+  v_mTuNumCom numeric(18,4);
+  v_mMiNum numeric(18,4);
+  v_mMiNumCom numeric(18,4);
+  v_mSiNum numeric(18,4);
+  v_mSiNumCom numeric(18,4);
+  v_mUIAmountE numeric(18,4);
+  v_mUIAmountC numeric(18,4);
+  v_mMiNum_TempOnlyNet numeric(18,4);
+  v_mMiNumCom_TempOnlyNet numeric(18,4);
+  v_mSiNum_TempOnlyNet numeric(18,4);
+  v_mSiNumCom_TempOnlyNet numeric(18,4);
+  v_mUIAmountE_TempOnlyNet numeric(18,4);
+  v_mUIAmountC_TempOnlyNet numeric(18,4);
+  v_mAmountTaxE numeric(18,4);
+  v_mTaxAmountPaidOut numeric(18,4);
+  v_mAmountTax numeric(18,4);
+  v_mAmountTaxCo numeric(18,4);
+  v_mDiffAllo numeric(18,4);
+  v_mTotalIncomeE numeric(18,4);
+  v_mTaxIncomeCo numeric(18,4);
+  v_mAlloIncS numeric(18,4);
+  v_mAlloInc numeric(18,4);
+  v_mSalTax numeric(18,4);
+  v_mTotalIncome numeric(18,4);
+  v_ProductAmount numeric(18,4);
+  v_mAlloTaxE numeric(18,4);
+  v_mIncomeOtherE numeric(18,4);
+  v_mToltalBonusE numeric(18,4);
+  v_mAllInKind numeric(18,4);
+  v_mFamilyTax numeric(18,4);
+  v_mFamilyTaxFreeOwn numeric(18,4);
+  v_mTaxIncome numeric(18,4);
+  v_mTaxableIncome numeric(18,4);
+  v_mIncomeOther numeric(18,4);
+  v_mToltalBonus numeric(18,4);
+  v_mTaxIncomeOriginal numeric(18,4);
+  v_mTotalIncomeCompany numeric(18,4);
+  v_mTaxIncomeCompany numeric(18,4);
+  v_mTaxableIncomeCompany numeric(18,4);
+  v_mAlloTax numeric(18,4);
+  v_AmountTemp numeric(18,4);
+  v_OTSalTax numeric(18,4);
+  v_OTSalNonTax numeric(18,4);
+  v_InsuranceAdj numeric(18,4);
+  v_CurrencyCodeTax citext;
+  v_InfrequentInc int;
+  v_tmpDayNum numeric(18,4);
+  v_fBegDay TIMESTAMP;
+  v_fEndDay TIMESTAMP;
+  v_IsDeduction BOOLEAN;
+  v_FDate TIMESTAMP;
+  v_TDate TIMESTAMP;
+  v_AmoutExceptIsTaxed numeric(18,4);
+  v_AmountTaxExceptIsTaxed numeric(18,4);
+  v_TExcept_charity_fund numeric(18,4);
+  v_TotalAmountNotTaxPayer numeric(18,4);
+  v_TaxableIncome_Pre numeric;
+  v_Insurance_Pre numeric;
+  v_TaxAmount_Pre numeric;
+  v_DowCode_Pre citext;
+  v_TaxableIncomeYTD numeric(18,4);
+  v_TaxIncomeYTD numeric(18,4);
+  v_SocialInsPayableYTD numeric(18,4);
+  v_FamilyTaxYTD numeric(18,4);
+  v_TaxAmountYTD numeric(18,4);
+  v_TaxIncomeAvg numeric(18,4);
+  v_TaxableIncome10perYTD numeric(18,4);
+  v_TaxPayableYTD numeric(18,4);
+  v_TaxPayable10perYTD numeric(18,4);
+  v_TaxCode_Pre citext;
+  v_NumMonthYTD int;
+  v_TotalIncomeNotPayTax numeric(18,4);
+  v_TaxPayableYTD_Pre numeric(18,4);
+  v_TaxableIncome2 numeric(18,4);
+  v_ExchangeEmpTax numeric(18,4);
+  v_OverMoney numeric(18,4);
+  v_OverMoney_2 numeric(18,4);
+  v_mTotalIncomeTemp numeric(18,4);
+  v_mToltalSalary13 numeric(18,4);
+  v_TExcept numeric(18,4);
+  v_mHousePoli numeric(18,4);
+  v_mHouse numeric(18,4);
+  v_mHouse1 numeric(18,4);
+  v_IncomeCalcHouseNet numeric(18,4);
+  v_IncomeCalcHouseGross1 numeric(18,4);
+  v_IncomeCalcHouseGross numeric(18,4);
+  v_TaxIncome_Net numeric(18,4);
+  v_GrossAmount numeric(18,4);
+  v_mHouseTemp numeric(18,4);
+  v_GrossTemp numeric(18,4);
+  v_mIncomeOtherTemp numeric(18,4);
+  v_mAlloTaxTemp numeric(18,4);
+  v_From_Time TIMESTAMP;
+  v_mHouseAllo numeric;
+  v_mTrunc numeric(18,4);
+  v_mIsCal boolean;
+  v_mPer_Group numeric(18,4);
+  v_mPer_Union numeric(18,4);
+  v_mPer_Party numeric(18,4);
+  v_mGrossSal numeric(18,4);
+  v_mNetSal numeric(18,4);
+  v_mGrossSalVND numeric(18,4);
+  v_mNetSalVND numeric(18,4);
+  v_FromTimeEmp TIMESTAMP;
+  v_NetSal numeric(18,4);
+  v_GrossSal numeric;
+  v_GrossSalVND numeric(18,4);
+  v_NetSalVND numeric(18,4);
+  v_SalaryTax numeric(18,4);
+  v_MainSal numeric(18,4);
+  v_TaxService numeric(18,4);
+  v_TotalKowSal numeric(18,4);
+  v_TotalAllowance numeric(18,4);
+  v_RiceAllowance numeric(18,4);
+  v_InsSalaryByMonth numeric(18,4);
+  v_ProductSal numeric(18,4);
+  v_InsSalaryByMonthByHSNS numeric(18,4);
+  v_gPRDecPlaceCurrencyForCal_Save int;
+  v_AmountTaxEmp numeric(18,4);
+  v_ExchangeForUnion numeric(18,4);
+  v_ExchangeEmpBHForUnion numeric(18,4);
+  v_mAlloPartyTemp numeric(18,4);
+  v_mAlloUnionTemp numeric(18,4);
+  v_Amount_ThuongBSL numeric(18,4);
+  v_mAlloGroupTemp numeric(18,4);
+  v_NETBanktransfer numeric(18,4);
+  v_NETBanktransferVND numeric(18,4);
+  v_Amount_SubforNextMonth numeric(18,4);
+  v_AmountF_SubforNextMonth numeric(18,4);
+  v_NextFromDate TIMESTAMP;
+  v_NetSalVND_TotalSubCurrent numeric(18,4);
+  v_NetSalVND_temp numeric(18,4);
+  v_value numeric(18,4);
+
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+	execution_time DOUBLE PRECISION;
+BEGIN 
+--start_time := clock_timestamp();
+v_IsAlwaysRunInFormula:=false;
+p_TableError := 'Error_HR_spCalSalaryLevel';
+DELETE FROM "Error_HR_spCalSalaryLevel";
+
+v_NextDowCode := TO_CHAR(TO_DATE('2025/01', 'YYYY/MM') + INTERVAL '1 MONTH', 'YYYY/MM');
+
+-- SQLINES DEMO *** rình Grossup cho nhóm Nét không có sự tham gia của yếu tố bảo hiểm (bao gồm Thu nhập chịu thuế, tổng thu nhập trước thuế)
+v_IsGrossupNotSocialIns := false;
+
+DROP TABLE IF EXISTS "tmpEmp";
+CREATE TEMPORARY TABLE "tmpEmp" AS
+SELECT 
+    T1."EmployeeID", 
+    T1."OrgUnitID", 
+    T2."ParentID", 
+    NULL AS "BUCode" 
+	FROM UNNEST(STRING_TO_ARRAY(p_strEmps, ',')) AS ce("EmployeeID")
+-- FROM (
+--     SELECT "Data" AS "EmployeeID"
+--     FROM "SplitStrings_CTE"(p_strEmps, ',')
+-- ) AS ce 
+JOIN "HR_Employees" AS T1 ON ce."EmployeeID" = T1."EmployeeID"
+LEFT JOIN "HR_OrganizationUnits" AS T2 ON T1."OrgUnitID" = T2."OrgUnitID";
+
+SELECT COALESCE("BUCode", '') INTO v_BUCode 
+FROM "tmpEmp"
+LIMIT 1;
+
+-- v_BUCode := COALESCE(v_BUCode, '');
+
+DROP TABLE IF EXISTS "tmp_tblUserLockPayroll";
+CREATE TEMPORARY TABLE "tmp_tblUserLockPayroll" AS
+SELECT "OrgUnitID"  
+FROM "HR_fnGetUserLockPayroll_Salary"(p_DowCode);
+start_time := clock_timestamp();
+DROP TABLE IF EXISTS "tmp_CE";
+CREATE TEMPORARY TABLE "tmp_CE" AS
+SELECT * FROM "HR_fnCreateDatetimeListOfEmp_FillData"(p_DowCode, p_strEmps);
+	end_time := clock_timestamp();
+	execution_time := EXTRACT(EPOCH FROM (end_time - start_time));
+	RAISE NOTICE 'Thời gian thực thi trước vô cursor: %', execution_time;
+--begin ptphong 7-3-2025: Bỏ dùng ROW_Number thay bằng distinct on
+-- DROP TABLE IF EXISTS "tmp_tblListOfEmp_FillData";
+-- CREATE TEMPORARY TABLE "tmp_tblListOfEmp_FillData" AS
+-- SELECT 
+--     CE.*, 
+--     GS."GroupType", 
+--     CASE 
+--         WHEN CE."DepartmentCode" = T."OrgUnitID" OR CE."DepartmentCode" = T."ParentID" THEN 1 
+--         ELSE 0 
+--     END AS "MainPaid",
+--     ROW_NUMBER() OVER(PARTITION BY CE."EmployeeID" ORDER BY CE."FromTime" DESC) AS "RowID"
+-- FROM "tmp_CE" CE
+-- LEFT JOIN "HR_LSGroupSalary" AS GS ON CE."GroupSalCode" = GS."GroupSalCode"
+-- LEFT JOIN "tmp_tblUserLockPayroll" AS ULP ON CE."DepartmentCode" = ULP."OrgUnitID"
+-- LEFT JOIN "tmpEmp" AS T ON CE."EmployeeID" = T."EmployeeID"
+-- WHERE ULP."OrgUnitID" IS NULL;
+DROP TABLE IF EXISTS "tmp_tblListOfEmp_FillData";
+CREATE TEMPORARY TABLE "tmp_tblListOfEmp_FillData" AS
+SELECT DISTINCT ON (CE."EmployeeID") 
+    CE.*, 
+    GS."GroupType", 
+    CASE 
+        WHEN CE."DepartmentCode" = T."OrgUnitID" OR CE."DepartmentCode" = T."ParentID" THEN 1 
+        ELSE 0 
+    END AS "MainPaid"
+FROM "tmp_CE" CE
+LEFT JOIN "HR_LSGroupSalary" AS GS ON CE."GroupSalCode" = GS."GroupSalCode"
+LEFT JOIN "tmp_tblUserLockPayroll" AS ULP ON CE."DepartmentCode" = ULP."OrgUnitID"
+LEFT JOIN "tmpEmp" AS T ON CE."EmployeeID" = T."EmployeeID"
+WHERE ULP."OrgUnitID" IS NULL
+ORDER BY CE."EmployeeID", CE."FromTime" DESC;
+--end ptphong 7-3-2025: Bỏ dùng ROW_Number thay bằng distinct on
+
+-- xử lý dữ liệu tracking việc tách các quyết định lương
+--DELETE T
+--FROM HCSPR_ListOfEmpSalary AS T INNER JOIN #tblListOfEmp_FillData AS T1 ON T.EmployeeID = T1.EmployeeID
+--WHERE T.DowCode = @DowCode
+
+--DELETE T
+--FROM HCSPR_ListOfEmpAllowance AS T INNER JOIN #tblListOfEmp_FillData AS T1 ON T.EmployeeID = T1.EmployeeID
+--WHERE T.DowCode = @DowCode
+
+--INSERT INTO HCSPR_ListOfEmpSalary(DowCode, EmployeeID, FromTime, ToTime, MinSalary_BS, RealSalary_BS, CoeffSalary_BS, MinSalary_JW, 
+--	RealSalary_JW, CoeffSalary_JW, PieceWage, InsSalary, UnitOT, fBeginDate, fEndDate, DepartmentCode, GroupSalCode, JobWCode, 
+--	JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, RateMainSal, RateSoftSal, AssignRegionCode, RouteCode, 
+--	CreatedOn, CreatedBy)
+--SELECT @DowCode, EmployeeID, FromTime, ToTime, MinSalary_BS, RealSalary_BS, CoeffSalary_BS, MinSalary_JW, 
+--	RealSalary_JW, CoeffSalary_JW, PieceWage, InsSalary, UnitOT, fBeginDate, fEndDate, DepartmentCode, GroupSalCode, JobWCode, 
+--	JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, RateMainSal, RateSoftSal, AssignRegionCode, RouteCode, 
+--	GETDATE(), @UserID
+--FROM #tblListOfEmp_FillData
+ 
+SELECT "EmployeeID" INTO v_EmployeeID 
+FROM "tmp_tblListOfEmp_FillData"
+LIMIT 1;
+
+SELECT 
+    "StandardWD", 
+    "DowCode", 
+    "FromDate", 
+    "ToDate" 
+INTO v_fSCKHY, v_YYYYMM, v_fBeginDate, v_fEndDate 
+FROM "HR_ConfigTSEmpStandardWD" 
+WHERE "EmployeeID" = v_EmployeeID 
+  AND "DowCode" = p_DowCode
+LIMIT 1;
+
+-- reset value
+v_EmployeeID := NULL;
+
+-- @gPRPITType : Tính thuế hằng tháng theo Tổng thu nhập cộng dồn từ đầu năm = Quyết toán thuế
+-- @gPRIsSIByCurrencyForCal : BHXH trích trên nguyên tệ tính lương
+-- @gPRPITHouseRate : % tối đa tiền thuê nhà tính vào thu nhập chịu thuế
+-- @gPRPITFamilyTaxFreeOwn : Giảm trừ bản thân
+-- @gPRPITFamilyTaxFreeUnit : Giảm trừ trên mỗi người phụ thuộc
+v_gPRPITFamilyTaxFreeUnit_Peru :=0; 
+v_gPRPITFamilyTaxFreeOwn_Peru :=0; 
+v_gPRPITFamilyTaxFreeUnit :=0; 
+v_gPRPITFamilyTaxFreeOwn :=0; 
+v_gPRDecPlaceExRate:=0; 
+v_gPRDecPlaceCurrencyForCal:=0; 
+
+SELECT 
+    "PRCurrencyForCal", "PRCurrencyForPay", "PRPITFamilyTaxFreeUnit",
+    "PRPITFamilyTaxFreeOwn", "PRPITHouseRate", "PRIsSIByCurrencyForCal",
+    "PRDecPlaceExRate", "PRDecPlaceCurrencyForCal", "PRDecPlaceCurrencyForPay",
+    "PRPITType", "PRRoundingNumber",
+    "PRPartyMaxAmount", "PRYUnionMaxAmount", "PRTUnionMaxAmount",
+    "PRPartyApplyAll", "PRYUnionApplyAll", "PRTUnionApplyAll",
+    "PRPartyCalMethod", "PRYUnionCalMethod", "PRTUnionCalMethod",
+    "PRYUnionAmount", "PRTUnionAmount", "PRPartyAmount",
+    "PRIsImportOT", "PRIsTotalKowSal", "PRIsExactByKowForNewEmp", "PRIsCalCurrentSal",
+    "PRSIStandardWD", "PRIsSIByCurrencyForCal",
+    "PRPITHouseRate", "SubforNextMonth", "PRIsNotLimitEndDateCalSal",
+	To_timestamp(p_DowCode || '/' || CAST("PRSIDayDecrease" AS citext), 'yyyy-mm-dd HH:mm:ss'),
+    To_timestamp(p_DowCode || '/' || CAST("PRSIDayEffect" AS citext), 'YYYY/MM/DD'),
+    "PRSITotalPaidDays", "PRSITotalPaidDaysType", "PRSIPaidDayKowCodes","PRSIAdjDowCodeType"
+INTO 
+    v_PRCurrencyForCal, v_PRCurrencyForPay, v_gPRPITFamilyTaxFreeUnit_Peru, 
+    v_gPRPITFamilyTaxFreeOwn_Peru, v_gPRPITHouseRate, v_gPRIsSIByCurrencyForCal, 
+    v_gPRDecPlaceExRate, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, 
+    v_gPRPITType, v_gPRRoundingNumber, v_gPRPartyMaxAmount, v_gPRYUnionMaxAmount, 
+    v_gPRTUnionMaxAmount, v_gPRPartyApplyAll, v_gPRYUnionApplyAll, v_gPRTUnionApplyAll, 
+    v_PRPartyCalMethod, v_PRYUnionCalMethod, v_PRTUnionCalMethod, 
+    v_gPRYUnionAmount, v_gPRTUnionAmount, v_gPRPartyAmount, 
+    v_PRIsImportOT, v_PRIsTotalKowSal, v_PRIsExactByKowForNewEmp, 
+    v_gPRIsCalCurrentSal, v_SNCCBH, v_PRIsSIByCurrencyForCal, 
+    v_PRPITHouseRate, v_SubforNextMonth, v_PRIsNotLimitEndDateCalSal,
+	v_gEffectDatePRSIDayDecrease, v_gEffectDatePRSIDayEffect, v_PRSITotalPaidDays, 
+    v_PRSITotalPaidDaysType, v_PRSIPaidDayKowCodes, v_PRSIAdjDowCodeType
+FROM 
+    "HR_ConfigPR"
+WHERE 
+    ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = v_BUCode))
+LIMIT 1;
+
+-- Lay ve muc dong bhxh toi da, toi thieu theo ky tinh luong.	
+
+SELECT 
+    "SI_MaxSalary" 
+INTO 
+    v_SI_MaxSalary 
+FROM 
+    "HR_fnGetRateDeductions"((p_DowCode || '/01')::TIMESTAMP WITHOUT TIME ZONE)
+WHERE 
+    ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = v_BUCode))
+LIMIT 1;
+
+-- tt... SQLINES DEMO ***
+IF EXISTS (
+    SELECT 1 
+    FROM "HR_vwKOW" AS "K"
+    WHERE "IsAlwaysRunInFormula" = TRUE
+        AND "IsUserFormula" = TRUE 
+        AND "PayLoc" NOT IN (0, 2)
+        AND ("BUCodes" IS NULL OR ("BUCodes" IS NOT NULL AND "BUCodes" ILIKE '%,' || v_BUCode || ',%'))
+    LIMIT 1
+) 
+THEN
+    v_IsAlwaysRunInFormula := TRUE;
+END IF;
+
+-- SQLINES DEMO *** h tiền nhà có Grossup hay không IsInTaxableIncome=1
+v_IsInTaxableIncome_mHouse := FALSE;
+SELECT "IsInTaxableIncome" 
+INTO v_IsInTaxableIncome_mHouse 
+FROM "HR_LSAlloGrade" 
+WHERE "TaxType" = '1' 
+    AND "IsLawSalary" = FALSE 
+    AND "AlloType" = '7';
+
+v_KowCodeLate := '';
+SELECT "KowCode" 
+INTO v_KowCodeLate 
+FROM "HR_vwKOW"
+WHERE "KowType" = '6' 
+    AND "IsUserFormula" = FALSE
+    AND ("BUCodes" IS NULL OR ("BUCodes" IS NOT NULL AND "BUCodes" ILIKE '%,' || v_BUCode || ',%'))
+ORDER BY "Sorting" ASC
+LIMIT 1;
+
+-- Tìm hợp đồng mới nhất tính đến thời điểm tính. Nếu hợp đồng đó hết hiệu lực thì dùng tỷ giá HSNV
+--begin 7.3.2025 ptphong bỏ ROW_NUMBER() thay bằng distinct on
+-- DROP TABLE IF EXISTS "tmp_HCSEM_ConfigCurrencyOfEmpContract";
+-- CREATE TEMPORARY TABLE "tmp_HCSEM_ConfigCurrencyOfEmpContract" AS
+-- SELECT "ce".* FROM (
+--     SELECT "T"."EmployeeID", "T"."CurrencyCode", "T"."ExRate", "T"."ContTo", "T1"."FromTime",
+--         ROW_NUMBER() OVER(PARTITION BY "T"."EmployeeID" ORDER BY "T"."ContFrom" DESC) AS "RowID"
+--     FROM "HR_EmpConfigCurrencyOfEmpContract" AS "T"
+--         INNER JOIN (
+--             SELECT "EmployeeID", MIN("FromTime") AS "FromTime", MAX("ToTime") AS "ToTime"
+--             FROM "tmp_tblListOfEmp_FillData"
+--             GROUP BY "EmployeeID"
+--         ) AS "T1" ON "T"."EmployeeID" = "T1"."EmployeeID"
+--     WHERE "T"."ContFrom" <= "T1"."ToTime"
+-- ) AS "ce"
+-- WHERE "ce"."RowID" = 1 AND ("ContTo" IS NULL OR "ContTo" >= "ce"."FromTime");
+DROP TABLE IF EXISTS "tmp_HCSEM_ConfigCurrencyOfEmpContract";
+CREATE TEMPORARY TABLE "tmp_HCSEM_ConfigCurrencyOfEmpContract" AS
+SELECT DISTINCT ON (T."EmployeeID") 
+    T."EmployeeID", 
+    T."CurrencyCode", 
+    T."ExRate", 
+    T."ContTo", 
+    T1."FromTime"
+FROM "HR_EmpConfigCurrencyOfEmpContract" AS T
+INNER JOIN (
+    SELECT "EmployeeID", MIN("FromTime") AS "FromTime", MAX("ToTime") AS "ToTime"
+    FROM "tmp_tblListOfEmp_FillData"
+    GROUP BY "EmployeeID"
+) AS T1 ON T."EmployeeID" = T1."EmployeeID"
+WHERE T."ContFrom" <= T1."ToTime"
+AND (T."ContTo" IS NULL OR T."ContTo" >= T1."FromTime")
+ORDER BY T."EmployeeID", T."ContFrom" DESC;
+
+BEGIN
+	FOR v_EmployeeID, v_IsParty, v_IsYUnion,v_IsTUnion,v_PartyRegulation,v_YUnionRegulation,v_TUnionRegulation,v_PartyFee,v_YUnionFee,
+		v_TUnionFee, v_GroupType, v_IsServiceFee, v_CurrencyCode, v_ObjVacaCode, v_IsMonth, v_AddToDate, v_JobPosCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode,v_TaxCode,v_DepartmentCode_Origin, v_GroupSalCode, v_WorkCenterCode,
+		v_JoinDate, v_EndDate, v_IsGrossupNotSocialIns, v_OfficialDate IN 
+			SELECT --DISTINCT 
+			E."EmployeeID", E."IsParty", E."IsYUnion", E."IsTUnion",NULL AS "PartyRegulation",  NULL AS "YUnionRegulation",NULL AS "TUnionRegulation",
+			COALESCE(E."PartyFee", 0), COALESCE(E."YUnionFee", 0),COALESCE(E."TUnionFee", 0), Etemp."GroupType", E."IsServiceFee", 
+			CASE 
+				WHEN NULLIF(COALESCE(T1."CurrencyCode", E."CurrencyCode"), '') IS NULL 
+				THEN v_PRCurrencyForCal ELSE COALESCE(T1."CurrencyCode", E."CurrencyCode")
+			END AS "CurrencyCode", 
+			E."ALObjectID", SV."IsMonth", SE."AddToDate", E."JobLevel", E."PositionID", E."EmployeeTypeID" as "EmpTypeCode",  --E."EmpTypeCode",
+			E."AssignRegionCode",E."TaxCode", E."OrgUnitID",E."GroupSalCode",E."WorkCenterCode",E."JoinedOn",E."StoppedOn", LG."IsGrossupNotSocialIns", E."HiredOn"
+		--FROM "HR_VWEmployeeGeneralInfo" E
+		FROM "HR_vwEmployees" E
+		INNER JOIN "tmp_tblListOfEmp_FillData" AS Etemp 
+			ON E."EmployeeID" = Etemp."EmployeeID"
+		INNER JOIN "HR_LSGroupSalary" LG 
+			ON LG."GroupSalCode" = E."GroupSalCode"
+		LEFT JOIN "HR_SetupALObject" SV 
+			ON E."ALObjectID" = SV."ALObjectID"
+		LEFT JOIN "HR_SetupALObjectEmp" SE 
+			ON SE."LabourType"::integer = Etemp."LabourType" 
+			AND SE."ALObjectID" = E."ALObjectID"
+		LEFT JOIN "tmp_HCSEM_ConfigCurrencyOfEmpContract" AS T1 
+			ON E."EmployeeID" = T1."EmployeeID"
+		WHERE 
+			(v_PRIsNotLimitEndDateCalSal = TRUE 
+				OR ((E."StoppedOn" IS NULL OR E."StoppedOn" >= v_fBeginDate) 
+				AND v_PRIsNotLimitEndDateCalSal = FALSE))
+			AND E."JoinedOn" <= v_fEndDate 
+			AND (Etemp."GroupType" IN ('0', '1', '2', '8', '9', '6', '7', '3', '10', '14'))
+			AND (COALESCE(p_pGroupSalCode, '') = '' OR E."GroupSalCode" = p_pGroupSalCode)
+	LOOP
+		<<NEXT_EMP>>
+			LOOP
+			--print '--------------- Begin: '
+		
+			if v_CurrencyCode=''
+			then
+				v_sql :='insert into ' || '"' || p_TableError || '"' || ' ("EmployeeID","ErrorMsg") values('''||cast(v_EmployeeID as citext)|| ''',N''Chưa nhập nguyên tệ tính lương' ||' '' )';
+				execute (v_sql);
+				--GOTO NEXT_EMP
+				EXIT NEXT_EMP;
+			END IF;
+			-- Lưu ý: có hàm xóa dữ liệu lương riêng
+			--exec HCSEM_SPDeleteAllListEmployeePayIncome @UserID, @FunctionID, @DowCode, NULL, N'HR_PayIncome', 0, @strEmps
+	
+			----Ghi nhận lịch sử thay đổi thông tin phụ cấp
+			--INSERT INTO HCSPR_ListOfEmpAllowance(DowCode, EmployeeID, FromTime, ToTime, AlloGradeCode, FixAmount, SalaryRate, EndDate, 
+			--	fBeginDate, fEndDate, DepartmentCode, GroupSalCode, JobWCode, JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, 
+			--	AmountNoTax, CreatedOn, CreatedBy)
+			--SELECT @DowCode, @EmployeeID, FromTime, ToTime, AlloGradeCode, FixAmount, SalaryRate, EndDate, fBeginDate, fEndDate, 
+			--	DepartmentCode, GroupSalCode, JobWCode, JobPosCode, EmpTypeCode, LabourType, WorkCenterCode, AmountNoTax, 
+			--	GETDATE() as CreatedOn, @UserID as CreatedBy
+			--FROM HCSPR_fnCreateDatetimeListOfAllowance_FillData(@fBeginDate, @fEndDate, @EmployeeID, @BUCode) AS T
+	
+			-- Xoa du lieu cac bang luu thu nhap
+			IF v_PRIsImportOT <> FALSE THEN
+			DELETE FROM "HR_PaySalary" "S"
+			USING (
+				SELECT "KowCode" FROM "HR_vwKOW"
+				WHERE "KowType" <> '5'
+			) "K"
+			WHERE "S"."KowCode" = "K"."KowCode"
+			AND "S"."EmployeeID" = v_EmployeeID 
+			AND "S"."DowCode" = p_DowCode;
+		ELSE
+			DELETE FROM "HR_PaySalary"
+			WHERE "EmployeeID" = v_EmployeeID
+			AND "DowCode" = p_DowCode;
+		END IF;
+
+		DELETE FROM "HR_PayAllowance" "A"
+		USING (
+			SELECT "AlloGradeCode" FROM "HR_LSAlloGrade"
+			WHERE ("IsUserFormula" = TRUE OR "IsManual" = FALSE)
+		) "AG"
+		WHERE "A"."AlloGradeCode" = "AG"."AlloGradeCode"
+		AND "A"."EmployeeID" = v_EmployeeID
+		AND "A"."DowCode" = p_DowCode;
+
+		DELETE FROM "HR_PayTax"
+		WHERE "EmployeeID" = v_EmployeeID
+		AND "DowCode" = p_DowCode;
+
+		DELETE FROM "HR_PayIncome"
+		WHERE "EmployeeID" = v_EmployeeID
+		AND "DowCode" = p_DowCode;
+	
+		DELETE FROM "HR_PaySalarySI"
+		WHERE "EmployeeID" = v_EmployeeID
+		AND "DowCode" = p_DowCode;
+	
+		DELETE FROM "HR_PaySalaryExcess"
+		WHERE "EmployeeID" = v_EmployeeID
+		AND "DowCode" = p_DowCode;
+
+		DELETE FROM "HR_PayTExcept"
+		WHERE "EmployeeID" = v_EmployeeID 
+		AND "DowCode" = p_DowCode
+		AND EXISTS (
+			SELECT 1 
+			FROM "HR_LSException" as LS
+			WHERE LS."ExceptCode" = LS."ExceptCode"
+			AND "CalType" IN ('2', '3', '4')
+			AND "IsUserFormula" <> FALSE
+			AND COALESCE("Stop", FALSE) = FALSE
+		);
+
+		DELETE FROM "HR_PayTExcept"
+		WHERE "EmployeeID" = v_EmployeeID 
+		AND "ExceptCode" = v_SubforNextMonth
+		AND "DowCode" = v_NextDowCode;
+
+		-- SQLINES DEMO *** dinh nghi
+		SELECT "TSHoursPerWD" 
+		INTO v_gSGMC 
+		FROM "HR_ConfigTSEmp" 
+		WHERE "EmployeeID" = v_EmployeeID
+		LIMIT 1;
+
+		SELECT "WLeaveDayGroupCode" 
+		INTO v_WLeaveDayGroupCode 
+		FROM "HR_EmployeeExt" 
+		WHERE "EmployeeID" = v_EmployeeID
+		LIMIT 1;
+
+		SELECT "WLeaveDayValue" 
+		INTO v_WLeaveDayValue
+		FROM "HR_LSWLeaveDayGroup" 
+		WHERE "WLeaveDayGroupCode" = v_WLeaveDayGroupCode
+		LIMIT 1;
+
+		SELECT "StandardWD", "FromDate", "ToDate" 
+		INTO v_fSCKH, v_fBeginDate, v_fEndDate 
+		FROM "HR_ConfigTSEmpStandardWD" 
+		WHERE "EmployeeID" = v_EmployeeID
+		AND "DowCode" = p_DowCode
+		LIMIT 1;
+
+		IF v_CurrencyCode <> v_PRCurrencyForCal
+		THEN
+			select NULL into v_gPRDecPlaceCurrencyForCal FROM "BS_Currencies" 
+			WHERE "CurrencyID" = v_CurrencyCode
+			limit 1; 
+		-- SQLINES DEMO *** NULL OR (BUCodes IS NOT NULL AND BUCodes LIKE '%,' + @BUCode + ',%'))
+		END IF;
+
+		IF v_CurrencyCode = v_PRCurrencyForPay THEN v_gPRDecPlaceCurrencyForCal:= v_gPRDecPlaceCurrencyForPay; END IF;
+		-- SQLINES DEMO *** y gia thang thi xem nhu la VND; ty gia=1
+		v_ExchangeEmp :=1; v_ExchangeEmpBH:=1;
+
+		IF NOT EXISTS(
+		SELECT 1 
+		FROM "tmp_HCSEM_ConfigCurrencyOfEmpContract" 
+		WHERE "EmployeeID" = v_EmployeeID
+		LIMIT 1
+	)
+	THEN
+		SELECT "RateToVND", "RateToSocial" 
+		INTO v_ExchangeEmp, v_ExchangeEmpBH 
+		FROM "HR_LSPayExchangeRate" 
+		WHERE "DowCode" = p_DowCode 
+		AND "CurrencyCode" = v_CurrencyCode
+		AND ("CurrencyForPay" IS NULL OR ("CurrencyForPay" IS NOT NULL AND "CurrencyForPay" = v_PRCurrencyForPay))
+		AND ("BUCodes" IS NULL OR ("BUCodes" IS NOT NULL AND "BUCodes" LIKE '%,' || v_BUCode || ',%'));
+	ELSE
+		SELECT "RateToSocial" 
+		INTO v_ExchangeEmpBH 
+		FROM "HR_LSPayExchangeRate" 
+		WHERE "DowCode" = p_DowCode 
+		AND "CurrencyCode" = v_CurrencyCode
+		AND ("CurrencyForPay" IS NULL OR ("CurrencyForPay" IS NOT NULL AND "CurrencyForPay" = v_PRCurrencyForPay))
+		AND ("BUCodes" IS NULL OR ("BUCodes" IS NOT NULL AND "BUCodes" LIKE '%,' || v_BUCode || ',%'));
+
+		SELECT "ExRate" 
+		INTO v_ExchangeEmp 
+		FROM "tmp_HCSEM_ConfigCurrencyOfEmpContract" 
+		WHERE "EmployeeID" = v_EmployeeID
+		LIMIT 1;
+	END IF;
+
+	IF v_ExchangeEmp = 0 OR v_ExchangeEmp IS NULL
+	THEN
+		v_ExchangeEmp := 1;
+	END IF;
+
+	IF v_ExchangeEmpBH = 0 OR v_ExchangeEmpBH IS NULL
+	THEN
+		v_ExchangeEmpBH := 1;
+	END IF;
+
+		v_fSCKHY := v_fSCKH;
+		if v_fSCKH = 0 
+		then
+			v_sql :='insert into ' || '"' ||p_TableError || '"' || ' ("EmployeeID","ErrorMsg") values('''||cast(v_EmployeeID as citext)|| ''',N''Chưa thiết lập ngày công chuẩn tháng '' )';
+			execute (v_sql);
+			--GOTO NEXT_EMP
+			EXIT NEXT_EMP;
+		END IF;
+
+		--*** Tinh biệt lệ chạy trước lương
+		SELECT "GroupSalCode" INTO v_tmp_GroupSalCode from "tmp_tblListOfEmp_FillData" where "EmployeeID" = v_EmployeeID ORDER BY "FromTime" DESC
+		LIMIT 1;
+
+		CALL "HR_spCalTExceptFormulaInSalStored"(
+			p_UserID, 
+			v_EmployeeID, 
+			v_tmp_GroupSalCode, 
+			p_dowcode, 
+			v_fBeginDate, 
+			v_gPRPITFamilyTaxFreeOwn_Peru, 
+			v_gPRPITFamilyTaxFreeUnit_Peru, 
+			v_CurrencyCode, 
+			v_ExchangeEmp
+		);
+
+		-- Chay cong thang truoc
+		CALL "HR_spCalSalaryLevelLastPayrollAuto" (p_dowcode, v_EmployeeID, v_BUCode);
+
+		-- IF @GroupType = 2 Or @GroupType = 9 OR @GroupType = 3 Or @GroupType = 10
+		--if exists(select top(1) 1 from #tblListOfEmp_FillData where EmployeeID = @EmployeeID and GroupType in (3,10))
+		--BEGIN
+		--	-- Nếu gặp nhóm lương 3, 10 trong tập 2,3,9,10 thì ưu tiên chạy 3,9 trước
+		--	SELECT TOP(1) @tmp_GroupSalCode = GroupSalCode from #tblListOfEmp_FillData where EmployeeID = @EmployeeID and GroupType in (3,10) ORDER BY GroupType DESC	
+		--	exec HCSPR_spUpdateAmountToProductAmount @DowCode, @EmployeeID, @tmp_GroupSalCode, @CurrencyCode, @gSGMC, @WLeaveDayValue, @fSCKH, 
+		--		@ExchangeEmp, @ExchangeEmpBH, @gPRDecPlaceCurrencyForCal, @gPRDecPlaceCurrencyForPay, @fSCKHY, @fBeginDate, @fEndDate, @YYYYMM, @TableError 
+		--END
+		--else if exists(select top(1) 1 from #tblListOfEmp_FillData where EmployeeID = @EmployeeID and GroupType in (2,9))
+		--BEGIN
+		--	SELECT TOP(1) @tmp_GroupSalCode = GroupSalCode from #tblListOfEmp_FillData where EmployeeID = @EmployeeID and GroupType in (2, 9) ORDER BY GroupType desc
+		--	exec HCSPR_spUpdateAmountToProductAmount @DowCode, @EmployeeID, @tmp_GroupSalCode, @CurrencyCode, @gSGMC, @WLeaveDayValue, @fSCKH, 
+		--		@ExchangeEmp, @ExchangeEmpBH, @gPRDecPlaceCurrencyForCal, @gPRDecPlaceCurrencyForPay, @fSCKHY, @fBeginDate, @fEndDate, @YYYYMM, @TableError 
+		--END
+
+		-- Xử lý công OT Vượt
+		IF EXISTS(
+		SELECT 1 
+		FROM "HR_SysSettingsForCustomers" 
+		WHERE "KeyCode" = 'IsUsingOTVuotDMY' 
+		AND "Value" = 1
+		LIMIT 1
+	)
+	THEN
+		CALL "HR_spOTVuotTheoQuyDinh"(p_UserID, v_EmployeeID, v_DowCode, v_fBeginDate, v_fEndDate);
+	END IF;
+
+	-- SQLINES DEMO *** bo sung nhom 14
+	IF EXISTS(
+		SELECT 1 
+		FROM "tmp_tblListOfEmp_FillData" 
+		WHERE "EmployeeID" = v_EmployeeID 
+		AND "GroupType" IN ('0', '1', '8', '6', '7', '3', '10', '14')
+		LIMIT 1
+	)
+	THEN
+
+			-- SQLINES DEMO ***  cap, biet le
+			v_DayNum := 0;		
+			begin
+
+			DECLARE cur1 CURSOR FOR
+			SELECT 
+				C."RealSalary_BS", C."CoeffSalary_BS", C."MinSalary_BS", COALESCE(C."MinSalary_JW", 0), COALESCE(C."RealSalary_JW", 0) AS "JWRealSalary",
+				C."InsSalary", COALESCE(C."PieceWage", 0), C."FromTime", C."ToTime", C."UnitOT", 100 AS "RatePercent", C."CoeffSalary_JW", 
+				C."DepartmentCode", C."JobWCode", C."EmpTypeCode", C."AssignRegionCode", C."GroupSalCode", 
+				C."LabourType", C."JobPosCode", C."WorkCenterCode"
+			FROM "tmp_tblListOfEmp_FillData" C 
+			WHERE C."EmployeeID" = v_EmployeeID 
+			ORDER BY C."MainPaid" DESC, C."FromTime" DESC;
+			BEGIN
+			OPEN cur1;
+			FETCH NEXT FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, 
+				v_FromTime, v_ToTime, v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, 
+				v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, v_JobPosCode, v_WorkCenterCode;
+			<<KOW_END>>
+			LOOP
+			if FOUND
+			THEN
+				-- gan cac gia tri trong Qd luong thu 2 vao cac bien de luu lai vi khi nhay den QD thu 1 thi bi mat 
+				v_RealSalaryN := v_RealSalary;
+				v_CoeffSalaryN := v_CoeffSalary;
+				v_MinSalaryN := v_MinSalary;
+				v_JWMinSalaryN := v_JWMinSalary;
+				v_JWRealSalaryN := v_JWRealSalary;
+				v_InsSalaryN := v_InsSalary;
+				v_PieceWageN :=v_PieceWage;
+				v_FromTimeN := v_FromTime;
+				v_ToTimeN := v_ToTime;
+				v_UnitOTN := v_UnitOT;
+				v_RatePercentN := v_RatePercent;
+				v_JWCoeffSalary := v_JWCoeffSalary;
+				v_GroupSalCode_N := v_GroupSalCode;
+				v_DepartmentCode_N := v_DepartmentCode;
+				v_JobWCode_N := v_JobWCode;
+				v_EmpTypeCode_N := v_EmpTypeCode;
+				v_AssignRegionCode_N := v_AssignRegionCode;
+				v_LabourType_N := v_LabourType;
+				v_JobPosCode_N := v_JobPosCode;
+				v_WorkCenterCode_N := v_WorkCenterCode;
+
+				IF (v_fBeginDate=v_FromTime AND v_fEndDate=v_ToTime)	
+				then
+
+					-- nhan vien co 1 quyet dinh luong trong thang, do QĐịnh có hiệu lực từ trước
+					CALL "HR_spCalculateTimeSalary" (
+						v_EmployeeID,v_DepartmentCode_N, v_JobPosCode_N, v_JobWCode_N, v_EmpTypeCode_N, 
+						v_AssignRegionCode_N, p_dowcode, v_FromTimeN, v_ToTimeN, v_RealSalaryN, v_MinSalaryN, 
+						v_CoeffSalaryN, v_fSCKH, v_fSCKH, p_ProducSal, v_ExchangeEmp, FALSE, FALSE, 
+						v_UnitOTN, v_CurrencyCode,v_JWMinSalaryN, v_JWRealSalaryN, v_InsSalaryN, 
+						v_PieceWageN,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, v_WLeaveDayValue, v_gSGMC, 
+						v_fBeginDate, v_fEndDate,v_RatePercent, v_CoeffSalaryN, v_JWCoeffSalary, v_YYYYMM, 
+						p_TableError, v_GroupSalCode_N,v_PRIsTotalKowSal, v_gPRDecPlaceCurrencyForCal, 
+						v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode_N, v_BUCode, v_LabourType_N
+						);
+				
+					v_FromTime := v_fBeginDate;
+				ELSE
+					--Neu quyet dinh luong gan nhat cua nhan vien duoc tang giua thang	
+					IF v_gPRIsCalCurrentSal = FALSE
+					THEN
+						-- tinh dung theo tung quyet dinh luong
+						-- gan @DayNum = so ngay lam viec thuc te
+						-- if @PRIsTotalKowSal <> 0	
+						CALL "HR_spCalNormalKow" (v_FromTimeN, v_ToTimeN, v_EmployeeID, v_DayNum);
+						FETCH NEXT FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, v_FromTime, v_ToTime, 
+							v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, v_JobPosCode,v_WorkCenterCode;
+						--IF NOT FOUND 
+						IF FOUND
+						THEN
+							-- nhan vien co 1 QD luong trong thang do vào làm giữa kỳ lương						
+							if v_PRIsTotalKowSal <> FALSE then
+								if v_PRIsExactByKowForNewEmp = FALSE
+								THEN
+									-- Nhân viên vào làm giữa tháng Tính công = ngày công chuẩn - các ngày nghỉ
+								 v_DayNum_Temp:=0;
+									v_FromTime := v_FromTime -1;
+									if	(v_fBeginDate <= v_FromTime) then
+										CALL "HR_spCalNormalKow"(v_fBeginDate, v_FromTime, v_EmployeeID, v_DayNum_Temp);
+									end if;
+									v_DayNum := v_fSCKH - v_DayNum_Temp;
+									v_ToTime := v_ToTime + 1;
+									if	(v_ToTime <= v_fEndDate) then
+										CALL "HR_spCalNormalKow"(v_ToTime, v_fEndDate, v_EmployeeID, v_DayNum_Temp);
+									end if;
+									v_DayNum := v_DayNum - v_DayNum_Temp;
+									CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode_N,v_JobPosCode_N,v_JobWCode_N,v_EmpTypeCode_N,v_AssignRegionCode_N, p_dowcode, v_FromTimeN, v_ToTimeN, v_RealSalaryN, v_MinSalaryN, v_CoeffSalaryN, v_DayNum, v_fSCKH, 
+										p_ProducSal, v_ExchangeEmp, FALSE, FALSE, v_UnitOTN, v_CurrencyCode, v_JWMinSalaryN,v_JWRealSalaryN, v_InsSalaryN, v_PieceWageN,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+										v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate,v_RatePercentN,v_CoeffSalaryN, v_JWCoeffSalary,v_YYYYMM,p_TableError, v_GroupSalCode_N,v_PRIsTotalKowSal, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode_N, v_BUCode, v_LabourType_N);
+									v_FromTime := v_FromTimeN;
+									v_ToTime := v_ToTimeN;
+								ELSE
+							
+									-- Tính chính xác theo số ngày đi làm
+									IF(v_DayNum >0 OR (v_DayNum>=0 AND v_IsAlwaysRunInFormula=TRUE)) THEN
+										CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode_N,v_JobPosCode_N,v_JobWCode_N,v_EmpTypeCode_N,v_AssignRegionCode_N, p_dowcode, v_FromTimeN, v_ToTimeN, v_RealSalaryN, v_MinSalaryN, v_CoeffSalaryN, v_DayNum, v_fSCKH, 
+											p_ProducSal, v_ExchangeEmp, FALSE, FALSE, v_UnitOTN, v_CurrencyCode,v_JWMinSalaryN, v_JWRealSalaryN, v_InsSalaryN, v_PieceWageN,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+											v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate,v_RatePercentN,v_CoeffSalaryN, v_JWCoeffSalary,v_YYYYMM,p_TableError, v_GroupSalCode_N,0, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode_N, v_BUCode, v_LabourType_N);
+									END IF;
+								END IF;
+							ELSE
+									CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode_N,v_JobPosCode_N,v_JobWCode_N,v_EmpTypeCode_N,v_AssignRegionCode_N, p_dowcode, v_FromTimeN, v_ToTimeN, v_RealSalaryN, v_MinSalaryN, v_CoeffSalaryN, v_fSCKH, v_fSCKH, 
+										p_ProducSal, v_ExchangeEmp, FALSE, FALSE, v_UnitOTN, v_CurrencyCode,v_JWMinSalaryN, v_JWRealSalaryN, v_InsSalaryN, v_PieceWageN,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+										v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate,v_RatePercentN,v_CoeffSalaryN, v_JWCoeffSalary,v_YYYYMM,p_TableError, v_GroupSalCode_N,v_PRIsTotalKowSal, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode_N, v_BUCode, v_LabourType_N);
+								END IF;
+						ELSE
+							-- nhan vien co lon hon 2 QD luong trong thang
+							--TTVINH RemCode -2015-08-03 Lấy chỉnh xác thông tin theo từng QD lương
+							--declare @RealSalaryQD1 money,@JWRealSalaryQD1 money,@InsSalaryQD1 money,@PieceWageQD1 money
+							--SET @RealSalaryQD1 = @RealSalary
+							--SET @JWRealSalaryQD1 = @JWRealSalary
+							--SET @InsSalaryQD1 = @InsSalary
+							--SET @PieceWageQD1= @PieceWage
+							--TTVINH RemCode -2012-09-10
+							--if @PRIsTotalKowSal <> 0
+							--BEGIN
+							-- tinh luong cho quyet dinh co ngay hieu luc lon nhat -- ttvinh change @fEndDate ->@ToTimeN						
+							IF(v_DayNum >0 or (v_DayNum>=0 and v_IsAlwaysRunInFormula=TRUE)) THEN
+								CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode_N,v_JobPosCode_N,v_JobWCode_N,v_EmpTypeCode_N,v_AssignRegionCode_N, p_dowcode, v_FromTimeN, v_ToTimeN, v_RealSalaryN, v_MinSalaryN, v_CoeffSalaryN, v_DayNum, v_fSCKH, 
+									p_ProducSal, v_ExchangeEmp, TRUE, TRUE, v_UnitOTN, v_CurrencyCode, v_JWMinSalaryN,v_JWRealSalaryN, v_InsSalaryN, v_PieceWageN,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+									v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate	,v_RatePercentN,v_CoeffSalaryN, v_JWCoeffSalary,v_YYYYMM,p_TableError,v_GroupSalCode_N,v_PRIsTotalKowSal, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode_N, v_BUCode, v_LabourType_N);
+							END IF;
+							-- Gan so ngay cong con lai
+							v_DayNumRest := v_fSCKH - v_DayNum;
+							FETCH NEXT FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, v_FromTime, v_ToTime, v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, v_JobPosCode,v_WorkCenterCode;
+							WHILE(1=1)
+							LOOP
+								if(FOUND)
+								then
+									-- Tinh luong cho quyet dinh truoc do
+									FETCH PRIOR FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, v_FromTime, v_ToTime, v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, 
+								v_JobPosCode,v_WorkCenterCode;
+									CALL "HR_spCalNormalKow"(v_FromTime, v_ToTime, v_EmployeeID, v_DayNum);
+									if v_DayNum < 0 then
+										v_DayNum :=0;
+									end if;
+									IF(v_DayNum >0 or (v_DayNum>=0 and v_IsAlwaysRunInFormula=TRUE)) THEN
+										CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode,v_JobPosCode,v_JobWCode,v_EmpTypeCode,v_AssignRegionCode, p_dowcode, v_FromTime, v_ToTime,v_RealSalary,v_MinSalary, v_CoeffSalary, v_DayNum, v_fSCKH, 
+											p_ProducSal, v_ExchangeEmp, TRUE, FALSE, v_UnitOT, v_CurrencyCode,v_JWMinSalary, v_JWRealSalary,v_InsSalary,v_PieceWage,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+											v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate	,v_RatePercent,v_CoeffSalary, v_JWCoeffSalary,v_YYYYMM,p_TableError, v_GroupSalCode,v_PRIsTotalKowSal, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode, v_BUCode, v_LabourType);
+									END IF;
+									v_DayNumRest := v_DayNumRest - v_DayNum;
+									FETCH NEXT FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, v_FromTime, v_ToTime, v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, v_JobPosCode,v_WorkCenterCode;
+								ELSE
+									-- tinh cong cho QD cuoi cung
+									v_DayNum := v_DayNumRest;
+									if v_DayNum < 0 then
+										v_DayNum :=0;
+									end if;
+									IF(v_DayNum >0 or (v_DayNum>=0 and v_IsAlwaysRunInFormula =TRUE)) THEN
+										CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode,v_JobPosCode,v_JobWCode,v_EmpTypeCode,v_AssignRegionCode, p_dowcode, v_FromTime, v_ToTime,v_RealSalary,v_MinSalary, v_CoeffSalary, v_DayNum, v_fSCKH, 
+											p_ProducSal, v_ExchangeEmp, TRUE, FALSE, v_UnitOT, v_CurrencyCode, v_JWMinSalary,v_JWRealSalary,v_InsSalary,v_PieceWage,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+											v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate	,v_RatePercent,v_CoeffSalary, v_JWCoeffSalary,v_YYYYMM,p_TableError, v_GroupSalCode,v_PRIsTotalKowSal, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode, v_BUCode, v_LabourType);
+									END IF;
+									--GOTO KOW_END
+									-- CLOSE cur1;
+									-- END;
+									EXIT KOW_END;
+									--END GOTO KOW_END
+								END IF;
+								FETCH NEXT FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, v_FromTime, v_ToTime, v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, v_JobPosCode,v_WorkCenterCode;
+							END LOOP;	
+						END IF;
+					ELSE
+						-- mac du co nhieu hon 1 QD luong nhung chi tinh theo QD hien tai
+						-- Can xac dinh Fromtime, ToTime trong truong hop co nhiu QD luong
+						FETCH LAST FROM cur1 INTO v_RealSalary, v_CoeffSalary, v_MinSalary,v_JWMinSalary, v_JWRealSalary, v_InsSalary, v_PieceWage, v_FromTime, v_ToTime, v_UnitOT,v_RatePercent, v_JWCoeffSalary, v_DepartmentCode, v_JobWCode, v_EmpTypeCode, v_AssignRegionCode, v_GroupSalCode, v_LabourType, v_JobPosCode,v_WorkCenterCode;
+					
+						-- TTVINH 2013.06.08
+						if v_PRIsTotalKowSal <> FALSE and v_PRIsExactByKowForNewEmp = TRUE --and @@cursor_rows::int = 1
+						then
+							-- Tính chính xác theo số ngày đi làm
+							v_PRIsTotalKowSal_Adjust:=0;
+						ELSE
+							v_PRIsTotalKowSal_Adjust :=v_PRIsTotalKowSal;
+						end if;
+						if v_PRIsTotalKowSal_Adjust <> FALSE
+						then
+							CALL "HR_spCalNormalKow"(v_FromTime, v_ToTimeN, v_EmployeeID, v_DayNum);
+						ELSE
+							v_DayNum := v_fSCKH;
+						END IF;
+						CALL "HR_spCalculateTimeSalary"(v_EmployeeID,v_DepartmentCode_N,v_JobPosCode_N,v_JobWCode_N,v_EmpTypeCode_N, v_AssignRegionCode_N, p_dowcode, v_FromTime,v_ToTimeN, v_RealSalaryN, v_MinSalaryN, v_CoeffSalaryN, v_DayNum, v_fSCKH, p_ProducSal, v_ExchangeEmp
+							, FALSE, FALSE, v_UnitOTN, v_CurrencyCode,v_JWMinSalaryN, v_JWRealSalaryN, v_InsSalaryN, v_PieceWageN,v_KowCodeNor, v_KowCodeOff, v_fSCKHY, v_KowCodeLate, 
+							v_WLeaveDayValue, v_gSGMC, v_fBeginDate, v_fEndDate,v_RatePercentN,v_CoeffSalaryN, v_JWCoeffSalary,v_YYYYMM,p_TableError, v_GroupSalCode_N,v_PRIsTotalKowSal_Adjust, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmpBH, v_WorkCenterCode_N, v_BUCode, v_LabourType_N);
+					END IF;
+				END IF;
+			END IF;
+				exit KOW_END;
+			END LOOP KOW_END;
+			--KOW_END:
+			CLOSE cur1;
+			END;
+		ENd;
+		END IF;
+	
+		--- *** end tach phieu luong (1) *** ---
+		-- Nếu trong tháng co nhiều nhóm lương thì lấy nhóm lương mới nhất.
+		SELECT "GroupSalCode" INTO v_tmp_GroupSalCode from "tmp_tblListOfEmp_FillData" where "EmployeeID" = v_EmployeeID ORDER BY "FromTime" DESC LIMIT 1;
+
+		-- trừ lại tiền cho một số công đã tính tháng trước.
+		--exec HR_spPrevMCalcKowFormula @EmployeeID, @DowCode, @BUCode, @gPRDecPlaceCurrencyForCal, @gPRDecPlaceCurrencyForPay, @ExchangeEmp, @tmp_GroupSalCode, @ProducSal, @fSCKH, @PreM_Amount output
+		-- Tính PC theo công thức	
+		-- start_time := clock_timestamp();
+		call "HR_spCalcAlloGradeFormula"(v_EmployeeID , v_CurrencyCode, p_dowcode, v_YYYYMM, v_BUCode, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, 
+		v_ExchangeEmp, v_tmp_GroupSalCode, v_fSCKHY, v_InsSalary, p_producsal, FALSE,v_fBeginDate,v_fEndDate);
+	
+		-- end_time := clock_timestamp();
+		-- execution_time := EXTRACT(EPOCH FROM (end_time - start_time));
+		-- RAISE NOTICE 'Thời gian thực thi HR_spCalcAlloGradeFormula: %', execution_time;
+		-- Tính lương đóng BHXH do BHXH chi trả (PayLoc in (0,2))
+
+		start_time := clock_timestamp();
+		call "HR_spCalSocialSalaryEmp"(v_EmployeeID ,p_dowcode, v_BUCode,v_CurrencyCode ,v_SNCCBH ,v_ExchangeEmpBH ,v_FromTime ,v_ToTime ,v_gPRDecPlaceCurrencyForCal ,v_gPRDecPlaceCurrencyForPay ,v_gEffectDatePRSIDayDecrease ,v_gEffectDatePRSIDayEffect ,v_PRIsSIByCurrencyForCal ,v_InsSalaryAmount,v_InsSalaryAmountF);
+
+		-- Tính PC theo xếp loại.
+
+		call "HR_spCalAllowanceAppraisal"(v_EmployeeID , p_dowcode, v_BUCode,v_ExchangeEmp ,v_YYYYMM , v_FromTime ,v_ToTime ,v_gPRDecPlaceCurrencyForCal ,v_gPRDecPlaceCurrencyForPay);
+
+		-- Tính lương cho quỹ nghỉ bù còn lại trong tháng.	
+
+		call "HR_spCalcKowFormulaTTO"(v_EmployeeID, p_dowcode, v_YYYYMM, v_BUCode, v_gPRDecPlaceCurrencyForCal, v_gPRDecPlaceCurrencyForPay, v_ExchangeEmp, v_fBeginDate, v_fEndDate, v_tmp_GroupSalCode, v_fSCKH);
+		--- end
+
+		--*** Tinh biệt lệ chạy trong lương trước đoạn tính thuế
+		-- 2017/11/15 @tmp_GroupSalCode đã lấy ở trên
+		select max("GroupSalCode") into v_tmp_GroupSalCode from "tmp_tblListOfEmp_FillData" where "EmployeeID" = v_EmployeeID;
+		
+		call "HR_spCalTExceptFormulaInSalStoredBeforeCalTaxFragment"(p_UserID, v_EmployeeID, v_tmp_GroupSalCode, p_dowcode, v_fBeginDate, v_gPRPITFamilyTaxFreeOwn_Peru, v_gPRPITFamilyTaxFreeUnit_Peru, v_CurrencyCode, v_ExchangeEmp);
+
+		-- SQLINES DEMO *** -----------------------------------
+	  -- SQLINES DEMO *** sau thuế
+		v_mAdvSalAll:=0;
+		v_mTuNumCom:=0; v_mMiNum :=0; v_mMiNumCom :=0; v_mSiNum:=0; v_mSiNumCom:=0; v_mUIAmountE:=0; v_mUIAmountC:=0;
+		-- SQLINES DEMO *** ế thu nhập cá nhân trừ trong thực nhận. @mAmountTax:thuế thu nhập công ty nộp cho thuế
+		v_mAmountTaxE := 0; v_mAmountTax := 0; v_mAmountTaxCo := 0; v_mDiffAllo := 0; v_mTotalIncomeE := 0; v_mTaxIncomeCo := 0;
+		v_mTaxAmountPaidOut := 0; v_mAlloIncS := 0; v_mAlloInc := 0;
+		v_mSalTax:=0; v_mTotalIncome :=0;
+
+		v_mAllInKind :=0; v_mFamilyTax :=0; v_mFamilyTaxFreeOwn:=0;
+		-- SQLINES DEMO *** thu nhập tính thuế. @mTaxableIncome: Tổng thu nhập chịu thuế @TaxIncomeOriginal: Tổng thu nhập tính thuế nguyên gốc
+		v_mTaxIncome:=0; v_mTaxableIncome:=0; v_mIncomeOther:=0; v_mToltalBonus:=0; v_mTaxIncomeOriginal:=0;
+		v_mTotalIncomeCompany:=0; v_mTaxIncomeCompany := 0; v_mTaxableIncomeCompany:=0;
+	 -- bi... SQLINES DEMO ***
+		v_OTSalTax :=0; v_OTSalNonTax :=0;
+	 v_InsuranceAdj:=0;
+	
+		-- 2. Tinh tam ung, tra nợ vay theo định kỳ là phải trừ trong thực nhận,các khoản trừ sau thuế
+		--SELECT @mAdvSalAll = isnull(SUM(CE.Amount),0) FROM HR_LSException L with (nolock)
+		--INNER JOIN HR_PayTExcept CE with (nolock) ON L.ExceptCode = CE.ExceptCode INNER JOIN hrm_Employees E ON CE.EmployeeID = E.EmployeeID
+		--WHERE L.IsBeforeTax = 0 and AddSub = 0 and IsInPayroll = 1 AND E.EmployeeID = @EmployeeID AND (CE.Date_Exc BETWEEN @fBeginDate AND @fEndDate)
+	
+		-- 2021.08.08
+		--if exists(select top(1) 1 from HCSSYS_TrackingValue where TableName='HCSEM_EmpInfoGroupSalary' and FieldName='TaxCode')
+		--begin
+		--	declare @TaxCode_Temp varchar(20)
+		--	SET @TaxCode_Temp = NULL
+		--	select top 1 @TaxCode_Temp=ValueOld from HCSEM_EmpTracking where TableName='HCSEM_EmpInfoGroupSalary' and FieldName='TaxCode' and EmployeeID =@EmployeeID
+		--		and EffectDate>@fEndDate and ValueOld is not null order by EffectDate asc
+		--	if (@TaxCode_Temp is not null and @TaxCode_Temp<>'') set @TaxCode=@TaxCode_Temp
+		--end
+		select L."CurrencyCode", L."InfrequentInc" into v_CurrencyCodeTax, v_InfrequentInc from "HR_LSTax" L WHERE L."TaxCode" =v_TaxCode;
+
+		-- 3. Tinh BHXH
+		-- 2023.12.20 ttvinh
+		--if @InfrequentInc<>3
+		--begin
+			--IF @IsGrossupNotSocialIns = 1
+			--BEGIN
+			--	SET @mMiNum = 0 
+			--	SET @mMiNumCom = 0
+			--	SET @mSiNum= 0
+			--	SET @mSiNumCom=0
+			--	set @mUIAmountE=0
+			--	SET @mUIAmountC= 0
+			--END  
+			--ELSE
+			--BEGIN
+			-- 2023.12.11 Gom @IsGrossupNotSocialIns chung điều kiện @InfrequentInc=4
+				v_tmpDayNum := 0;
+				v_IsDeduction := true;
+	
+				-- Propzy: Điều chỉnh giảm trễ (do cuối tháng xét công >= 50%)
+				IF EXISTS(SELECT 1 FROM "HR_ConfigPRSubAutoBackCollectSI" WHERE "AddAdjType" in ('7','8') LIMIT 1)
+					AND v_PRSITotalPaidDaysType <> 2
+				THEN
+					-- Tháng trích nộp
+					IF v_PRSIAdjDowCodeType = FALSE
+					THEN
+						--ngay bat dau va ngay ket thuc cua 'gia tri ngay nghi viec lam can cu bao giam'
+						v_FDate := To_timestamp(p_DowCode || '/01', 'yyy-MM-dd HH:mm:ss');
+						v_TDate :=  INTERVAL '-1 day' + (DATE_PART('year', v_FDate) - DATE_PART('year', '1900-01-01')) * 12 + (DATE_PART('month', v_FDate) - DATE_PART('month', '1900-01-01'))+1 * INTERVAL '1 month' + 0;
+						v_fBegDay := v_FDate;
+						v_fEndDay := v_TDate;
+					ELSE
+						v_fBegDay := v_fBeginDate; 
+						v_fEndDay := v_fEndDate; 
+					END IF;
+            
+					IF v_OfficialDate IS NOT NULL AND v_fBegDay < v_OfficialDate THEN
+						v_fBegDay := v_OfficialDate;
+					END IF;
+
+					-- Tổng số ngày công hưởng lương , thay thế StandardWD
+					IF v_PRSITotalPaidDaysType = 1 THEN
+					 v_PRSITotalPaidDays := (v_PRSITotalPaidDays * v_fSCKH / 100) * CASE when v_gSGMC = 1 THEN 8 ELSE 1 end; 
+					ELSIF v_PRSITotalPaidDaysType = 0 THEN
+						v_PRSITotalPaidDays := v_PRSITotalPaidDays;
+					ELSIF v_PRSITotalPaidDaysType = 2 THEN
+					 v_PRSITotalPaidDays := (v_fSCKH - v_PRSITotalPaidDays) * CASE when v_gSGMC = 1 THEN 8 ELSE 1 end;
+					ELSE
+						v_PRSITotalPaidDays := 0;
+					END IF;
+
+					WITH "tblA" AS (
+						-- SELECT LTRIM(RTRIM(CAST("data" AS VARCHAR(20)))) AS "KowCode" 
+						-- FROM "HR_FNSplitString_varchar"(v_PRSIPaidDayKowCodes, ',')
+						SELECT data AS "KowCode" from
+						UNNEST(STRING_TO_ARRAY(v_PRSIPaidDayKowCodes, ',')) as data
+					)
+
+					SELECT COALESCE(SUM("T"."DayNum"), 0) INTO v_tmpDayNum
+					FROM "HR_TSKowDs" AS "T" 
+					INNER JOIN "tblA" AS "T1" ON "T"."KowCode" = "T1"."KowCode"
+					WHERE "T"."EmployeeID" = v_EmployeeID 
+					AND "T"."WorkDate" BETWEEN v_fBegDay AND v_fEndDay;
+
+					IF v_tmpDayNum > v_PRSITotalPaidDays AND v_PRSITotalPaidDays > 0 THEN
+						v_IsDeduction := true;
+					ELSE
+						v_IsDeduction := false;
+					END IF;
+
+				END IF;
+		
+				IF EXISTS( SELECT "S"."EmployeeID" FROM "HR_SocialIns" AS "S" WHERE "S"."EmployeeID" = v_EmployeeID AND "S"."DowCode" = v_YYYYMM LIMIT 1) AND v_IsDeduction = TRUE 
+				THEN
+					SELECT COALESCE("S"."TUnionAmountC", 0), COALESCE("HIAmountE", 0), COALESCE("HIAmountC", 0), COALESCE("SIAmountE", 0),
+						   COALESCE("SIAmountC", 0), COALESCE("UIAmountE", 0), COALESCE("UIAmountC", 0) 
+					INTO v_mTuNumCom, v_mMiNum, v_mMiNumCom, v_mSiNum, v_mSiNumCom, v_mUIAmountE, v_mUIAmountC
+					FROM "HR_SocialIns" AS "S" 
+					WHERE "S"."EmployeeID" = v_EmployeeID 
+					AND "S"."DowCode" = v_YYYYMM;	
+
+				ELSIF EXISTS (SELECT "S"."EmployeeID" FROM "HR_SocialInsAdjust" AS "S" WHERE "S"."EmployeeID" = v_EmployeeID AND "S"."AdjDowCode" = v_YYYYMM AND "S"."NumAdd" NOT IN (7, 27, 8, 28) LIMIT 1) AND v_IsDeduction = TRUE 
+				THEN
+					SELECT COALESCE("HIAmountE", 0), COALESCE("HIAmountC", 0), COALESCE("SIAmountE", 0),
+						   COALESCE("SIAmountC", 0), COALESCE("UIAmountE", 0), COALESCE("UIAmountC", 0) 
+					INTO v_mMiNum, v_mMiNumCom, v_mSiNum, v_mSiNumCom, v_mUIAmountE, v_mUIAmountC
+					FROM "HR_SocialInsAdjust" AS "S" 
+					WHERE "S"."EmployeeID" = v_EmployeeID 
+					AND "S"."AdjDowCode" = v_YYYYMM
+					LIMIT 1;	
+				END IF;
+
+				-- 2022.08.02
+				-- 2023.12.11 Gom @IsGrossupNotSocialIns chung điều kiện @InfrequentInc=4
+				if v_InfrequentInc = 4 Or v_IsGrossupNotSocialIns = true OR v_InfrequentInc = 3
+				then
+					v_mMiNum_TempOnlyNet := v_mMiNum; 
+					v_mMiNumCom_TempOnlyNet := v_mMiNumCom;
+					v_mSiNum_TempOnlyNet:= v_mSiNum;
+					v_mSiNumCom_TempOnlyNet:=v_mSiNumCom;
+					v_mUIAmountE_TempOnlyNet:=v_mUIAmountE;
+					v_mUIAmountC_TempOnlyNet:= v_mUIAmountC;
+
+					v_mMiNum := 0; 
+					v_mMiNumCom := 0;
+					v_mSiNum:= 0;
+					v_mSiNumCom:=0;
+					v_mUIAmountE:=0;
+					v_mUIAmountC:= 0;
+				end if; 
+			--END
+		--end
+
+		-- 4. Tinh thue thu nhap
+		v_AmoutExceptIsTaxed :=0; 
+		v_AmountTaxExceptIsTaxed:=0;
+		v_TExcept_charity_fund :=0;
+		v_TotalAmountNotTaxPayer :=0;
+		-- 2015-05-25 Bổ sung trích nộp thuế bao gồm chi phí lương, thuế tháng trước	
+		IF p_ChkPay = TRUE 
+		THEN
+			SELECT "DowCode" INTO v_DowCode_Pre 
+			FROM "HR_ConfigTSEmpStandardWD" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			AND "FromDate" < v_fBeginDate 
+			ORDER BY "FromDate" DESC
+			LIMIT 1;
+
+			IF v_DowCode_Pre IS NOT NULL 
+			THEN
+				SELECT SUM("TaxableIncome"), SUM("HIAmountE" + "SIAmountE" + "UIAmountE"), SUM("TaxAmount") 
+				INTO v_TaxableIncome_Pre, v_Insurance_Pre, v_TaxAmount_Pre 
+				FROM "HR_PayIncome" 
+				WHERE "EmployeeID" = v_EmployeeID 
+				AND "DowCode" = v_DowCode_Pre 
+				AND "MainPaid" = TRUE;
+
+				SELECT COALESCE(v_TaxableIncome_Pre, 0) + COALESCE(SUM("T"."Amount"), 0), 
+					   COALESCE(v_TaxAmount_Pre, 0) + COALESCE(SUM("T"."AmountTax"), 0) 
+				INTO v_TaxableIncome_Pre, v_TaxAmount_Pre 
+				FROM "HR_PayTExcept" AS "T" 
+				INNER JOIN "HR_LSException" AS "L" ON "T"."ExceptCode" = "L"."ExceptCode" 
+				WHERE "EmployeeID" = v_EmployeeID 
+				AND "DowCode" = v_DowCode_Pre 
+				AND "TaxType" <> '0' 
+				AND "L"."AddSub" = TRUE
+				AND "IsInPayroll" <> TRUE
+				AND "IsTaxed" = TRUE 
+				AND "ExceptType" <> '6';
+			END IF;
+		END IF;
+
+		v_TaxableIncome_Pre := coalesce(v_TaxableIncome_Pre,0); 
+		v_Insurance_Pre :=coalesce(v_Insurance_Pre,0);
+		v_TaxAmount_Pre := coalesce(v_TaxAmount_Pre,0);
+	
+		-- 2017.11.30 Tính thuế theo bình quân thu nhập
+
+		v_TaxableIncomeYTD := 0; v_TaxIncomeYTD:=0; v_SocialInsPayableYTD := 0; v_FamilyTaxYTD :=0; v_TaxAmountYTD :=0; v_NumMonthYTD:=0;
+		v_TaxableIncome10perYTD :=0; v_TaxPayableYTD:=0; v_TaxPayable10perYTD:=0; v_TotalIncomeNotPayTax:=0; v_TaxPayableYTD_Pre :=0; v_TaxableIncome2:=0;
+		IF v_gPRPITType=1
+		THEN
+			SELECT "TaxableIncomeYTD", "SocialInsPayableYTD","TaxAmountYTD", "FamilyTaxYTD", "TaxCode", "NumMonthYTD" + 1,"TotalIncomeNotPayTax", "TaxAmountYTD" 
+			INTO v_TaxableIncomeYTD, v_SocialInsPayableYTD, v_TaxAmountYTD, v_FamilyTaxYTD, v_TaxCode_Pre, v_NumMonthYTD, v_TotalIncomeNotPayTax, v_TaxPayableYTD_Pre
+			FROM "HR_PayIncome" WHERE "EmployeeID" = v_EmployeeID 
+			AND "FromTime" < v_fBeginDate 
+			AND EXTRACT(YEAR FROM "FromTime") = EXTRACT(YEAR FROM v_fBeginDate) 
+			AND "MainPaid" = TRUE
+			ORDER BY "FromTime" DESC LIMIT 1;
+
+			-- Tháng hiện tại đầu tiên của có lương của NV	
+			IF v_NumMonthYTD = 0 
+			THEN 
+				v_NumMonthYTD := 1; 
+			END IF;
+
+		END IF;
+
+		-- 2019.02.20 Thuế tạm tính mỗi tháng- Lương và PC chuyển tháng sau
+		IF v_gPRPITType=2
+		THEN
+			SELECT "TotalIncomeNotPayTax" INTO v_TotalIncomeNotPayTax 
+			FROM "HR_PayIncome" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			AND "FromTime" < v_fBeginDate 
+			AND "MainPaid" = TRUE
+			ORDER BY "FromTime" DESC LIMIT 1;
+
+		END IF;
+		-- 2020.08.03 QTSC: Tổng TNCT tính tới tháng đang tính
+		IF v_gPRPITType = 3
+		THEN
+			SELECT "TaxableIncomeYTD", "SocialInsPayableYTD","TaxAmountYTD", "FamilyTaxYTD", "TaxCode", "NumMonthYTD" + 1,"TotalIncomeNotPayTax", "TaxAmountYTD" 
+			INTO v_TaxableIncomeYTD, v_SocialInsPayableYTD, v_TaxAmountYTD, v_FamilyTaxYTD, v_TaxCode_Pre, v_NumMonthYTD, v_TotalIncomeNotPayTax, v_TaxPayableYTD_Pre
+			FROM "HR_PayIncome" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "FromTime" < v_fBeginDate 
+			  AND EXTRACT(year FROM "FromTime") = EXTRACT(year FROM v_fBeginDate) 
+			  AND "MainPaid" = TRUE
+			ORDER BY "FromTime" DESC LIMIT 1;
+
+			-- Tháng hiện tại đầu tiên của có lương của NV		
+			IF v_NumMonthYTD =0 
+			THEN 
+				v_NumMonthYTD:=1; 
+			END IF;
+		END IF;
+	
+		if exists(select 1 from "HR_ConfigPR" where "PRIsPITApplyAll" = TRUE AND ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = v_BUCode)) limit 1)
+		then
+			-- TTVINH 2012-11-26 PIT theo nguyen te
+			v_ExchangeEmpTax:=1; -- neu ko tim dc ty gia thi =1
+		
+
+			IF v_CurrencyCodeTax=v_PRCurrencyForPay OR v_CurrencyCodeTax is null 
+			then
+				v_ExchangeEmpTax :=1;
+				v_CurrencyCodeTax:=v_PRCurrencyForPay;			
+			ELSE
+				SELECT COALESCE("RateToVND",1) INTO v_ExchangeEmpTax FROM "HR_fnGetPayExchangeRate"(v_BUCode, p_DowCode, v_CurrencyCodeTax)
+				LIMIT 1;
+			END IF;
+		
+			-- 4.0 Tổng cac khoan Biet le tra trong luong va da trich thue			
+			SELECT COALESCE(SUM("T"."Amount"), 0), COALESCE(SUM("T"."AmountTax"), 0) 
+			INTO v_AmoutExceptIsTaxed, v_AmountTaxExceptIsTaxed 
+			FROM "HR_PayTExcept" "T" 
+			INNER JOIN "HR_LSException" "L" ON "T"."ExceptCode" = "L"."ExceptCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND "TaxType" <> '0' 
+			  AND "L"."AddSub" = TRUE
+			  AND "IsInPayroll" = TRUE 
+			  AND "IsTaxed" = TRUE 
+			  AND "ExceptType" <> '6';
+
+			-- Tổng biệt lệ trả ngoài lương, trừ trước thuế(khoản giảm để giảm thuế: đóng quỹ nhân đạo,từ thiện, khuyến học)
+			SELECT COALESCE(SUM((-1.0) * "Amount"), 0) 
+			INTO v_TExcept_charity_fund 
+			FROM "HR_PayTExcept" "T" 
+			INNER JOIN "HR_LSException" "L" ON "T"."ExceptCode" = "L"."ExceptCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND "L"."AddSub" = FALSE 
+			  AND "IsBeforeTax" = TRUE
+			  AND "IsInPayroll" = FALSE 
+			  AND "IsTaxed" = FALSE 
+			  AND "ExceptType" <> '6';
+
+			-- Tổng BL cộng ngoài lương-có đóng thuế,chưa trích thuế
+			-- ttvinh 2014.08.28 lưu thuế tạm trích trả ngoài trong tháng @mTaxAmountPaidOut; 2018.08.22 TaxType=1
+			SELECT COALESCE(SUM("Amount"), 0), COALESCE(SUM("AmountTax"), 0) 
+			INTO v_TotalAmountNotTaxPayer, v_mTaxAmountPaidOut 
+			FROM "HR_PayTExcept" "T" 
+			INNER JOIN "HR_LSException" "L" ON "T"."ExceptCode" = "L"."ExceptCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND "TaxType" = '1' 
+			  AND "L"."AddSub" = TRUE 
+			  AND "IsInPayroll" = FALSE
+			  AND "IsTaxed" = FALSE
+			  AND "ExceptType" <> '6';
+
+			-- Tổng tiền điều chỉnh BH: Cộng có đóng thuế hoặc trừ trước thuế
+			SELECT  COALESCE(SUM(CASE WHEN "L"."AddSub" = FALSE THEN "Amount" * (-1.0) ELSE "Amount" END), 0) 
+			INTO v_InsuranceAdj  
+			FROM "HR_PayTExcept" AS "T" 
+			INNER JOIN "HR_LSException" "L" ON "T"."ExceptCode" = "L"."ExceptCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND "ExceptType" = '6' 
+			  AND (("L"."AddSub" = FALSE AND "IsBeforeTax" = TRUE) 
+				   OR ("TaxType" <> '0' AND "L"."AddSub" = TRUE AND "IsTaxed" = FALSE));
+
+			-- 4.1 Tinh tong cac khoan thue phai nop theo dung hinh thuc tinh luong nhan vien dang co
+			SELECT COALESCE(SUM("Amount"), 0) 
+			INTO v_mSalTax 
+			FROM (
+				SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+				FROM "HR_PaySalary"
+				UNION ALL
+				SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+				FROM "HR_PaySalaryLastPayroll"
+			) T  
+			INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND L."IsCalPIT" = TRUE 
+			  AND L."KowType" <> '5';
+
+			v_mTotalIncome := v_mSalTax;
+
+			-- 2018.08.08 OT (@InfrequentInc <>0 thi tinh full OT; 2022.08.02 @InfrequentInc = 4
+			IF (v_InfrequentInc = 1 OR v_InfrequentInc = 4)
+			THEN
+				-- 2024.09.27 OT Thời vụ gồm các khoản công không tính thuế
+				v_AmountTemp:=0;
+				SELECT COALESCE(SUM("Amount"), 0) 
+				INTO v_AmountTemp 
+				FROM (
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalary"
+					UNION ALL
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalaryLastPayroll"
+				) T  
+				INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode" 
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND "DowCode" = p_DowCode 
+				  AND L."IsCalPIT" = FALSE 
+				  AND L."KowType" <> '5';
+
+				v_mTotalIncome := v_mTotalIncome + v_AmountTemp;
+				v_AmountTemp := 0;
+
+				-- 2018.11.08 2021.07.08  Biệt lệ không tính thuế
+				SELECT v_mTotalIncome + COALESCE(SUM("Amount"), 0) 
+				INTO v_mTotalIncome 
+				FROM "HR_PayTExcept" T 
+				INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode" 
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND "DowCode" = p_DowCode 
+				  AND "TaxType" = '0' 
+				  AND L."AddSub" = TRUE
+				  AND L."IsAdvance" = FALSE
+				  AND L."ExceptType" IN ('1', '2');
+
+				--2019.10.25  OR (L.IsCalPIT = 0 AND L.KowType <> 5 AND L.BasicSalRate > 0)
+				SELECT COALESCE(SUM("Amount"), 0) 
+				INTO v_OTSalTax 
+				FROM (
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalary"
+					UNION ALL
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalaryLastPayroll"
+				) T 
+				INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND "DowCode" = p_DowCode 
+				  AND L."KowType" = '5';
+
+				v_OTSalTax := round(coalesce(v_OTSalTax,0),v_gPRDecPlaceCurrencyForPay);
+				v_mSalTax := v_mSalTax + v_OTSalTax;
+				v_mTotalIncome := v_mTotalIncome + v_OTSalTax;
+			ELSIF NOT EXISTS(SELECT 1 FROM "HR_PaySalaryExcess" SD INNER JOIN (
+			SELECT "DowCode" 
+			FROM "HR_LSPayrollDow" 
+			WHERE "DowCode" >= (LEFT(v_YYYYMM, 5) || '01') 
+			AND "DowCode" <= v_YYYYMM
+		) PD ON SD."DowCode" = PD."DowCode" WHERE "EmployeeID" = v_EmployeeID AND "IsFlag" = 1)
+				AND NOT EXISTS(
+					SELECT 1 
+					FROM "HR_PaySalaryLastPayrollExcess" SD 
+					INNER JOIN (
+						SELECT "DowCode" 
+						FROM "HR_LSPayrollDow" 
+						WHERE "DowCode" >= (LEFT(v_YYYYMM, 5) || '01') 
+						AND "DowCode" <= v_YYYYMM
+					) PD ON SD."DowCode" = PD."DowCode" WHERE "EmployeeID" = v_EmployeeID AND "IsFlag" = TRUE)
+			THEN
+		
+				--cong ngoai gio
+				v_OTSalTax :=0;
+				-- 2021.11.11 lay % cua cong ngoai gio khong tinh thue
+				v_OTSalNonTax := 0;
+				v_OverMoney :=0;
+
+				SELECT COALESCE(SUM(CASE WHEN "L"."BasicSalRate" > 100 THEN "Amount" * 100 / "L"."BasicSalRate" ELSE "Amount" END), 0), COALESCE(SUM("Amount"), 0) 
+				INTO v_OTSalTax, v_OverMoney 
+				FROM (
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalary"
+					UNION ALL
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalaryLastPayroll"
+				) T 
+				INNER JOIN "HR_vwKOW" "L" ON T."KowCode" = "L"."KowCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				AND "DowCode" = p_DowCode 
+				AND "L"."IsCalPIT" = TRUE
+				AND "L"."KowType" = '5' 
+				AND "L"."BasicSalRate" > 0;
+
+				v_OTSalTax := round(coalesce(v_OTSalTax,0),v_gPRDecPlaceCurrencyForPay);
+				v_mSalTax := v_mSalTax + v_OTSalTax;
+				v_mTotalIncome := v_mTotalIncome + v_OTSalTax;
+			
+				--SELECT @OverMoney = isnull(sum(Amount),0) FROM 
+				--(select EmployeeID,KowCode,DowCode,Amount from  HR_PaySalary with (nolock)
+				--	union ALL
+				--	select EmployeeID,KowCode,DowCode,Amount from HR_PaySalaryLastPayroll with (nolock) ) T 
+				--INNER JOIN HR_vwKOW L with (nolock) ON T.KowCode = L.KowCode
+				--WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode AND L.IsCalPIT = 1 AND KowType = 5 AND L.BasicSalRate > 0
+				v_OTSalNonTax := v_OTSalNonTax + (v_OverMoney -v_OTSalTax);
+				-- OT không đóng thuế
+				v_OverMoney :=0;
+				SELECT COALESCE(SUM("Amount"), 0) INTO v_OverMoney 
+				FROM (
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalary"
+					UNION ALL
+					SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+					FROM "HR_PaySalaryLastPayroll"
+				) T 
+				INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				AND "DowCode" = p_DowCode 
+				AND "IsCalPIT" = FALSE 
+				AND "KowType" = '5';
+
+				v_OTSalNonTax := v_OTSalNonTax + v_OverMoney;
+
+			ELSE -- Vượt OT	
+            
+				IF EXISTS(SELECT 1 FROM "HR_SysSettingsForCustomers" WHERE "KeyCode" = 'IsUsingOTVuotDMY' AND "Value" = 1 LIMIT 1)
+				THEN
+					v_OTSalTax :=0;
+					SELECT COALESCE(SUM(CASE WHEN L."BasicSalRate" > 100 THEN "Amount" * 100 / L."BasicSalRate" ELSE "Amount" END), 0) 
+					INTO v_OTSalTax 
+					FROM (
+						SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalary" 
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+						UNION ALL
+						SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalaryLastPayroll" 
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+					) T 
+					INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+					WHERE L."IsCalPIT" = TRUE AND L."KowType" = '5' AND L."BasicSalRate" > 0;
+
+					v_OTSalTax := round(coalesce(v_OTSalTax,0),v_gPRDecPlaceCurrencyForPay);
+					v_mSalTax := v_mSalTax + v_OTSalTax;
+					v_mTotalIncome := v_mTotalIncome + v_OTSalTax;
+				
+					--lay % cua cong ngoai gio khong tinh thue
+					v_OTSalNonTax := 0;
+				
+					v_OverMoney_2 :=0;
+					SELECT COALESCE(SUM("Amount"), 0) INTO v_OverMoney_2 
+					FROM (
+						SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalary" 
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+						UNION ALL
+						SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalaryLastPayroll" 
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+					) T 
+					INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+					WHERE L."IsCalPIT" = 1 AND L."KowType" = '5' AND L."BasicSalRate" > 0;
+
+					v_OTSalNonTax := v_OTSalNonTax + (v_OverMoney_2 - v_OTSalTax);
+
+					-- OT không đóng thuế
+					v_OverMoney_2 := 0;
+
+					SELECT COALESCE(SUM("Amount"), 0) INTO v_OverMoney_2 
+					FROM (
+						SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalary" 
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+						UNION ALL
+						SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalaryLastPayroll" 
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+					) T 
+					INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+					WHERE L."IsCalPIT" = FALSE AND L."KowType" = '5';
+
+					v_OTSalNonTax := v_OTSalNonTax + v_OverMoney_2;
+
+					v_OverMoney_2 :=0;
+					SELECT COALESCE(SUM("Amount"), 0) INTO v_OverMoney_2 
+					FROM (
+						SELECT "EmployeeID", T."KowCode", "DowCode", "Amount" 
+						FROM "HR_PaySalaryExcess" T 
+						INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode 
+						AND "IsFlag" = 1 AND "KowType" = '5'
+					) AS T;
+
+					v_OTSalTax := v_OTSalTax + round(coalesce(v_OverMoney_2,0),v_gPRDecPlaceCurrencyForPay);
+					v_mSalTax := v_mSalTax + v_OverMoney_2;
+					v_mTotalIncome := v_mTotalIncome + v_OverMoney_2;
+				ELSE
+					IF EXISTS (SELECT 1 FROM "HR_PaySalaryExcess" WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "IsFlag" = 1 LIMIT 1)
+						OR EXISTS (SELECT 1 FROM "HR_PaySalaryLastPayrollExcess" WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "IsFlag" = TRUE LIMIT 1)
+					then
+						-- Trong tháng vượt
+						--cong ngoai gio
+						v_OTSalTax :=0;
+						-- 2021.11.11 lay % cua cong ngoai gio khong tinh thue
+						v_OTSalNonTax := 0;
+						v_OverMoney_2 :=0;
+						SELECT COALESCE(SUM(CASE WHEN L."BasicSalRate" > 100 THEN "Amount" * 100 / L."BasicSalRate" ELSE "Amount" END), 0), COALESCE(SUM("Amount"), 0) 
+						INTO v_OTSalTax, v_OverMoney_2 
+						FROM (
+							SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalaryExcess" 
+							WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "IsFlag" = 0
+							UNION ALL
+							SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalaryLastPayroll" 
+							WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+						) T 
+						INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+						WHERE L."IsCalPIT" = TRUE AND L."KowType" = '5' AND L."BasicSalRate" > 0;
+
+						v_OTSalTax := round(coalesce(v_OTSalTax,0),v_gPRDecPlaceCurrencyForPay);
+						v_mSalTax := v_mSalTax + v_OTSalTax;
+						v_mTotalIncome := v_mTotalIncome + v_OTSalTax;
+						--SELECT @OverMoney_2 = isnull(sum(Amount),0) FROM 
+						--(select EmployeeID,KowCode,DowCode,Amount from  HR_PaySalaryExcess with (nolock) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode AND IsFlag = 0
+						--	union ALL
+						--	select EmployeeID,KowCode,DowCode,Amount from HR_PaySalaryLastPayroll with (nolock) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode
+						--) T 
+						--INNER JOIN HR_vwKOW L with (nolock) ON T.KowCode = L.KowCode
+						--WHERE IsCalPIT = 1 AND KowType = 5 AND L.BasicSalRate > 0
+						v_OTSalNonTax := v_OTSalNonTax + (v_OverMoney_2 -v_OTSalTax);
+						-- OT không đóng thuế
+						v_OverMoney_2 :=0;
+						SELECT COALESCE(SUM("Amount"), 0) INTO v_OverMoney_2 
+						FROM (
+							SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalaryExcess" 
+							WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "IsFlag" = 0
+							UNION ALL
+							SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalaryLastPayroll" 
+							WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode
+						) T 
+						INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+						WHERE "IsCalPIT" = FALSE AND "KowType" = '5';
+
+						v_OTSalNonTax := v_OTSalNonTax + v_OverMoney_2;
+				
+						v_OverMoney_2 :=0;
+						SELECT COALESCE(SUM("Amount"), 0) INTO v_OverMoney_2 
+						FROM (
+							SELECT "EmployeeID", T."KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalaryExcess" T 
+							INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+							WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "IsFlag" = 1 AND "KowType" = '5'
+						) AS T;
+
+						v_OTSalTax := v_OTSalTax + round(coalesce(v_OverMoney_2,0),v_gPRDecPlaceCurrencyForPay);
+						v_mSalTax := v_mSalTax + v_OverMoney_2;
+						v_mTotalIncome := v_mTotalIncome + v_OverMoney_2;
+					ELSE
+						-- Vượt từ tháng trước
+						SELECT COALESCE(SUM("Amount"), 0) INTO v_OTSalTax 
+						FROM (
+							SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalary"
+							UNION ALL
+							SELECT "EmployeeID", "KowCode", "DowCode", "Amount" 
+							FROM "HR_PaySalaryLastPayroll"
+						) T 
+						INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+						WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "KowType" = '5';
+
+						v_OTSalTax := round(coalesce(v_OTSalTax,0),v_gPRDecPlaceCurrencyForPay);
+						v_mSalTax := v_mSalTax + v_OTSalTax;
+						v_mTotalIncome := v_mTotalIncome + v_OTSalTax;
+					END IF;
+				END IF;
+			END IF;			
+
+			-- 4.1.2 Tinh tong tien luong theo san pham
+			v_ProductAmount:=0;
+			--IF @GroupType = 2 Or @GroupType = 9 Or @GroupType = 3 Or @GroupType = 10
+			--BEGIN		
+			--	SELECT @ProductAmount=isnull(SUM(Amount),0) FROM HCSPR_ProductAmount with (nolock) WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode 
+			--	set @mSalTax = @mSalTax + @ProductAmount
+			--	SET @mTotalIncome = @mTotalIncome + @ProductAmount
+			--END
+
+			-- 4.1.3 Tinh tong Phu cap duoc tra trong Bang luong va co dong thue thu nhap khong bao gom PC nha o, phu cap com
+			v_mAlloTaxE :=0;
+			v_mTotalIncomeTemp :=0;
+			-- TTVINH 2013.06.27 2018.08.08;2022.08.02 @InfrequentInc = 4
+			IF (v_InfrequentInc = 1 OR v_InfrequentInc = 4)
+			then
+				UPDATE "HR_PayAllowance" T 
+				SET "AmountNonTax" = 0
+				FROM "HR_LSAlloGrade" L 
+				WHERE T."AlloGradeCode" = L."AlloGradeCode" 
+				  AND "EmployeeID" = v_EmployeeID 
+				  AND T."DowCode" = p_DowCode 
+				  AND "TaxType" = '1';
+
+				--2018.11.08
+				SELECT COALESCE(SUM(T."Amount"), 0) INTO v_mAlloTaxE 
+				FROM "HR_PayAllowance" T 
+				INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND T."DowCode" = p_DowCode 
+				  AND "TaxType" = '0';
+	
+			END IF;		
+
+			SELECT COALESCE(v_mAlloTaxE, 0) + COALESCE(SUM(T."Amount" - T."AmountNonTax"), 0) INTO v_mAlloTaxE 
+			FROM "HR_PayAllowance" T 
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND T."DowCode" = p_DowCode 
+			  AND "TaxType" = '1' 
+			  AND "IsLawSalary" = FALSE
+			  AND "SalaryInclude" < '6'
+			  AND "AlloType" <> '7' 
+			  AND "AlloType" <> '2' 
+			  AND "IsInTaxableIncome" = FALSE;
+
+			-- phu cap com 	
+			SELECT COALESCE(v_mAlloTaxE, 0) + CASE WHEN "Amount" > "AmountNonTax" THEN "Amount" - "AmountNonTax" ELSE 0 END INTO v_mAlloTaxE 
+			FROM (
+			  SELECT SUM(T."Amount") "Amount", SUM(T."AmountNonTax") "AmountNonTax" 
+			  FROM "HR_PayAllowance" T 
+			  INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			  WHERE "EmployeeID" = v_EmployeeID 
+				AND T."DowCode" = p_DowCode 
+				AND "TaxType" = '1' 
+				AND "IsLawSalary" = FALSE 
+				AND "SalaryInclude"::int < 6
+				AND "AlloType" = '2' 
+				AND "IsInTaxableIncome" = FALSE
+			) tempAllo;
+
+			v_mTotalIncome := v_mTotalIncome + coalesce(v_mAlloTaxE,0);
+			-- 4.1.4 Tinh tong cac biet le cong duoc tra trong Bang luong va co dong thue thu nhap
+			-- ttvinh 2020.12.14
+			v_mIncomeOtherE :=0; v_mToltalBonusE :=0; v_mToltalSalary13:=0;
+			--SELECT @mIncomeOtherE=isnull(SUM(T.Amount),0) FROM HR_PayTExcept T with (nolock) INNER JOIN HR_LSException L with (nolock) ON T.ExceptCode = L.ExceptCode 
+			--WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode AND TaxType = 1 AND L.AddSub = 1 AND ExceptType <> 1 and IsInPayroll = 1 and IsTaxed=0 and ExceptType<> 6
+			--set @mTotalIncome = @mTotalIncome + @mIncomeOtherE
+			--set @mToltalBonusE =0
+			--SELECT @mToltalBonusE=isnull(SUM(T.Amount),0) FROM  HR_PayTExcept T with (nolock) INNER JOIN HR_LSException L with (nolock) ON T.ExceptCode = L.ExceptCode 
+			--WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode AND TaxType = 1 AND L.AddSub = 1 AND ExceptType = 1 and IsInPayroll = 1 and IsTaxed=0
+			--set @mTotalIncome = @mTotalIncome + @mToltalBonusE
+			if v_gPRPITType <> 4
+			then
+				SELECT SUM(CASE WHEN "ExceptType" = '1' THEN COALESCE(T."Amount", 0) ELSE 0 END), SUM(CASE WHEN "ExceptType" <> '1' AND "ExceptType" <> '6' THEN COALESCE(T."Amount", 0) ELSE 0 END) 
+				INTO v_mToltalBonusE, v_mIncomeOtherE
+				FROM "HR_PayTExcept" T 
+				INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND "DowCode" = p_DowCode 
+				  AND "TaxType" = '1' 
+				  AND L."AddSub" = TRUE 
+				  AND "IsInPayroll" = TRUE
+				  AND "IsTaxed" = FALSE;
+
+				v_mIncomeOtherE:= coalesce(v_mIncomeOtherE,0); v_mToltalBonusE:= coalesce(v_mToltalBonusE,0);
+				v_mTotalIncome := v_mTotalIncome + v_mIncomeOtherE + v_mToltalBonusE;
+			else
+				SELECT SUM(CASE WHEN L."IsSalary13" = FALSE AND "ExceptType" = '1' THEN COALESCE(T."Amount", 0) ELSE 0 END), 
+					   SUM(CASE WHEN L."IsSalary13" = FALSE AND "ExceptType" <> '1' AND "ExceptType" <> '6' THEN COALESCE(T."Amount", 0) ELSE 0 END),
+					   SUM(CASE WHEN L."IsSalary13" = TRUE THEN COALESCE(T."Amount", 0) ELSE 0 END) 
+				INTO v_mToltalBonusE, v_mIncomeOtherE, v_mToltalSalary13
+				FROM "HR_PayTExcept" T 
+				INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND "DowCode" = p_DowCode 
+				  AND "TaxType" = '1' 
+				  AND L."AddSub" = TRUE
+				  AND "IsInPayroll" = TRUE
+				  AND "IsTaxed" = FALSE;
+
+				v_mIncomeOtherE:= coalesce(v_mIncomeOtherE,0); v_mToltalBonusE:= coalesce(v_mToltalBonusE,0);
+				v_mTotalIncome := v_mTotalIncome + v_mIncomeOtherE + v_mToltalBonusE;
+				v_mTotalIncomeTemp :=0;
+				SELECT CASE 
+				   WHEN ((DATE_PART('year', (LEFT(p_DowCode, 4) || '/12/01')::TIMESTAMP) - DATE_PART('year', (("DowCode") || '/01')::TIMESTAMP)) * 12 + (DATE_PART('month', (LEFT(p_DowCode, 4) || '/12/01')::TIMESTAMP) - DATE_PART('month', (("DowCode") || '/01')::TIMESTAMP)) + 1) > 0 
+				   THEN COALESCE(T."Amount", 0) / ((DATE_PART('year', (LEFT(p_DowCode, 4) || '/12/01')::TIMESTAMP) - DATE_PART('year', (("DowCode") || '/01')::TIMESTAMP)) * 12 + (DATE_PART('month', (LEFT(p_DowCode, 4) || '/12/01')::TIMESTAMP) - DATE_PART('month', (("DowCode") || '/01')::TIMESTAMP)) + 1) 
+				   ELSE 0 END 
+				INTO v_mTotalIncomeTemp
+				FROM "HR_PayTExcept" T 
+				INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+				WHERE "EmployeeID" = v_EmployeeID 
+				  AND LEFT("DowCode", 4) = LEFT(p_DowCode, 4) 
+				  AND "TaxType" = '1' 
+				  AND L."AddSub" = TRUE
+				  AND "IsInPayroll" = TRUE
+				  AND "IsTaxed" = FALSE 
+				  AND L."IsSalary13" = TRUE;
+
+				IF v_EndDate IS NOT NULL AND SUBSTR(TO_CHAR (v_EndDate, 'YYYY/MM/DD'), 1, 7) = p_DowCode THEN
+					v_NumMonthYTD := (DATE_PART('year',(LEFT(p_DowCode,4)||'/12/31')::TIMESTAMP) - DATE_PART('year', v_EndDate)) * 12 + (DATE_PART('month', (LEFT(p_DowCode,4)||'/12/31')::TIMESTAMP) - DATE_PART('month', v_EndDate)) +1; 
+				ELSE v_NumMonthYTD := 1;
+				END IF;
+				v_mToltalBonusE:= v_mToltalBonusE + coalesce(v_mToltalSalary13,0);
+				v_TotalAmountNotTaxPayer := v_TotalAmountNotTaxPayer + v_mTotalIncomeTemp *v_NumMonthYTD;
+				--set @mTotalIncome = @mTotalIncome + @mTotalIncomeTemp *@NumMonthYTD
+				v_mTotalIncomeTemp :=0; v_NumMonthYTD:=0;
+			end if; 
+	
+			-- 4.1.5 Tinh tong cac biet le tru duoc khau tru trong Bang luong va truoc thue thu nhap
+			v_TExcept :=0;
+			SELECT SUM(T."Amount") INTO v_TExcept 
+			FROM "HR_PayTExcept" T 
+			INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND L."AddSub" = FALSE 
+			  AND "IsBeforeTax" = TRUE
+			  AND "IsInPayroll" = TRUE
+			  AND "ExceptType" <> '6';
+
+			v_mIncomeOtherE := v_mIncomeOtherE - coalesce(v_TExcept,0);
+			v_mTotalIncome := v_mTotalIncome - coalesce(v_TExcept,0);
+			v_mTotalIncomeE := v_mTotalIncome;
+			-- 4.1.6 Tinh tong cac phu cap tinh theo thu nhap va co dong thue va ko phu thuoc vao cach tinh luong cua nv
+			--nghia la khoang thu nhap nay duoc cong chung voi thu nhap chiu thue sau do dem trich thue
+			--(con thu nhap chiu thue thi tuy theo luong Gross hay Net ma no co the co cach quy doi khac nhau)
+			-- khong xet so tien AmountNonTax khi tính 15% tổng thu nhập nhà ở
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mAlloInc 
+			FROM "HR_PayAllowance" T 
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND T."DowCode" = p_DowCode 
+			  AND "TaxType" <> '0' 
+			  AND "IsLawSalary" = FALSE
+			  AND "IsInTaxableIncome" <> FALSE
+			  AND "AlloType" <> '7' 
+			  AND "AlloType" <> '2';
+
+			-- 4.1.7 Tinh tong cac phu cap tinh theo thu nhap va co dong thue va phu thuoc vao cach tinh luong cua nhan vien
+			v_mAlloIncS:=0;
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mAlloIncS 
+			FROM "HR_PayAllowance" T 
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND T."DowCode" = p_DowCode 
+			  AND "TaxType" = '1' 
+			  AND "IsLawSalary" = FALSE
+			  AND "SalaryInclude"::int >= 9
+			  AND "IsInTaxableIncome" = FALSE
+			  AND "AlloType" <> '7' 
+			  AND "AlloType" <> '2';
+
+			-- tru tien Benefit in kind
+			v_mAllInKind := 0;
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mAllInKind 
+			FROM "HR_PayAllowance" T 
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode" 
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND "TaxType" <> '0' 
+			  AND "IsLawSalary" = FALSE
+			  AND "IsNotInHouseAllo" <> FALSE;
+
+			--2018.08.29
+			SELECT v_mAllInKind + coalesce(SUM(T."Amount"), 0) INTO v_mAllInKind 
+			FROM "HR_PayTExcept" T 
+			INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+			WHERE T."EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			  AND L."AddSub" = TRUE
+			  AND "IsNotInHouseAllo" <> FALSE 
+			  AND "ExceptType" <> '6';
+
+			if v_ExchangeEmpTax <> 1
+			then
+				-- TTVINH 2012-11-26 PIT CAM: Nếu biểu thuế PIT không phải là VN thì bỏ qua giảm trừ gia cảnh
+				v_gPRPITFamilyTaxFreeUnit :=75000 * v_ExchangeEmpTax;
+				v_gPRPITFamilyTaxFreeOwn:=0; 
+			ELSE
+				v_gPRPITFamilyTaxFreeUnit := v_gPRPITFamilyTaxFreeUnit_Peru;
+				v_gPRPITFamilyTaxFreeOwn := v_gPRPITFamilyTaxFreeOwn_Peru;
+			END IF;
+			--2018.08.08 Luong thoi vu khong tru gia canh va phu thuoc
+			-- tinh so tien giam tru tren doi tuong phu thuoc
+			v_mFamilyTax :=0;
+			if (v_InfrequentInc <> 0)
+			then
+				v_mFamilyTaxFreeOwn := 0;
+				v_gPRPITFamilyTaxFreeOwn:=0;
+			ELSE
+				SELECT coalesce(SUM(v_gPRPITFamilyTaxFreeUnit), 0) INTO v_mFamilyTax 
+				FROM "HR_EmpFamily" 
+				WHERE "IsReduceTax" <> FALSE 
+				  AND "EmployeeID" = v_EmployeeID 
+				  AND "FromMonth" <= v_YYYYMM
+				  AND ("ToMonth" = '' OR "ToMonth" IS NULL OR "ToMonth" >= v_YYYYMM);
+
+				-- Tinh so tien tru gia canh cho doi tuong phu thuoc nop thue
+				v_mFamilyTaxFreeOwn := v_gPRPITFamilyTaxFreeOwn + v_mFamilyTax;
+			END IF;
+		
+			-- 4.1.8 Lam cho thue nha o
+			--mHouse la thu nhap truoc cac khoan BH, giam tru gia canh
+			--2018.08.29
+			v_mHousePoli := 0; v_mHouse := 0; v_mHouse1 :=0;
+			v_IncomeCalcHouseNet :=0; v_IncomeCalcHouseGross1 :=0; v_IncomeCalcHouseGross :=0; v_TaxIncome_Net :=0;
+
+			--2019.12.26 Quy định tiền nhà có Grossup hay không IsInTaxableIncome=1		
+			if (v_IsInTaxableIncome_mHouse Is not NULL)
+			THEN
+				--Neu tinh luong theo Gross : @GroupType <= 7
+				if v_GroupType <= 7
+				then
+					--gapp_IsForSocial
+					--2018.08.29
+					v_IncomeCalcHouseGross:=(v_mTotalIncome - v_mAllInKind + v_mAlloInc + v_mAlloIncS + v_AmoutExceptIsTaxed);
+					v_mHousePoli := v_IncomeCalcHouseGross * v_PRPITHouseRate / 100;
+					-- ttvinh 2023.12.20
+					if v_mHousePoli=0
+					then
+						SELECT coalesce(SUM("T"."Amount"), 0) INTO v_mHousePoli 
+						FROM "HR_PayAllowance" "T" 
+						INNER JOIN "HR_LSAlloGrade" "L" ON "T"."AlloGradeCode" = "L"."AlloGradeCode" 
+						WHERE "EmployeeID" = v_EmployeeID 
+						  AND "DowCode" = p_DowCode 
+						  AND "TaxType" = '1' 
+						  AND "IsLawSalary" = FALSE
+						  AND "AlloType" = '7';
+
+					end if;
+				ELSE
+					-- luong Net
+					-- ttvinh 2013.11.29 trừ thêm BH: @mSiNum + @mMiNum + @mUIAmountE; 2018.08.29
+					v_GrossAmount:= v_mTotalIncome - v_mAllInKind - v_mFamilyTaxFreeOwn -(v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj) + v_mAlloIncS + v_TotalAmountNotTaxPayer;
+
+					call "HR_spPGrossIncome"(v_EmployeeID,v_GrossAmount,v_mHousePoli);
+
+					if v_mHousePoli=0
+					then
+						v_mHousePoli := v_GrossAmount;
+					END IF;	
+
+					v_IncomeCalcHouseNet:=v_GrossAmount;
+					v_IncomeCalcHouseGross1:=v_mHousePoli;
+					--exec HR_spPCalculateTax @Tax_ID,@mHousePoli,@gBaseAmtDec,@AmountTaxTemp output
+
+					v_IncomeCalcHouseGross:=(v_mHousePoli + v_mFamilyTaxFreeOwn+ v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj + v_mAlloInc + v_AmoutExceptIsTaxed);
+					v_mHousePoli :=v_IncomeCalcHouseGross * v_PRPITHouseRate / 100;
+					-- ttvinh 2023.12.20
+					if v_mHousePoli=0
+					then
+						SELECT coalesce(SUM("T"."Amount"), 0) INTO v_mHousePoli 
+						FROM "HR_PayAllowance" "T" 
+						INNER JOIN "HR_LSAlloGrade" "L" ON "T"."AlloGradeCode" = "L"."AlloGradeCode" 
+						WHERE "EmployeeID" = v_EmployeeID 
+						  AND "DowCode" = p_DowCode 
+						  AND "TaxType" = '1' 
+						  AND "IsLawSalary" = FALSE 
+						  AND "AlloType" = '7';
+					end if;
+				END IF;
+				if v_mHousePoli > 0 
+				THEN
+					v_mHouseTemp :=0;
+					SELECT coalesce(SUM("T"."Amount"), 0) INTO v_mHouseTemp 
+					FROM "HR_PayAllowance" "T" 
+					INNER JOIN "HR_LSAlloGrade" "L" ON "T"."AlloGradeCode" = "L"."AlloGradeCode" 
+					WHERE "EmployeeID" = v_EmployeeID 
+					  AND "DowCode" = p_DowCode 
+					  AND "TaxType" = '1' 
+					  AND "IsLawSalary" = FALSE 
+					  AND "AlloType" = '7';
+
+					IF v_mHouseTemp >0 
+					THEN
+						IF v_mHouseTemp <=v_mHousePoli THEN
+							v_mHouse := v_mHouseTemp;
+						ELSE
+							v_mHouse := v_mHousePoli;
+						END IF;
+					END IF;
+				 END IF;
+				 v_mHouse1 := v_mHouse;
+			END IF;
+
+			-- 4.1.8 Tinh so tien thue thu nhap nhan vien tra
+			v_mAmountTaxE :=0;
+			v_mTaxIncome :=0; v_mTaxableIncome:=0;
+			if v_GroupType <= 7  --Neu tinh luong theo Gross
+			then
+				--2019.02.20
+				if v_gPRIsSIByCurrencyForCal = TRUE
+				then
+					v_mTaxableIncome := v_mTotalIncome + v_mHouse + v_mAlloInc + v_mAlloIncS+v_TotalAmountNotTaxPayer;
+					v_mTaxIncome := v_mTaxableIncome - round((v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj) * v_ExchangeEmpBH,v_gPRDecPlaceExRate) - v_mFamilyTaxFreeOwn + v_TExcept_charity_fund;
+				ELSE
+					v_mTaxableIncome := v_mTotalIncome + v_mHouse + v_mAlloInc + v_mAlloIncS+v_TotalAmountNotTaxPayer;      
+					v_mTaxIncome := v_mTaxableIncome - v_mSiNum - v_mMiNum - v_mUIAmountE + v_InsuranceAdj - v_mFamilyTaxFreeOwn + v_TExcept_charity_fund;
+				END IF;
+				v_mAmountTaxE :=0;
+				-- TTVINH 2012-11-26 PIT CAM
+				-- 2015-05-25 Bổ sung trích nộp thuế bao gồm chi phí lương, thuế tháng trước
+				if v_ExchangeEmpTax= 1 then 
+					v_AmountTemp := round( v_mTaxIncome + v_TaxableIncome_Pre -v_Insurance_Pre,0);
+				ELSE
+					v_AmountTemp := ROUND( (v_mTaxIncome + v_TaxableIncome_Pre -v_Insurance_Pre)/v_ExchangeEmpTax,0);
+				end if;
+				-- ttvinh 2017.11.30 2018.07.02 2019.05.03
+				IF v_gPRPITType=1
+				THEN
+					-- thue thoi vu
+					IF	v_InfrequentInc <> 0
+					then
+						v_TaxableIncome10perYTD := v_TaxableIncome10perYTD + v_mTaxableIncome;
+						call "HR_spPCalculateTax"(v_TaxCode,v_TaxableIncome10perYTD,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);            
+						v_mAmountTaxE := round(COALESCE(v_mAmountTaxE,0)*v_ExchangeEmpTax,0);
+						v_TaxPayable10perYTD := v_mAmountTaxE;
+
+					ELSE
+						v_TaxableIncome2 := 0;
+						-- thu nhập trả thuế muộn
+						v_TotalIncomeNotPayTax:=0;
+						v_SocialInsPayableYTD := v_SocialInsPayableYTD + v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj; 
+						-- 2019.05.28 so nguoi phu thuoc giam tru					
+						v_FroMonth:= left(p_DowCode,4)||'/01';
+						IF v_JoinDate > left(p_DowCode,4)||'/01/01' 
+						then
+							-- điều chỉnh số tháng giảm trừ
+							v_FroMonth:= left(to_char (v_JoinDate, 'yyyy/mm/dd'),7);
+							v_NumMonthYTD:=(DATE_PART('year',(p_DowCode||'/01')::TIMESTAMP) - DATE_PART('year', v_JoinDate)) * 12 + (DATE_PART('month', (p_DowCode||'/01')::TIMESTAMP) - DATE_PART('month', v_JoinDate)) +1; 
+							if v_NumMonthYTD <0 then v_NumMonthYTD:=1; end if;
+						end if;
+
+						v_PerDepend :=0;
+						SELECT sum((DATE_PART('year', 
+							  (CASE WHEN "ToMonth" = '' OR "ToMonth" IS NULL OR "ToMonth" >= p_DowCode THEN p_DowCode || '/01' 
+									ELSE "ToMonth" || '/01' END)::TIMESTAMP) 
+							  - DATE_PART('year', 
+							  (CASE WHEN "FromMonth" < v_FroMonth THEN v_FroMonth || '/01' 
+									ELSE "FromMonth" || '/01' END)::TIMESTAMP)) * 12 
+							  + (DATE_PART('month', 
+							  (CASE WHEN "ToMonth" = '' OR "ToMonth" IS NULL OR "ToMonth" >= p_DowCode THEN p_DowCode || '/01' 
+									ELSE "ToMonth" || '/01' END)::TIMESTAMP) 
+							  - DATE_PART('month', 
+							  (CASE WHEN "FromMonth" < v_FroMonth THEN v_FroMonth || '/01' 
+									ELSE "FromMonth" || '/01' END)::TIMESTAMP)) + 1) 
+						INTO v_PerDepend
+						FROM "HR_EmpFamily"
+						WHERE "IsReduceTax" <> FALSE
+						  AND "EmployeeID" = v_EmployeeID 
+						  AND ("ToMonth" = '' OR "ToMonth" IS NULL OR "ToMonth" >= v_FroMonth);
+						
+						-- số tháng * mức trừ cá nhân + số thân nhân * mức giảm trừ thân nhân	
+						--set @FamilyTaxYTD = @FamilyTaxYTD + @mFamilyTaxFreeOwn
+						v_FamilyTaxYTD := v_gPRPITFamilyTaxFreeOwn * v_NumMonthYTD + v_gPRPITFamilyTaxFreeUnit * coalesce(v_PerDepend,0);
+					
+						v_TaxableIncomeYTD := v_TaxableIncomeYTD + v_mTaxableIncome;
+						v_TaxIncomeYTD := v_TaxableIncomeYTD - v_SocialInsPayableYTD-v_FamilyTaxYTD;
+						v_TaxIncomeAvg :=round(v_TaxIncomeYTD / v_NumMonthYTD,0);
+						call "HR_spPCalculateTax"(v_TaxCode,v_TaxIncomeAvg,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);            
+						v_mAmountTaxE := round(COALESCE(v_mAmountTaxE,0)*v_ExchangeEmpTax,0);
+						v_TaxPayableYTD := v_mAmountTaxE * v_NumMonthYTD;	
+					end if;
+					-- Hoàn thuế lại cho NV, tăng NET
+					--if (@TaxPayableYTD + @TaxPayable10perYTD - @TaxAmountYTD)>0 
+					v_mAmountTaxE := v_TaxPayableYTD + v_TaxPayable10perYTD - v_TaxAmountYTD;
+					--else set @mAmountTaxE=0
+					-- thuế đã trả đến tháng này: @TaxAmountYTD
+					v_TaxAmountYTD := v_TaxAmountYTD + v_mAmountTaxE;
+				ELSIF v_gPRPITType = 3
+				THEN
+					-- thue thoi vu
+					IF	v_InfrequentInc <> 0
+					then
+						v_TaxableIncome10perYTD := v_TaxableIncome10perYTD + v_mTaxableIncome;
+						call "HR_spPCalculateTax"(v_TaxCode,v_TaxableIncome10perYTD,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);            
+						v_mAmountTaxE := round(COALESCE(v_mAmountTaxE,0)*v_ExchangeEmpTax,v_gPRDecPlaceCurrencyForCal);
+						v_TaxPayable10perYTD := v_mAmountTaxE;
+					ELSE
+				 
+						v_TaxableIncome2 := 0;
+						-- thu nhập trả thuế muộn
+						v_TotalIncomeNotPayTax:=0;
+						v_SocialInsPayableYTD := v_SocialInsPayableYTD + v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj; 
+						-- 2019.05.28 so nguoi phu thuoc giam tru					
+						v_FroMonth:= left(p_DowCode,4)||'/01';
+						IF v_JoinDate > left(p_DowCode,4)||'/01/01' 
+						then
+							-- điều chỉnh số tháng giảm trừ
+							v_FroMonth:= left(to_char (v_JoinDate, 'yyyy/mm/dd'),7);
+						end if;
+						v_PerDepend :=0;
+						SELECT COUNT(1) INTO v_PerDepend
+						FROM "HR_EmpFamily"
+						WHERE "IsReduceTax" <> FALSE
+						  AND "EmployeeID" = v_EmployeeID 
+						  AND ("ToMonth" = '' OR "ToMonth" IS NULL OR "ToMonth" >= v_FroMonth);
+						
+						-- số tháng * mức trừ cá nhân + số thân nhân * mức giảm trừ thân nhân	
+						--set @FamilyTaxYTD = @FamilyTaxYTD + @mFamilyTaxFreeOwn
+
+						v_FamilyTaxYTD := v_FamilyTaxYTD + v_gPRPITFamilyTaxFreeOwn + v_gPRPITFamilyTaxFreeUnit * coalesce(v_PerDepend,0);
+						v_TaxableIncomeYTD := v_TaxableIncomeYTD + v_mTaxableIncome;
+						v_TaxIncomeYTD := v_TaxableIncomeYTD - v_SocialInsPayableYTD-v_FamilyTaxYTD;
+
+						-- Thu nhập tính thuế /tháng: 87.000.000/8 =  10.875.000 đồng. 
+						-- Lưu ý: @NumMonthYTD = 8 là giá trị cần tính từ max(ngày vào làm, tháng đầu tiên của năm đang xét) tới tháng 12 của năm đang xét
+						IF v_JoinDate >= left(p_DowCode,4)||'/01/01' THEN 
+							v_FroMonth := left(to_char (v_JoinDate, 'yyyy/mm/dd'),7);
+						ELSE
+							v_FroMonth := LEFT(p_DowCode,4)||'/01/01';
+						END IF;
+
+						IF v_EndDate IS NOT NULL AND SUBSTR(TO_CHAR (v_EndDate, 'YYYY/MM/DD'), 1, 7) <= p_DowCode THEN
+							v_NumMonthYTD := (DATE_PART('year',(SUBSTR(TO_CHAR (v_EndDate, 'YYYY/MM/DD'), 1, 7)||'/01')::TIMESTAMP) - DATE_PART('year', (v_FroMonth||'/01')::TIMESTAMP)) * 12 + (DATE_PART('month', (SUBSTR(TO_CHAR (v_EndDate, 'YYYY/MM/DD'), 1, 7)||'/01')::TIMESTAMP) - DATE_PART('month', (v_FroMonth||'/01')::TIMESTAMP)) +1; 
+						ELSE 
+							v_NumMonthYTD := (DATE_PART('year',(LEFT(p_DowCode,4)||'/12/01')::TIMESTAMP) - DATE_PART('year', (v_FroMonth||'/01')::TIMESTAMP)) * 12 + (DATE_PART('month', (LEFT(p_DowCode,4)||'/12/01')::TIMESTAMP) - DATE_PART('month', (v_FroMonth||'/01')::TIMESTAMP)) +1;
+						END IF; 
+
+						v_TaxIncomeAvg := ROUND(v_TaxIncomeYTD / v_NumMonthYTD,v_gPRDecPlaceCurrencyForCal);
+						call "HR_spPCalculateTax"(v_TaxCode,v_TaxIncomeAvg,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);            
+
+						-- số thuế TNCN phải đóng tháng 1: (10.875.000 *15% - 750.000)*1 = 881.250 đồng
+						-- Lưu ý: @NumMonthYTD = 1 là giá trị cần tính từ max(ngày vào làm, tháng đầu tiên của năm đang xét) tới tháng đang xét
+						v_NumMonthYTD := (DATE_PART('year',(p_DowCode||'/01')::TIMESTAMP) - DATE_PART('year', (v_FroMonth||'/01')::TIMESTAMP)) * 12 + (DATE_PART('month', (p_DowCode||'/01')::TIMESTAMP) - DATE_PART('month', (v_FroMonth||'/01')::TIMESTAMP)) +1; 
+						v_mAmountTaxE := round(COALESCE(v_mAmountTaxE,0)*v_ExchangeEmpTax,v_gPRDecPlaceCurrencyForCal) * v_NumMonthYTD;
+						v_TaxPayableYTD := v_mAmountTaxE; 
+					end if;
+					-- Hoàn thuế lại cho NV, tăng NET
+					--if (@TaxPayableYTD + @TaxPayable10perYTD - @TaxAmountYTD)>0 
+						v_mAmountTaxE := v_TaxPayableYTD + v_TaxPayable10perYTD - v_TaxAmountYTD;
+					--else set @mAmountTaxE=0
+
+					IF v_mAmountTaxE < 0 THEN
+						v_mAmountTaxE := 0;
+					END IF;
+
+					-- thuế đã trả đến tháng này: @TaxAmountYTD
+					v_TaxAmountYTD := v_TaxAmountYTD + v_mAmountTaxE;
+				ELSIF v_gPRPITType=2
+					THEN
+						-- Tạm ứng IsAdvance=1
+						v_TaxIncomeAvg:=0;
+						SELECT coalesce(sum("Amount"), 0) INTO v_TaxIncomeAvg
+						FROM "HR_PayTExcept" T
+						INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+						WHERE "EmployeeID" = v_EmployeeID
+						  AND "DowCode" = p_DowCode
+						  AND L."IsAdvance" = TRUE;
+ 
+						-- bl trả ngoài, chưa trích thuế
+						--SELECT @TotalAmountNotTaxPayer = isnull(sum(Amount),0), @mTaxAmountPaidOut = isnull(sum(AmountTax),0) FROM HR_PayTExcept T with (nolock) INNER JOIN HR_LSException L with (nolock) ON T.ExceptCode = L.ExceptCode
+						--WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode AND TaxType = 1 and L.AddSub = 1 and IsInPayroll = 0 and IsTaxed=0 and ExceptType<> 6
+
+						-- Thu nhập chịu thuế = Thu nhập chưa đóng thuế của tháng trước + tổng biệt lệ đã trả ngoài chưa trích thuế + tiền tạm ứng
+						v_mTaxableIncome := v_TotalIncomeNotPayTax+ v_TotalAmountNotTaxPayer + v_TaxIncomeAvg + (v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj);
+						v_mTaxIncome :=v_mTaxableIncome - (v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj + v_mFamilyTaxFreeOwn) + v_TExcept_charity_fund;
+						call "HR_spPCalculateTax"(v_TaxCode,v_mTaxIncome,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);            
+						v_mAmountTaxE := round(COALESCE(v_mAmountTaxE,0)*v_ExchangeEmpTax,0);
+						-- thu nhập trả thuế muộn
+
+						v_TotalIncomeNotPayTax:=v_mTotalIncome + v_mHouse + v_mAlloInc + v_mAlloIncS - v_TaxIncomeAvg -(v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj);
+						if v_TotalIncomeNotPayTax < 0 then v_TotalIncomeNotPayTax :=0; end if;
+					ELSE
+						call "HR_spPCalculateTax"(v_TaxCode,v_AmountTemp,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);            
+						v_mAmountTaxE := round(COALESCE(v_mAmountTaxE,0)*v_ExchangeEmpTax,0);
+
+						IF v_mAmountTaxE > v_TaxAmount_Pre 
+						THEN 
+							v_mAmountTaxE := v_mAmountTaxE - v_TaxAmount_Pre;
+						ELSE 
+							v_mAmountTaxE:=0;
+						END IF;
+				END IF;			
+			ELSE
+
+				-- Tong thu nhap chiu thue 
+				v_mIncomeOtherTemp :=0;
+				v_mIncomeOther :=0;
+				v_mToltalBonus :=0;
+				v_AmountTemp:=0;
+				v_mTotalIncomeTemp :=0;
+				-- ttvinh 2013.11.29 Trừ thêm BH: @mSiNum + @mMiNum + @mUIAmountE
+				-- ttvinh 2017.11.17 @mHousea chuyển về trước khi grossup
+				-- ttvinh 2018.08.22 tiền trả ngoài phải cùng nhóm tính thuế, qua grossup, điều chỉnh 
+				--2019.12.26 Quy định tiền nhà có Grossup hay không IsInTaxableIncome=1
+				v_mTotalIncomeTemp :=v_mTotalIncome + v_mAlloIncS - v_mFamilyTaxFreeOwn -(v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj)+v_TotalAmountNotTaxPayer + v_TExcept_charity_fund;
+				if (v_IsInTaxableIncome_mHouse = FALSE) then v_mTotalIncomeTemp:= v_mTotalIncomeTemp + v_mHouse; end if;
+				-- 2018.08.29
+				v_TaxIncome_Net := v_mTotalIncomeTemp;
+				call "HR_spPGrossIncome"(v_EmployeeID,v_mTotalIncomeTemp,v_GrossTemp);
+
+				if COALESCE(v_GrossTemp,0)=0
+				then
+					v_GrossTemp := v_mTotalIncome + v_mAlloIncS - v_mFamilyTaxFreeOwn -(v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj) +v_TotalAmountNotTaxPayer +v_TExcept_charity_fund + v_mHouse; 
+					v_mTaxIncome := v_GrossTemp + v_mAlloInc; 
+				ELSE
+					v_mTaxIncome := v_GrossTemp + v_mAlloInc;
+					if (v_IsInTaxableIncome_mHouse = TRUE) then v_mTaxIncome := v_mTaxIncome + v_mHouse; end if; 
+				END IF;
+
+				v_mIncomeOther := v_mIncomeOtherE;
+				v_mToltalBonus := v_mToltalBonusE;
+
+				-- hphoa. 2020.10.26
+				-- Cộng vào TNCT ko Grossup (nếu trả lương Net) tính thuế TN. Tương tự cách tính phụ cấp ở tren (4.1.6)
+				-- 4.2.2 Tinh tong cac biet le cong duoc tra trong Bang luong dong nguoc voi hinh thuc tinh luong  va co dong thue thu nhap
+				v_mIncomeOtherTemp := 0;
+				SELECT coalesce(SUM(T."Amount"), 0) INTO v_mIncomeOtherTemp
+				FROM "HR_PayTExcept" T
+				INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+				WHERE "EmployeeID" = v_EmployeeID
+				  AND "DowCode" = p_DowCode
+				  AND "TaxType" = '2'
+				  AND L."AddSub" = TRUE
+				  AND "ExceptType" <> '1'
+				  AND "IsTaxed" = FALSE
+				  AND L."IsInTaxableIncome" = TRUE;
+
+				v_mIncomeOther := v_mIncomeOther + coalesce(v_mIncomeOtherTemp,0);
+				v_mTotalIncome := v_mTotalIncome + coalesce(v_mIncomeOtherTemp,0);
+				v_mTaxIncome := v_mTaxIncome + coalesce(v_mIncomeOtherTemp,0);
+
+				v_AmountTemp := 0;
+				SELECT coalesce(SUM(T."Amount"), 0) INTO v_AmountTemp
+				FROM "HR_PayTExcept" T
+				INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+				WHERE "EmployeeID" = v_EmployeeID
+				  AND "DowCode" = p_DowCode
+				  AND "TaxType" = '2'
+				  AND L."AddSub" = TRUE
+				  AND "ExceptType" = '1'
+				  AND "IsTaxed" = FALSE
+				  AND L."IsInTaxableIncome" = TRUE;
+
+				v_mToltalBonus := v_mToltalBonus + v_AmountTemp;
+				v_mTotalIncome := v_mTotalIncome + v_AmountTemp;
+				v_mTaxIncome := v_mTaxIncome + v_AmountTemp;
+
+				--ttvinh 2017/11/15
+				v_mTaxableIncome := v_mTaxIncome + v_mFamilyTaxFreeOwn + v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj;
+				--Thue thu nhap ca nhan phai nop                
+				v_mAmountTaxE :=0;
+				-- 2015-05-25 Bổ sung trích nộp thuế bao gồm chi phí lương, thuế tháng trước
+					
+				v_mTaxIncome := v_mTaxIncome + v_TaxableIncome_Pre -v_Insurance_Pre;
+				call "HR_spPCalculateTax"(v_TaxCode,v_mTaxIncome,v_gPRDecPlaceCurrencyForCal,v_mAmountTaxE);
+				v_mAmountTaxE := COALESCE(v_mAmountTaxE,0);
+				if v_mAmountTaxE > v_TaxAmount_Pre then v_mAmountTaxE := v_mAmountTaxE - v_TaxAmount_Pre;
+				else v_mAmountTaxE:=0;
+				end if;
+				--2012.11.11 IF @mTaxIncome < 0 SET @mTaxIncome = 0	
+			END IF;        
+
+			v_mAlloTaxE := coalesce(v_mAlloTaxE,0) + v_mAlloInc + v_mAlloIncS;
+
+			-- 4.2 Tinh tong cac khoan thue cong ty/nhan vien phai dong nguoc voi hinh thuc tinh luong dang co
+			-- 4.2.1 Tinh tong cac khoan Phu cap cong ty tra thue thay cho nhan vien
+			v_mAlloTax:=0;
+			v_mAlloTaxTemp:=0;
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mAlloTaxTemp
+			FROM "HR_PayAllowance" T
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = v_EmployeeID
+			  AND "DowCode" = p_DowCode
+			  AND "TaxType" = '2'
+			  AND "IsLawSalary" = FALSE
+			  AND "SalaryInclude"::int < 6
+			  AND "AlloType" <> '7'
+			  AND "AlloType" <> '2'
+			  AND "IsInTaxableIncome" = FALSE;
+
+			v_mAlloTax := v_mAlloTaxE + coalesce(v_mAlloTaxTemp,0);
+			v_mTotalIncome :=v_mTotalIncome + coalesce(v_mAlloTaxTemp,0);
+			v_mTaxIncome := v_mTaxIncome + coalesce(v_mAlloTaxTemp,0);
+
+			-- 4.2.2 Tinh tong cac biet le cong duoc tra trong Bang luong dong nguoc voi hinh thuc tinh luong  va co dong thue thu nhap
+			v_mIncomeOtherTemp := 0;
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mIncomeOtherTemp
+			FROM "HR_PayTExcept" T
+			INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+			WHERE "EmployeeID" = v_EmployeeID
+			  AND "DowCode" = p_DowCode
+			  AND "TaxType" = '2'
+			  AND L."AddSub" = TRUE
+			  AND "ExceptType" <> '1'
+			  AND "IsTaxed" = FALSE
+			  AND L."IsInTaxableIncome" = FALSE;
+
+			v_mIncomeOther := v_mIncomeOther + coalesce(v_mIncomeOtherTemp,0);
+			v_mTotalIncome := v_mTotalIncome + coalesce(v_mIncomeOtherTemp,0);
+			v_mTaxIncome := v_mTaxIncome + coalesce(v_mIncomeOtherTemp,0);
+			v_AmountTemp := 0;
+		   SELECT coalesce(SUM(T."Amount"), 0) INTO v_AmountTemp
+			FROM "HR_PayTExcept" T
+			INNER JOIN "HR_LSException" L ON T."ExceptCode" = L."ExceptCode"
+			WHERE "EmployeeID" = v_EmployeeID
+			  AND "DowCode" = p_DowCode
+			  AND "TaxType" = '2'
+			  AND L."AddSub" = TRUE
+			  AND "ExceptType" = '1'
+			  AND "IsTaxed" = FALSE
+			  AND L."IsInTaxableIncome" = FALSE;
+
+			v_mToltalBonus := v_mToltalBonus + v_AmountTemp;
+			v_mTotalIncome := v_mTotalIncome + v_AmountTemp;
+			v_mTaxIncome := v_mTaxIncome + v_AmountTemp;
+
+			-- 4.2.3 Tinh tong cac phu cap tinh theo thu nhap va co dong thue va ko phu thuoc vao cach tinh luong cua nv
+			--nghia la khoang thu nhap nay duoc cong chung voi thu nhap chiu thue sau do dem trich thue
+			--(con thu nhap chiu thue thi tuy theo luong Gross hay Net ma no co the co cach quy doi khac nhau)
+			v_mAlloInc :=0;
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mAlloInc
+			FROM "HR_PayAllowance" T
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = v_EmployeeID
+			  AND T."DowCode" = p_DowCode
+			  AND "TaxType" = '2'
+			  AND "IsLawSalary" = FALSE
+			  AND "IsInTaxableIncome" <> FALSE
+			  AND "AlloType" <> '7'
+			  AND "AlloType" <> '2';
+
+			-- 4.2.4 Tinh tong cac phu cap tinh theo thu nhap va co dong thue va phu thuoc vao cach tinh luong cua nhan vien
+			v_mAlloIncS :=0;
+			SELECT coalesce(SUM(T."Amount"), 0) INTO v_mAlloIncS
+			FROM "HR_PayAllowance" T
+			INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+			WHERE "EmployeeID" = v_EmployeeID
+			  AND T."DowCode" = p_DowCode
+			  AND "TaxType" = '2'
+			  AND "IsLawSalary" = FALSE
+			  AND "SalaryInclude"::int >= 9
+			  AND "IsInTaxableIncome" = FALSE
+			  AND "AlloType" <> '7'
+			  AND "AlloType" <> '2';
+
+			--2018.08.29 bỏ do dùng lại row 778
+			---- them de tru tien Benefit in kind
+			--set @mAllInKind = 0
+			--SELECT @mAllInKind =isnull(SUM(T.Amount),0) FROM HR_PayAllowance T with (nolock) INNER JOIN HR_LSAlloGrade L with (nolock) ON T.AlloGradeCode = L.AlloGradeCode 
+			--WHERE EmployeeID = @EmployeeID AND T.DowCode = @DowCode AND TaxType <> 0 AND IsLawSalary = 0 AND IsNotInHouseAllo <> 0
+
+			v_mHouse :=0;
+			--2019.12.26 Quy định tiền nhà có Grossup hay không IsInTaxableIncome=1/ dùng kt có tính tiền nhà không	
+			if (v_IsInTaxableIncome_mHouse Is not NULL)
+			THEN
+				if v_GroupType <= 7  --Neu tinh luong theo Gross
+				then
+					--gPRIsSIByCurrencyForCal
+					v_mHouse := (v_mTotalIncome - v_mAllInKind) * v_gPRPITHouseRate / 100;
+				ELSE
+					-- luong Net
+					v_AmountTemp :=0;
+					--ttvinh 2013.11.29 trừ thêm BH: @mSiNum + @mMiNum + @mUIAmountE
+					v_AmountTemp:= v_mTotalIncome - v_mAllInKind - v_mFamilyTaxFreeOwn - (v_mSiNum + v_mMiNum + v_mUIAmountE- v_InsuranceAdj);
+					call "HR_spPGrossIncome"(v_EmployeeID,v_AmountTemp,v_mHouse);
+					call "HR_spPCalculateTax"(v_TaxCode,v_mHouse,v_gPRDecPlaceCurrencyForCal,v_AmountTaxTemp);
+					v_mHouse :=(v_mTotalIncome - v_mAllInKind + v_AmountTaxTemp+ v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj) * v_gPRPITHouseRate / 100;
+				END IF;
+				if v_mHouse > 0
+				then
+					v_AmountTemp :=0;
+					SELECT coalesce(SUM(T."Amount"), 0) INTO v_AmountTemp
+					FROM "HR_PayAllowance" T
+					INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+					WHERE "EmployeeID" = v_EmployeeID
+					  AND T."DowCode" = p_DowCode
+					  AND "TaxType" = '2'
+					  AND "IsLawSalary" = FALSE
+					  AND "AlloType" = '7';
+
+					IF v_AmountTemp >0 
+					then					
+						if v_AmountTemp <=v_mHouse then
+							v_mHouse := v_AmountTemp;
+						end if;
+						v_AmountTemp :=0;
+					ELSE
+						v_mHouse := 0;
+					END IF;
+				 END IF;
+			 END IF; 
+
+			-- 4.2.5 Tinh so tien thue thu nhap phai dong cho Thue	
+			if v_GroupType <= 7
+			then
+
+				--Neu tinh theo cach Tong thu nhap chiu Thue = Tat ca cac khoan nhan vien huong co dong thue
+				v_mTaxIncomeCompany := v_mTaxIncome + v_mHouse + v_mAlloInc + v_mAlloIncS;
+					v_mAmountTax :=0;						
+					-- TTVINH 2012-11-26 PIT CAM
+					-- 2015-05-25 Bổ sung trích nộp thuế bao gồm chi phí lương, thuế tháng trước
+					if v_ExchangeEmpTax= 1 then 
+						v_AmountTemp := round( v_mTaxIncomeCompany + v_TaxableIncome_Pre - v_Insurance_Pre,0);
+					ELSE
+						v_AmountTemp := round(( v_mTaxIncomeCompany + v_TaxableIncome_Pre - v_Insurance_Pre)/v_ExchangeEmpTax,0);
+					end if;
+				-- ttvinh 2017.11.30
+				IF v_gPRPITType=1
+				THEN
+					v_mAmountTax := v_mAmountTaxE;
+				END IF;
+				IF v_gPRPITType=3
+				THEN
+					v_mAmountTax := v_mAmountTaxE;
+				ELSE
+					call "HR_spPCalculateTax"(v_TaxCode,v_AmountTemp,v_gPRDecPlaceCurrencyForCal,v_mAmountTax);            
+					v_mAmountTax := round(COALESCE(v_mAmountTax,0)*v_ExchangeEmpTax,0);
+					IF v_mAmountTax > v_TaxAmount_Pre THEN v_mAmountTax := v_mAmountTax - v_TaxAmount_Pre;
+					ELSE v_mAmountTax:=0;
+					END IF;
+				END IF;	
+   
+				v_mTaxableIncomeCompany := v_mTaxIncomeCompany + v_mSiNum + v_mMiNum + v_mUIAmountE - v_InsuranceAdj + v_mFamilyTaxFreeOwn;
+				-- Them tien nha vao tong thu nhap chiu thue
+				v_mTotalIncome := v_mTotalIncome + v_mHouse1 + v_mHouse;
+			ELSE
+				-- Neu tinh theo luong Net
+				--Thue thu nhap phai nop
+				v_mTaxIncomeCompany := v_mTaxIncome + v_mHouse;
+				v_mAmountTax :=0;
+				-- 2015-05-25 Bổ sung trích nộp thuế bao gồm chi phí lương, thuế tháng trước
+				v_AmountTemp :=0;
+				v_AmountTemp := v_mTaxIncomeCompany + v_TaxableIncome_Pre - v_Insurance_Pre;
+				call "HR_spPCalculateTax"(v_TaxCode,v_AmountTemp,v_gPRDecPlaceCurrencyForCal,v_mAmountTax);                        
+				v_mAmountTax := COALESCE(v_mAmountTax,0);
+				IF v_mAmountTax > v_TaxAmount_Pre THEN v_mAmountTax := v_mAmountTax - v_TaxAmount_Pre;
+				ELSE v_mAmountTax:=0;
+				END IF;
+				v_mTaxableIncomeCompany := v_mTaxIncomeCompany + v_mSiNum + v_mMiNum + v_mUIAmountE -v_InsuranceAdj + v_mFamilyTaxFreeOwn;              
+			 END IF; 
+			 v_mAlloTax := v_mAlloTax + v_mAlloIncS + v_mAlloInc;
+
+			-- 5. Them moi vao bang Thue thu nhap
+			-- Cong cac khoan Biet le tra trong luong va da trich thue- Ca nhan chiu thue
+			v_mTotalIncome := v_mTotalIncome+v_AmoutExceptIsTaxed;
+			v_mTaxIncome := v_mTaxIncome + v_AmoutExceptIsTaxed;
+			v_mTaxIncomeOriginal:=v_mTaxIncome; 
+			--2021.07.05 2021.11.11
+			 if v_mTaxIncome < 0 or v_mAmountTax=0 then
+					v_mTaxIncome := 0;
+			 end if;
+			v_mAmountTaxE := v_mAmountTaxE + v_AmountTaxExceptIsTaxed;
+			v_mAmountTax := v_mAmountTax + v_AmountTaxExceptIsTaxed;
+			v_mTaxableIncome := v_mTaxableIncome + v_AmoutExceptIsTaxed;
+			v_mTaxIncomeCompany := v_mTaxIncomeCompany + v_AmoutExceptIsTaxed;
+			v_mTaxableIncomeCompany := v_mTaxableIncomeCompany + v_AmoutExceptIsTaxed;
+			--2017.12.12 khoản trả ngoài đã trích thuế thì tháng sau sẽ tính thuế lũy tiến lại
+			v_TaxableIncomeYTD := v_TaxableIncomeYTD + v_AmoutExceptIsTaxed;
+			v_TaxIncomeYTD := v_TaxIncomeYTD + v_AmoutExceptIsTaxed;
+			v_TaxPayableYTD := v_TaxPayableYTD + v_AmountTaxExceptIsTaxed;
+			v_TaxAmountYTD := v_TaxAmountYTD + v_AmountTaxExceptIsTaxed;
+
+		IF v_mAmountTax >= 0
+			THEN
+				if v_FromTimeN is not null then
+					v_From_Time := v_fBeginDate;
+				ELSE
+					v_From_Time := v_FromTimeN;
+				end if;
+
+				BEGIN
+					INSERT INTO "HR_PayTax"("EmployeeID", "DowCode", "FromTime", "ToTime", "TotalTaxSalary", "TotalAllowance", "TotalOtherIncome", "TotalBonus",
+							"TotalIncome", "TaxIncome", "TaxAmount", "TaxAmountE",
+							"TotalOtherIncomeE", "TotalAllowanceE", "TotalBonusE", "DiffAllo", "TaxableIncome",
+							"OutTaxIncome", "FamilyTaxFreeOwn", "CreatedBy", "CreatedOn", "ModifiedBy", "ModifiedOn")
+					VALUES (v_EmployeeID, p_DowCode, v_From_Time, v_fEndDate, ROUND(v_mSalTax, v_gPRDecPlaceCurrencyForCal), ROUND(v_mAlloTax, v_gPRDecPlaceCurrencyForCal),
+							ROUND(v_mIncomeOther, v_gPRDecPlaceCurrencyForCal), ROUND(v_mToltalBonus, v_gPRDecPlaceCurrencyForCal),
+							ROUND(v_mTotalIncome, v_gPRDecPlaceCurrencyForCal), ROUND(v_mTaxIncome, v_gPRDecPlaceCurrencyForCal),
+							ROUND(v_mAmountTax, v_gPRDecPlaceCurrencyForPay), ROUND(v_mAmountTaxE, v_gPRDecPlaceCurrencyForPay),
+							ROUND(v_mIncomeOtherE, v_gPRDecPlaceCurrencyForCal), ROUND(v_mAlloTaxE, v_gPRDecPlaceCurrencyForCal),
+							ROUND(v_mToltalBonusE, v_gPRDecPlaceCurrencyForCal), ROUND(v_mDiffAllo, v_gPRDecPlaceCurrencyForCal),
+							ROUND(v_mTaxableIncomeCompany, v_gPRDecPlaceCurrencyForCal), ROUND(v_TotalAmountNotTaxPayer, v_gPRDecPlaceCurrencyForCal),
+							ROUND(v_mFamilyTaxFreeOwn, v_gPRDecPlaceCurrencyForCal), p_UserID, NOW(), p_UserID, NOW());
+
+				EXCEPTION WHEN OTHERS THEN
+					GET STACKED DIAGNOSTICS v_error_message = MESSAGE_TEXT;
+
+					-- Chèn lỗi vào bảng p_TableError
+					v_sql := 'INSERT INTO "' || p_TableError || '" ("EmployeeCode","ErrorMsg","ErrorMsgCode") ' ||
+							 'VALUES (''' || CAST(v_EmployeeID AS VARCHAR(30)) || ''', ' ||
+							 'N''Lỗi khi cập nhật thông tin Thuế(HCSPR_PayTax): '', ''' ||
+							 REPLACE(v_error_message, '''', '''''') || ''')';
+
+					EXECUTE v_sql;
+					--GOTO NEXT_EMP
+					EXIT NEXT_EMP;
+				END;
+			END IF;
+		END IF;
+
+		-- tinh tong cac PC duoc tra trong bang luong ma co SalaryInclude >=9
+		v_mHouseAllo :=0;
+		SELECT coalesce(SUM("Amount"), 0) INTO v_mHouseAllo 
+		FROM "HR_PayAllowance" T 
+		INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode" 
+		WHERE v_EmployeeID = "EmployeeID" 
+		  AND T."DowCode" = p_DowCode 
+		  AND "IsLawSalary" = FALSE
+		  AND "IsInPayroll" = TRUE
+		  AND "SalaryInclude"::int >= 9;
+
+		v_mHouseAllo := ROUND(v_mHouseAllo,v_gPRDecPlaceCurrencyForCal);
+		-- 6 Cap nhat la Thu nhap cua nhan vien trong thang sau khi khau tru cac khoan: BHYT, BHXH, Thue thu nhap, Cong doan Phi, Dang phi
+		-- So tien dong Cong doan phi, Doan phi, Dang phi
+		v_mPer_Group := 0; v_mPer_Union := 0; v_mPer_Party := 0; v_mTrunc := 0; v_mIsCal := 1;
+		v_mGrossSal :=-1; v_mNetSal :=0; v_mGrossSalVND :=0; v_mNetSalVND :=0;
+	
+		--ttvinh 2017-11-15 ghi nhan NET,BH,TAX ở bộ phận hiện tại theo CV
+		v_GrossSal:=-1;
+		SELECT "FromTime", "NetSal", "GrossSal", "GrossSalVND", "BasicSalary", "MainSal","NetSalVND", "TaxService", "TotalKowSal", "TotalAllowance", "RiceAllowance", "ProductSal" 
+		INTO v_FromTimeEmp, v_NetSal, v_GrossSal, v_GrossSalVND, v_MinSalary, v_MainSal, v_NetSalVND, v_TaxService, v_TotalKowSal, v_TotalAllowance, v_RiceAllowance, v_ProductSal
+		FROM "HR_PayIncome"
+		WHERE "EmployeeID" = v_EmployeeID 
+		  AND "DowCode" = p_DowCode 
+		  AND "MainPaid" = TRUE LIMIT 1;
+
+		IF (v_GrossSal=-1)
+		THEN
+			SELECT "FromTime", "NetSal", "GrossSal", "GrossSalVND", "BasicSalary", "MainSal","NetSalVND", "TaxService", "TotalKowSal", "TotalAllowance", "RiceAllowance", "ProductSal" 
+			INTO v_FromTimeEmp, v_NetSal, v_GrossSal, v_GrossSalVND, v_MinSalary, v_MainSal, v_NetSalVND, v_TaxService, v_TotalKowSal, v_TotalAllowance, v_RiceAllowance, v_ProductSal
+			FROM "HR_PayIncome"
+			WHERE "EmployeeID" = v_EmployeeID 
+			  AND "DowCode" = p_DowCode 
+			ORDER BY "FromTime" DESC LIMIT 1;
+		END IF;
+
+		IF (v_GrossSal>-1)
+		THEN
+			v_InsSalaryByMonth :=0;
+			SELECT "RealSalSI" INTO v_InsSalaryByMonth FROM "HR_SocialIns" WHERE "EmployeeID"=v_EmployeeID and "DowCode"=v_YYYYMM
+			LIMIT 1;
+			v_InsSalaryByMonth := COALESCE(v_InsSalaryByMonth, 0);
+			-- Nếu nv không có trích nộp BHXH thì lấy trong HSNS
+			if v_InsSalaryByMonth = 0 then
+				v_InsSalaryByMonthByHSNS := case when v_InsSalary > v_SI_MaxSalary then v_SI_MaxSalary else v_InsSalary end;
+			ELSE
+				v_InsSalaryByMonthByHSNS := v_InsSalaryByMonth;
+			end if;
+
+			--SELECT Top 1 @FromTimeEmp=FromTime,@NetSal=NetSal,@GrossSal=GrossSal,@GrossSalVND=GrossSalVND,@MinSalary=MinSalary,@MainSal=MainSal,
+			--@NetSalVND=NetSalVND,@TaxService=TaxService,@TotalKowSal=TotalKowSal,@TotalAllowance=TotalAllowance,@RiceAllowance=RiceAllowance,@ProductSal=ProductSal
+			--FROM HR_PayIncome WHERE EmployeeID = @EmployeeID AND DowCode = @DowCode ORDER BY FromTime DESC
+			-- TTVINH 10/11/2013: Cap nhat luong san pham vao Netsal, GrossSal đối với nhóm lương 3,10
+			IF v_GroupType = 3 Or v_GroupType = 10
+			THEN
+				v_NetSal:= v_NetSal+ v_ProductAmount;
+				v_GrossSal:= v_GrossSal+ v_ProductAmount;
+				v_GrossSalVND:= v_GrossSalVND+ v_ProductAmount;
+				v_NetSalVND:= v_NetSalVND+ v_ProductAmount;
+				v_ProductSal:= v_ProductAmount;
+			END IF;
+
+			begin		
+				-- ttvinh 2014.08.28 lưu thuế tạm trích trả ngoài trong tháng @mTaxAmountPaidOut
+				--Neu BHXH trich theo nguyen te tinh luong
+				v_gPRDecPlaceCurrencyForCal_Save:=0;
+				if v_gPRIsSIByCurrencyForCal = TRUE
+				then
+					v_gPRDecPlaceCurrencyForCal_Save:= v_gPRDecPlaceCurrencyForCal;-- SQLINES DEMO *** cyForPay 
+					v_mAmountTaxE := ROUND(v_mAmountTaxE / v_ExchangeEmp, v_gPRDecPlaceCurrencyForCal_Save);
+				ELSE
+					v_gPRDecPlaceCurrencyForCal_Save:=v_gPRDecPlaceCurrencyForPay;-- SQLINES DEMO *** cyForCal
+				END IF;
+				--2022.08.02
+				if v_InfrequentInc = 4
+				then
+					v_mMiNum := v_mMiNum_TempOnlyNet;
+					v_mMiNumCom := v_mMiNumCom_TempOnlyNet;
+					v_mSiNum := v_mSiNum_TempOnlyNet;
+					v_mSiNumCom := v_mSiNumCom_TempOnlyNet;
+					v_mUIAmountE := v_mUIAmountE_TempOnlyNet;
+					v_mUIAmountC := v_mUIAmountC_TempOnlyNet;
+				end if;
+				if v_GroupType <= 7  -- Neu tinh theo luong Gross
+				then
+					--ttvinh 2024.09.24 Lệch thực nhận @mNetSalVND lương USD
+					v_mGrossSal := round(v_GrossSal + v_mHouseAllo, v_gPRDecPlaceCurrencyForCal);
+					IF v_gPRIsSIByCurrencyForCal = TRUE	--Neu cac khoan trich theo nguyen te tinh luong
+					then
+						--Thu nhap sau thue co xet den hai truong hop
+						if v_GroupType = 7   --Neu tinh luong theo Gross nhung thue thu nhap nhan vien cong ty tra thi
+						then
+							v_mNetSal := round(v_NetSal + v_mHouseAllo - v_mMiNum - v_mSiNum - v_mUIAmountE ,v_gPRDecPlaceCurrencyForCal);
+						ELSE
+							IF v_GroupType = 0 THEN	 --Neu tinh luong Gross nhung BHXH, BHYT cong ty tra
+								v_mNetSal := round(v_NetSal + v_mHouseAllo - v_mAmountTaxE + v_mTaxAmountPaidOut, v_gPRDecPlaceCurrencyForCal);
+							ELSE
+								-- ttvinh 2019.05.03 chỉnh không cho thực nhận <0
+								v_mNetSal := round(v_NetSal + v_mHouseAllo - (v_mMiNum + v_mSiNum + v_mUIAmountE + v_mAmountTaxE -v_mTaxAmountPaidOut), v_gPRDecPlaceCurrencyForCal);
+								IF v_mNetSal<0 and (v_gPRPITType=1 OR v_gPRPITType = 3)
+								THEN
+									v_TaxAmountYTD:=v_TaxAmountYTD - v_mAmountTaxE;
+									v_mAmountTaxE:=round(v_NetSal + v_mHouseAllo - (v_mMiNum + v_mSiNum + v_mUIAmountE -v_mTaxAmountPaidOut), 0);
+									v_TaxAmountYTD:=v_TaxAmountYTD + v_mAmountTaxE;
+									v_mNetSal := 0;
+								END IF;							
+							END IF;	
+						END IF;
+						v_mNetSalVND := round(v_mNetSal * v_ExchangeEmp,v_gPRDecPlaceCurrencyForPay);
+					ELSE
+						--Thu nhap sau thue co xet den hai truong hop
+						-- ttvinh 07.03.2016 chinh sua dung ty gia
+						IF v_GroupType = 7  --Neu tinh luong theo Gross nhung thue thu nhap nhan vien cong ty tra thi
+						then
+							v_mNetSal := round(v_NetSal + v_mHouseAllo - ((v_mMiNum + v_mSiNum + v_mUIAmountE) / v_ExchangeEmp), v_gPRDecPlaceCurrencyForCal);
+							v_mNetSalVND := round( (v_NetSal + v_mHouseAllo)* v_ExchangeEmp - (v_mMiNum + v_mSiNum + v_mUIAmountE ),v_gPRDecPlaceCurrencyForPay);
+						ELSE
+							IF v_GroupType = 0  --Neu tinh luong Gross nhung BHXH, BHYT cong ty tra
+							then
+								v_mNetSal := round(v_NetSal + v_mHouseAllo - ((v_mAmountTaxE - v_mTaxAmountPaidOut) / v_ExchangeEmp), v_gPRDecPlaceCurrencyForCal);
+								v_mNetSalVND := round( (v_NetSal + v_mHouseAllo)* v_ExchangeEmp - (v_mAmountTaxE - v_mTaxAmountPaidOut),v_gPRDecPlaceCurrencyForPay);
+							ELSE
+								-- ttvinh 2019.05.03 chỉnh không cho thực nhận <0
+								v_mNetSal :=ROUND(v_NetSal + v_mHouseAllo - ((v_mMiNum + v_mSiNum + v_mUIAmountE + v_mAmountTaxE-v_mTaxAmountPaidOut)/v_ExchangeEmp), v_gPRDecPlaceCurrencyForCal);
+								v_mNetSalVND := round( (v_NetSal + v_mHouseAllo)* v_ExchangeEmp - (v_mMiNum + v_mSiNum + v_mUIAmountE + v_mAmountTaxE-v_mTaxAmountPaidOut),v_gPRDecPlaceCurrencyForPay);
+								IF v_mNetSal<0 and (v_gPRPITType=1 OR v_gPRPITType = 3)
+								THEN
+									v_TaxAmountYTD:=v_TaxAmountYTD - v_mAmountTaxE;
+									v_mAmountTaxE:=round(v_NetSal + v_mHouseAllo - ((v_mMiNum + v_mSiNum + v_mUIAmountE -v_mTaxAmountPaidOut)/v_ExchangeEmp), 0);
+									v_TaxAmountYTD:=v_TaxAmountYTD + v_mAmountTaxE;
+									v_mNetSal := 0;
+								END IF;							
+							END IF;
+						END IF;
+					END IF;
+					v_mGrossSalVND := round(v_mGrossSal * v_ExchangeEmp,v_gPRDecPlaceCurrencyForPay);
+
+				ELSE
+					-- Neu tinh theo luong NET
+					--Thuc nhan luong NET ko can tru thue -- TTVINh 2012-10-03
+					-- ttvinh 2016/09/07 bs lương NET cá nhân trả BH	
+					--ttvinh 2024.09.24 Lệch thực nhận @mNetSalVND lương USD
+					IF v_GroupType = 14
+					THEN
+						v_mNetSal := round(v_NetSal + v_mHouseAllo - ((v_mMiNum + v_mSiNum + v_mUIAmountE) / v_ExchangeEmp), v_gPRDecPlaceCurrencyForCal);
+						v_mGrossSal := ROUND(v_GrossSal + v_mHouseAllo, v_gPRDecPlaceCurrencyForCal);
+						v_mGrossSalVND := round((v_GrossSal + v_mHouseAllo) * v_ExchangeEmp,v_gPRDecPlaceCurrencyForPay);
+						v_mNetSalVND := round(((v_NetSal + v_mHouseAllo)*v_ExchangeEmp - (v_mMiNum + v_mSiNum + v_mUIAmountE)) ,v_gPRDecPlaceCurrencyForPay);
+					ELSE
+						v_mNetSal := round(v_NetSal + v_mHouseAllo, v_gPRDecPlaceCurrencyForCal);
+						IF v_gPRIsSIByCurrencyForCal= TRUE
+						then
+							v_mGrossSal := round((v_GrossSal + v_mHouseAllo + v_mAmountTax / v_ExchangeEmp + v_mSiNum + v_mMiNum + v_mUIAmountE),v_gPRDecPlaceCurrencyForCal);
+							-- ttvinh 2021-02-03 Lệch tiền thực nhân với nguyên tệ khác VND
+							v_mGrossSalVND := round((v_GrossSal + v_mHouseAllo + v_mSiNum + v_mMiNum + v_mUIAmountE) * v_ExchangeEmp + v_mAmountTax,v_gPRDecPlaceCurrencyForPay);
+						
+						ELSE
+
+							v_mGrossSal := ROUND((v_GrossSal + v_mHouseAllo + (v_mAmountTax + v_mSiNum + v_mMiNum + v_mUIAmountE)/v_ExchangeEmp),v_gPRDecPlaceCurrencyForCal);
+							-- ttvinh 2021-02-03 Lệch tiền thực nhân với nguyên tệ khác VND
+							v_mGrossSalVND := round((v_GrossSal + v_mHouseAllo) * v_ExchangeEmp + v_mAmountTax + v_mSiNum + v_mMiNum + v_mUIAmountE,v_gPRDecPlaceCurrencyForPay);
+						end if;
+						v_mNetSalVND := round((v_NetSal + v_mHouseAllo) * v_ExchangeEmp,v_gPRDecPlaceCurrencyForPay);
+					END IF;
+				END IF;
+
+				--2021.08.08
+				--if @InfrequentInc=3
+				--begin
+				--	if exists(SELECT top(1) S.EmployeeID FROM HR_SocialIns S with (nolock) WHERE S.EmployeeID = @EmployeeID AND S.DowCode = @YYYYMM)
+				--	begin
+				--		SELECT @mTuNumCom= isnull(S.TUnionAmountC,0), @mMiNum =isnull(HIAmountE,0), @mMiNumCom =isnull(HIAmountC,0),@mSiNum=isnull(SIAmountE,0),
+				--			@mSiNumCom=isnull(SIAmountC,0), @mUIAmountE=isnull(UIAmountE,0),@mUIAmountC= isnull(UIAmountC,0)
+				--		FROM HR_SocialIns S with (nolock) WHERE S.EmployeeID = @EmployeeID AND S.DowCode = @YYYYMM
+				--	END
+				--	ELSE IF exists (SELECT top(1) S.EmployeeID FROM dbo.HCSSI_SocialInsAdjust S with (nolock) 
+				--		WHERE S.EmployeeID = @EmployeeID AND S.AdjDowCode = @YYYYMM) 
+				--	BEGIN
+				--		SELECT TOP(1) @mMiNum =isnull(HIAmountE,0), @mMiNumCom =isnull(HIAmountC,0),@mSiNum=isnull(SIAmountE,0),
+				--			@mSiNumCom=isnull(SIAmountC,0), @mUIAmountE=isnull(UIAmountE,0),@mUIAmountC= isnull(UIAmountC,0)
+				--		FROM HCSSI_SocialInsAdjust S with (nolock) WHERE S.EmployeeID = @EmployeeID AND S.AdjDowCode = @YYYYMM
+				--	END
+				--end
+				--ttvinh 2023.12.11 2023.12.20
+				if v_IsGrossupNotSocialIns = TRUE OR v_InfrequentInc=3
+				then
+					v_mMiNum := v_mMiNum_TempOnlyNet;
+					v_mMiNumCom := v_mMiNumCom_TempOnlyNet;
+					v_mSiNum := v_mSiNum_TempOnlyNet;
+					v_mSiNumCom := v_mSiNumCom_TempOnlyNet;
+					v_mUIAmountE := v_mUIAmountE_TempOnlyNet;
+					v_mUIAmountC := v_mUIAmountC_TempOnlyNet;
+				end if;
+				-- ttvinh 2022.06.23 estimate
+				-- ttvinh 2019.05.03 do hoàn thuế nên <0
+				IF v_mAmountTaxE <0 THEN v_AmountTaxEmp :=0; END IF;	
+				-- TUnionAmountE Công đoàn phí; TUnionAmountC Kinh phí CĐ
+				if v_gPRPartyApplyAll=2 
+				then
+					v_gPRPartyAmount :=coalesce(v_PartyFee,0); 
+					v_PRPartyCalMethod :=v_PartyRegulation;
+				END IF;
+				if v_gPRYUnionApplyAll=2 
+				then
+					v_gPRYUnionAmount :=coalesce(v_YUnionFee,0); 
+					v_PRYUnionCalMethod :=v_YUnionRegulation;
+				END IF;
+				if v_gPRTUnionApplyAll=2 
+				then
+					v_gPRTUnionAmount :=coalesce(v_TUnionFee,0); 
+					v_PRTUnionCalMethod :=v_TUnionRegulation;
+				END IF;
+				v_ExchangeForUnion := (case v_gPRIsSIByCurrencyForCal when TRUE then v_ExchangeEmp else 1/v_ExchangeEmp end); 
+				if v_gPRIsSIByCurrencyForCal=TRUE
+				then
+				-- trich theo nguyen te tinh luong
+					v_ExchangeForUnion := v_ExchangeEmp;
+					v_ExchangeEmpBHForUnion := 1/v_ExchangeEmpBH;
+				ELSE
+				-- trich theo nguyen te thanh toan
+					v_ExchangeForUnion := 1/v_ExchangeEmp;
+					v_ExchangeEmpBHForUnion := 1;
+				END IF;
+
+				-- Tinh Cong Doan Phi, Dang Phi cho nhan vien		
+				if ((v_IsParty=TRUE and v_gPRPartyAmount > 0) Or (v_IsTUnion=TRUE and v_gPRTUnionAmount > 0 ) Or (v_IsYUnion=TRUE and v_gPRYUnionAmount > 0) )
+				then
+
+					if v_IsParty=TRUE 
+					then
+						if v_PRPartyCalMethod = 0 then
+							v_mPer_Party := v_gPRPartyAmount;
+						ELSE
+
+							if v_PRPartyCalMethod = 1 then
+								v_mTotalIncome := v_mGrossSalVND;
+							end if;
+							if v_PRPartyCalMethod = 2
+							then
+								-- set @mTotalIncome = @NetSalVND + @mAdvSalAll*@ExchangeForUnion 
+								v_mTotalIncome := v_mGrossSalVND - (v_mMiNum + v_mSiNum + v_mUIAmountE) - v_AmountTaxEmp;
+								IF v_mTotalIncome < 0 THEN v_mTotalIncome := 0; END IF;
+							END IF;
+							if v_PRPartyCalMethod = 3
+							then
+								v_mTotalIncome :=0;
+								SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+								FROM "HR_PaySalary" T 
+								INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+								WHERE "EmployeeID" = v_EmployeeID 
+								  AND "DowCode" = p_DowCode 
+								  AND "KowType" <> '5' 
+								  AND "IsInPayroll" = TRUE;
+
+								IF v_mTotalIncome < 0 THEN v_mTotalIncome := 0; END IF;
+							END IF;
+
+							if v_PRPartyCalMethod = 4
+							then
+								v_mTotalIncome :=0;
+								SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+								FROM "HR_PaySalary" T 
+								INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+								WHERE "EmployeeID" = v_EmployeeID 
+								  AND "DowCode" = p_DowCode 
+								  AND "KowType" <> '5' 
+								  AND "IsInPayroll" = TRUE;
+
+								SELECT coalesce(SUM("Amount"), 0) INTO v_mAlloPartyTemp 
+								FROM "HR_PayAllowance" T 
+								INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+								WHERE "EmployeeID" = v_EmployeeID 
+								  AND "DowCode" = p_DowCode;
+
+								v_mTotalIncome :=coalesce(v_mTotalIncome,0) + coalesce(v_mAlloPartyTemp,0) + (v_mSiNum + v_mMiNum + v_mUIAmountE)*v_ExchangeEmpBHForUnion;
+								IF v_mTotalIncome < 0 THEN
+									v_mTotalIncome := 0;
+								END IF;
+							END IF;
+
+							if v_PRPartyCalMethod = 5 then
+								v_mTotalIncome := v_MainSal;
+							end if;
+							if v_PRPartyCalMethod = 6 then
+								v_mTotalIncome := v_MinSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRPartyCalMethod = 7 then
+								v_mTotalIncome := v_JWMinSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRPartyCalMethod = 8 then
+								v_mTotalIncome := v_JWRealSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRPartyCalMethod = 9 then
+								v_mTotalIncome := v_InsSalaryByMonth * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRPartyCalMethod = 10 then
+								v_mTotalIncome := v_InsSalaryByMonthByHSNS * 1/v_ExchangeForUnion;
+							end if;
+							v_mPer_Party := v_mTotalIncome * v_gPRPartyAmount / 100;
+						END IF;
+					
+						--so sanh voi muc tran dong 
+						if (v_gPRPartyMaxAmount <> 0 And v_gPRPartyMaxAmount < v_mPer_Party) then v_mPer_Party := v_gPRPartyMaxAmount; end if;
+						v_mPer_Party := ROUND(v_mPer_Party, v_gPRDecPlaceCurrencyForPay);
+					END IF;
+				
+					if v_IsTUnion=TRUE
+					then
+						if v_PRTUnionCalMethod = 0 then
+							v_mPer_Union := v_gPRTUnionAmount;
+						ELSE
+							if v_PRTUnionCalMethod = 1 then
+								v_mTotalIncome := v_mGrossSalVND;
+							end if;
+							if v_PRTUnionCalMethod = 2
+							then
+								-- set @mTotalIncome = @NetSalVND + @mAdvSalAll*@ExchangeForUnion 
+								v_mTotalIncome := v_mGrossSalVND - (v_mMiNum + v_mSiNum + v_mUIAmountE) - v_AmountTaxEmp;
+								IF v_mTotalIncome < 0 THEN v_mTotalIncome := 0; END IF;
+							END IF;
+							if v_PRTUnionCalMethod = 3
+							then
+								v_mTotalIncome :=0;
+								SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+								FROM "HR_PaySalary" T 
+								INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+								WHERE "EmployeeID" = v_EmployeeID 
+								  AND "DowCode" = p_DowCode 
+								  AND "KowType" <> '5' 
+								  AND "IsInPayroll" = TRUE;
+
+								IF v_mTotalIncome < 0 THEN v_mTotalIncome := 0; END IF;
+							END IF;
+							if v_PRTUnionCalMethod = 4
+							then
+								v_mTotalIncome :=0;
+							SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+							FROM "HR_PaySalary" T 
+							INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+							WHERE "EmployeeID" = v_EmployeeID 
+							  AND "DowCode" = p_DowCode 
+							  AND "KowType" <> '5' 
+							  AND "IsInPayroll" = TRUE;
+
+							SELECT coalesce(SUM("Amount"), 0) INTO v_mAlloUnionTemp 
+							FROM "HR_PayAllowance" T 
+							INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+							WHERE "EmployeeID" = v_EmployeeID 
+							  AND "DowCode" = p_DowCode;
+
+								v_mTotalIncome :=coalesce(v_mTotalIncome,0) + coalesce(v_mAlloUnionTemp,0) + (v_mSiNum + v_mMiNum + v_mUIAmountE)*v_ExchangeEmpBHForUnion;
+								IF v_mTotalIncome < 0 THEN
+									v_mTotalIncome := 0;
+								END IF;
+							END IF;
+
+							if v_PRTUnionCalMethod = 5 then
+								v_mTotalIncome := v_MainSal;
+							end if;
+							if v_PRTUnionCalMethod= 6 then
+								v_mTotalIncome := v_MinSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRTUnionCalMethod = 7 then
+								v_mTotalIncome := v_JWMinSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRTUnionCalMethod = 8 then
+								v_mTotalIncome := v_JWRealSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRTUnionCalMethod = 9 then
+								v_mTotalIncome := v_InsSalaryByMonth * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRTUnionCalMethod = 10 then
+								v_mTotalIncome := v_InsSalaryByMonthByHSNS * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRTUnionCalMethod = 11
+							then
+								/* VINH rem 2019.05.03
+								/*	
+									ACV: (Tổng thu nhập không bao gồm PC cơm – 3 loại BH – Thuế + Thưởng Bổ sung lương) * 1%
+									Trong đó: Thưởng Bổ sung lương= 
+									SUM(Số tiền) cuả các biệt lệ của Nhân viên đang tính AND Tháng tính lương AND có trường “trích công đoàn phí”=2 
+									+ SUM (Số tiền) biệt lệ của NHÂN VIÊN ĐANG TÍNH  AND Tháng tính vào = Tháng lương -1 AND “Trích công đoàn phí” = 3
+								*/							
+								declare @Amount_ThuongBSL numeric(18,4)
+							
+								-- Xác định kỳ lương tháng trước
+								if @DowCode_Pre is null
+									SELECT TOP 1 @DowCode_Pre = DowCode FROM HR_LSPayrollDow with (nolock) WHERE BegDay < @fBeginDate ORDER BY EndDay DESC
+							
+								-- Tính thưởng bổ sung lương
+								SELECT @Amount_ThuongBSL= isnull(SUM(T.Amount),0) 
+								FROM HR_PayTExcept T with (nolock) INNER JOIN HR_LSException L with (nolock) ON T.ExceptCode = L.ExceptCode 
+								WHERE EmployeeID = @EmployeeID AND ((DowCode = @DowCode and isnull(CAST(T.Note AS NVARCHAR(MAX)), N'') = N'T2') 
+									OR (DowCode = @DowCode_Pre and isnull(CAST(T.Note AS NVARCHAR(MAX)), N'') = N'T3'))
+								set @mTotalIncome = @mGrossSalVND - @RiceAllowance - (@mMiNum + @mSiNum + @mUIAmountE) - @AmountTaxEmp + @TaxableIncome_Pre + @Amount_ThuongBSL
+								*/
+								-- 2019.04.04 HPHoa chinh cong doan 
+								v_Amount_ThuongBSL := 0;
+								-- Tính thưởng bổ sung lương
+								v_mTotalIncome := v_mGrossSalVND - v_RiceAllowance - (v_mMiNum + v_mSiNum + v_mUIAmountE) - v_AmountTaxEmp + v_mTaxAmountPaidOut + v_TaxableIncome_Pre - v_Amount_ThuongBSL;
+								if v_mTotalIncome < 0 then v_mTotalIncome := 0; end if;
+							END IF;
+							if v_PRTUnionCalMethod = 12
+							then
+								--lương theo công - bhxh-bhyt-bhtn-thue
+								v_mTotalIncome :=0;
+								SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+								FROM "HR_PaySalary" T 
+								INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+								WHERE "EmployeeID" = v_EmployeeID 
+								  AND "DowCode" = p_DowCode 
+								  AND "KowType" <> '5' 
+								  AND "IsInPayroll" = TRUE;
+
+								v_mTotalIncome :=coalesce(v_mTotalIncome,0) - (v_mSiNum + v_mMiNum + v_mUIAmountE)*v_ExchangeEmpBHForUnion - v_AmountTaxEmp;
+								IF v_mTotalIncome < 0 THEN
+									v_mTotalIncome := 0;
+								END IF;
+							end if;
+							v_mPer_Union := v_mTotalIncome * v_gPRTUnionAmount / 100;
+						END IF;
+						if (v_gPRTUnionMaxAmount <> 0 And v_gPRTUnionMaxAmount < v_mPer_Union) then v_mPer_Union := v_gPRTUnionMaxAmount; end if;
+						v_mPer_Union := ROUND(v_mPer_Union, v_gPRDecPlaceCurrencyForPay);
+					END IF;
+					if v_IsYUnion=TRUE
+					then
+						if v_PRYUnionCalMethod = 0 then
+							v_mPer_Group := v_gPRYUnionAmount;
+						ELSE
+							if v_PRYUnionCalMethod = 1 then
+								v_mTotalIncome := v_mGrossSalVND;
+							end if;
+							if v_PRYUnionCalMethod = 2
+							then
+								-- set @mTotalIncome = @NetSalVND + @mAdvSalAll*@ExchangeForUnion 
+								v_mTotalIncome := v_mGrossSalVND - (v_mMiNum + v_mSiNum + v_mUIAmountE) - v_AmountTaxEmp;
+								IF v_mTotalIncome < 0 THEN v_mTotalIncome := 0; END IF;
+							END IF;
+							if v_PRYUnionCalMethod = 3
+							then
+								v_mTotalIncome :=0;
+								SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+								FROM "HR_PaySalary" T 
+								INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+								WHERE "EmployeeID" = v_EmployeeID 
+								  AND "DowCode" = p_DowCode 
+								  AND "KowType" <> '5' 
+								  AND "IsInPayroll" = TRUE;
+
+								IF v_mTotalIncome < 0 THEN v_mTotalIncome := 0; END IF;
+							END IF;
+							if v_PRYUnionCalMethod = 4
+							then
+								v_mTotalIncome :=0;
+						SELECT coalesce(SUM("Amount"), 0) INTO v_mTotalIncome 
+						FROM "HR_PaySalary" T 
+						INNER JOIN "HR_vwKOW" L ON T."KowCode" = L."KowCode"
+						WHERE "EmployeeID" = v_EmployeeID 
+						  AND "DowCode" = p_DowCode 
+						  AND "KowType" <> '5' 
+						  AND "IsInPayroll" = TRUE;
+
+						SELECT coalesce(SUM("Amount"), 0) INTO v_mAlloGroupTemp 
+						FROM "HR_PayAllowance" T 
+						INNER JOIN "HR_LSAlloGrade" L ON T."AlloGradeCode" = L."AlloGradeCode"
+						WHERE "EmployeeID" = v_EmployeeID 
+						  AND "DowCode" = p_DowCode;
+
+								v_mTotalIncome :=coalesce(v_mTotalIncome,0) + coalesce(v_mAlloGroupTemp,0) + (v_mSiNum + v_mMiNum + v_mUIAmountE)*v_ExchangeEmpBHForUnion;
+								IF v_mTotalIncome < 0 THEN
+									v_mTotalIncome := 0;
+								END IF;
+							END IF;
+							if v_PRYUnionCalMethod = 5 then
+								v_mTotalIncome := v_MainSal;
+							end if;
+							if v_PRYUnionCalMethod = 6 then
+								v_mTotalIncome := v_MinSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRYUnionCalMethod = 7 then
+								v_mTotalIncome := v_JWMinSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRYUnionCalMethod = 8 then
+								v_mTotalIncome := v_JWRealSalaryN * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRYUnionCalMethod = 9 then
+								v_mTotalIncome := v_InsSalaryByMonth * 1/v_ExchangeForUnion;
+							end if;
+							if v_PRYUnionCalMethod = 10 then
+								v_mTotalIncome := v_InsSalaryByMonthByHSNS * 1/v_ExchangeForUnion;
+							end if;
+							v_mPer_Group := v_mTotalIncome * v_gPRYUnionAmount / 100;
+						END IF;
+						if (v_gPRYUnionMaxAmount <> 0 And v_gPRYUnionMaxAmount < v_mPer_Group) then v_mPer_Group := v_gPRYUnionMaxAmount; end if;
+						v_mPer_Group := ROUND(v_mPer_Group, v_gPRDecPlaceCurrencyForPay);
+					END IF;
+				
+					--ttvinh 2022.06.23 Công đoàn > số tiền Gross thì không trích
+					if (v_mPer_Union + v_mPer_Party+v_mPer_Group) > v_mGrossSalVND 
+					then
+						v_mPer_Union:=0;
+						v_mPer_Party:=0;
+						v_mPer_Group:=0;
+					end if;
+
+					IF v_GroupType <= 7  --Neu thu nhap cua nhan vien la thu nhap sau thue
+					then
+						v_mNetSalVND := ROUND(v_mNetSalVND - (v_mPer_Union + v_mPer_Party + v_mPer_Group), v_gPRDecPlaceCurrencyForPay);
+						v_mNetSal:=ROUND(v_mNetSal - ((v_mPer_Union + v_mPer_Party+v_mPer_Group) * v_ExchangeForUnion), v_gPRDecPlaceCurrencyForCal);					
+					ELSE
+						v_mGrossSal :=ROUND(v_mGrossSal + ((v_mPer_Union + v_mPer_Party+v_mPer_Group) * v_ExchangeForUnion),v_gPRDecPlaceCurrencyForCal );
+						v_mGrossSalVND := ROUND(v_mGrossSalVND + v_mPer_Union + v_mPer_Party+v_mPer_Group, v_gPRDecPlaceCurrencyForPay);					
+					END IF;				
+				END IF;
+
+				-- hphoa: 2020.04.21: THP-CnB Xử lý tiền thực nhận âm  ttvinh 2022.06.23 estimate
+				/*
+					Sau khi tính thực nhận ở làm tròn tiền. Bổ sung ghi nhận tiền Chuyển khoản. Nếu  NETSal <=0 thì NETBanktransfer =0. 
+					Ngược lại NETBanktransfer =NETSal
+					Tương tự cho  NETSalVND và NETBanktransferVND
+				*/
+
+				v_NETBanktransfer := 0;
+				v_NETBanktransferVND := 0;
+				IF v_mNetSal <= 0
+				then
+					v_NETBanktransfer := 0;
+					v_AmountF_SubforNextMonth := ABS(v_mNetSal);
+				ELSE
+					v_NETBanktransfer := v_mNetSal;
+				END IF;
+				IF v_mNetSalVND <= 0
+				then
+					v_NETBanktransferVND := 0;
+					v_Amount_SubforNextMonth := ABS(v_mNetSalVND);
+				ELSE
+					v_NETBanktransferVND := v_mNetSalVND;
+				end if;
+			
+			
+				IF v_SubforNextMonth IS NOT NULL AND v_Amount_SubforNextMonth <> 0
+				THEN
+					v_NextDowCode := NULL;
+
+					SELECT "DowCode", "FromDate" INTO v_NextDowCode, v_NextFromDate 
+					FROM "HR_ConfigTSEmpStandardWD" 
+					WHERE "EmployeeID" = v_EmployeeID 
+					  AND "FromDate" > v_fBeginDate 
+					ORDER BY "FromDate" LIMIT 1;
+
+					IF v_NextDowCode IS NOT NULL 
+					THEN 
+				
+						INSERT INTO "HR_PayTExcept"("ExceptCode", "EmployeeID", "DowCode", "Amount", "GenDate", "AmountF", "AmountTax", "IsTaxYear", "IsTaxed", "CurrencyCode", 
+						"ExRate", "UICurrencyCode", "UIExRate", "CreatedOn", "CreatedBy")
+						VALUES(v_SubforNextMonth, v_EmployeeID, v_NextDowCode, v_Amount_SubforNextMonth, v_NextFromDate, v_AmountF_SubforNextMonth, 0, 0, 0, v_CurrencyCode, 
+						v_ExchangeEmp, NULL, 1, NOW(), 'application');
+
+					END IF;
+				end if;
+
+				-- ttvinh 2022.06.23 estimate
+				-- TTVINH 2012-11-08 Lệch tiền khi biệt lệ nhập tỷ giá tính khác tỷ giá nguyên tệ tính lương. Chỉnh sau.
+				UPDATE "HR_PayIncome"
+				SET "OTSalTax" = ROUND(coalesce(v_OTSalTax,0), v_gPRDecPlaceCurrencyForPay),
+					"OTSalNonTax" = ROUND(coalesce(v_OTSalNonTax,0), v_gPRDecPlaceCurrencyForPay),
+					"TotalOTSal" = ROUND(coalesce(v_OTSalTax,0), v_gPRDecPlaceCurrencyForPay) + ROUND(coalesce(v_OTSalNonTax,0), v_gPRDecPlaceCurrencyForPay),
+					"TaxIncome" = ROUND(coalesce(v_mTaxIncome,0), v_gPRDecPlaceCurrencyForPay),
+					"TaxableIncome" = ROUND(coalesce(v_mTaxableIncome, 0), v_gPRDecPlaceCurrencyForPay),
+					"ProductSal" = ROUND(coalesce(v_ProductSal,0), v_gPRDecPlaceCurrencyForPay),
+					"TaxAmount" = v_mAmountTaxE,
+					"HIAmountE" = ROUND(v_mMiNum, v_gPRDecPlaceCurrencyForCal_Save),
+					"SIAmountE" = ROUND(v_mSiNum, v_gPRDecPlaceCurrencyForCal_Save),
+					"HIAmountC" = ROUND(v_mMiNumCom, v_gPRDecPlaceCurrencyForCal_Save),
+					"SIAmountC" = ROUND(v_mSiNumCom, v_gPRDecPlaceCurrencyForCal_Save),
+					"TUnionAmountC" = ROUND(v_mTuNumCom, v_gPRDecPlaceCurrencyForCal_Save),
+					"UIAmountE" = ROUND(v_mUIAmountE, v_gPRDecPlaceCurrencyForCal_Save),
+					"UIAmountC" = ROUND(v_mUIAmountC, v_gPRDecPlaceCurrencyForCal_Save),
+					"OutTaxIncome" = ROUND(v_TotalAmountNotTaxPayer, v_gPRDecPlaceCurrencyForCal_Save),
+					"OutTaxAmount" = ROUND(v_mTaxAmountPaidOut + v_AmoutExceptIsTaxed, v_gPRDecPlaceCurrencyForCal_Save),
+					"GrossSal" = v_mGrossSal,
+					"GrossSalVND" = v_mGrossSalVND,
+					"NetSal" = v_mNetSal,
+					"NetSalVND" = v_mNetSalVND,
+					"TaxCode" = v_TaxCode,
+					"FamilyTaxFreeOwn" = v_gPRPITFamilyTaxFreeOwn,
+					"FamilyTaxFree" = v_mFamilyTax,
+					"FamilyTaxFreeUnit" = v_gPRPITFamilyTaxFreeUnit,
+					"InsuranceAdj" = v_InsuranceAdj,
+					"TaxableIncomeYTD" = v_TaxableIncomeYTD,
+					"TaxableIncome10perYTD" = v_TaxableIncome10perYTD,
+					"TaxIncomeYTD" = v_TaxIncomeYTD,
+					"SocialInsPayableYTD" = v_SocialInsPayableYTD,
+					"FamilyTaxYTD" = v_FamilyTaxYTD,
+					"TaxPayableYTD" = v_TaxPayableYTD,
+					"TaxPayable10perYTD" = v_TaxPayable10perYTD,
+					"NumMonthYTD" = v_NumMonthYTD,
+					"TaxAmountYTD" = v_TaxAmountYTD,
+					"TaxPayableYTD_Pre" = v_TaxPayableYTD_Pre,
+					"TotalIncomeNotPayTax" = v_TotalIncomeNotPayTax,
+					"TaxableIncome2" = v_TaxableIncome2,
+					"IncomeCalcHouseNet" = v_IncomeCalcHouseNet,
+					"IncomeCalcHouseGross1" = v_IncomeCalcHouseGross1,
+					"IncomeCalcHouseGross" = v_IncomeCalcHouseGross,
+					"TaxIncome_Net" = v_TaxIncome_Net,
+					"TaxIncomeOriginal" = v_mTaxIncomeOriginal,
+					"TUnionAmountE" = v_mPer_Union,
+					"PartyAmount" = v_mPer_Party,
+					"YUnionAmount" = v_mPer_Group,
+					"NETBanktransfer" = v_NETBanktransfer,
+					"NETBanktransferVND" = v_NETBanktransferVND
+				WHERE "EmployeeID" = v_EmployeeID AND "FromTime" = v_FromTimeEmp;
+
+			EXCEPTION WHEN OTHERS THEN
+				GET STACKED DIAGNOSTICS v_error_message = MESSAGE_TEXT;
+				v_sql :='insert into ' || '"' || p_TableError || '"' || ' ("EmployeeCode","ErrorMsg","ErrorMsgCode") values('''||cast(v_EmployeeID as citext)|| ''',N''Lỗi khi cập nhật thông tin thu nhập nhân viên(HR_PayIncome) :'' , ''' || REPLACE(v_error_message,'''','''''')  || ''' )';
+				EXECUTE (v_sql);
+			END;
+
+			-- LAM TRON SO CHO THUC NHAN VND
+			IF v_gPRRoundingNumber > 0
+			THEN
+				v_NetSalVND_TotalSubCurrent:=0; v_NetSalVND_temp:=0; v_value:=0;
+				IF EXISTS(SELECT COUNT(1) FROM "HR_PayIncome" WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode)
+				THEN
+					SELECT SUM("NetSalVND") INTO v_NetSalVND_TotalSubCurrent 
+					FROM "HR_PayIncome" 
+					WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode AND "FromTime" <> v_FromTimeEmp;
+
+					SELECT ROUND(SUM("NetSalVND"), 0) INTO v_NetSalVND_temp 
+					FROM "HR_PayIncome" 
+					WHERE "EmployeeID" = v_EmployeeID AND "DowCode" = p_DowCode;
+				ELSE
+					v_NetSalVND_temp := ROUND(v_mNetSalVND, 0);
+				END IF;
+	
+				v_mTrunc := cast(
+							substring(
+								cast(v_NetSalVND_temp as varchar(30)), 
+								LENGTH(RTRIM(cast(v_NetSalVND_temp as varchar(30)))) - (v_gPRRoundingNumber + 2), 
+								v_gPRRoundingNumber
+							) as numeric(18,4));
+
+				if exists(SELECT 1 FROM "HR_ConfigPRSubRoundingNumber" WHERE v_mTrunc BETWEEN "MinFrom" AND "MinTo"
+					AND ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = v_BUCode)) LIMIT 1)
+				then
+					SELECT "MinCal" INTO v_value 
+					FROM "HR_ConfigPRSubRoundingNumber" 
+					WHERE v_mTrunc BETWEEN "MinFrom" AND "MinTo" 
+					AND ("BUCode" IS NULL OR ("BUCode" IS NOT NULL AND "BUCode" = v_BUCode))
+					LIMIT 1;
+
+					v_NetSalVND_temp := v_NetSalVND_temp - v_mTrunc + v_value;
+				end if;
+				UPDATE "HR_PayIncome" 
+				SET "UnitSal" = v_NetSalVND, 
+					"NetSalVND" = v_NetSalVND_temp - coalesce(v_NetSalVND_TotalSubCurrent, 0)
+				WHERE "EmployeeID" = v_EmployeeID 
+				AND "FromTime" = v_FromTimeEmp;
+
+			END IF;
+
+			UPDATE "HR_PayIncome"
+			SET "DowNum" = v_fSCKH, 
+				"InsSalary" = ROUND(v_InsSalaryByMonthByHSNS, v_gPRDecPlaceCurrencyForCal),
+				"PieceWage" = ROUND(COALESCE(v_PieceWageN, 0), v_gPRDecPlaceCurrencyForCal),
+				"CreatedBy" = p_UserID,
+				"CreatedOn" = NOW(),
+				"PayTimes" = p_PayTimes
+			WHERE "EmployeeID" = v_EmployeeID 
+			AND "DowCode" = p_DowCode;
+
+		END IF;
+		exit NEXT_EMP;
+		END LOOP NEXT_EMP;
+	END LOOP;
+	END;
+
+	end_time := clock_timestamp();
+	execution_time := EXTRACT(EPOCH FROM (end_time - start_time));
+	RAISE NOTICE 'Thời gian thực thi sau HR_spCalcAlloGradeFormula: %', execution_time;
+END;
+$BODY$;
+ALTER PROCEDURE public."HR_spCalSalaryLevel"(citext, citext, citext, numeric, boolean, citext, citext, citext, integer)
+    OWNER TO postgres;
