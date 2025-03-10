@@ -1,0 +1,810 @@
+-- FUNCTION: public.HR_fnCreateDatetimeListOfEmp(citext, citext)
+
+-- DROP FUNCTION IF EXISTS public."HR_fnCreateDatetimeListOfEmp"(citext, citext);
+
+CREATE OR REPLACE FUNCTION public."HR_fnCreateDatetimeListOfEmp"(
+	p_dowcode citext DEFAULT '2018/09'::citext,
+	p_stremps citext DEFAULT '0DBTC07343'::citext)
+    RETURNS TABLE("EmployeeCode" citext, "fDate" timestamp without time zone, "tDate" timestamp without time zone, "MinSalary_BS" numeric, "RealSalary_BS" numeric, "CoeffSalary_BS" numeric, "PieceWage" numeric, "InsSalary" numeric, "UnitOT" numeric, "MinSalary_JW" numeric, "RealSalary_JW" numeric, "CoeffSalary_JW" numeric, "fBeginDate" timestamp without time zone, "fEndDate" timestamp without time zone, "DepartmentCode" citext, "GroupSalCode" citext, "JobWCode" citext, "JobPosCode" citext, "EmpTypeCode" citext, "LabourType" citext, "WorkCenterCode" citext, "AssignRegionCode" citext, "RouteCode" citext) 
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+    ROWS 1000
+
+AS $BODY$
+/*
+select * from public."HR_fnCreateDatetimeListOfEmp"
+(
+    '2024/12'::citext,
+    '0DBTC07343'::citext
+);
+*/
+DECLARE
+	v_fBeginDate       TIMESTAMP;
+    v_fEndDate         TIMESTAMP;
+    v_maxCurrDate      TIMESTAMP;
+    v_mToTime          TIMESTAMP;
+    v_mFromTime        TIMESTAMP;
+    v_EmployeeCode     citext;
+    v_EmployeeCodeOld  citext;
+    v_idx              INT;
+    
+    v_EffectDate       TIMESTAMP;
+    v_MinSalary_BS     decimal(18, 4);
+    v_RealSalary_BS    decimal(18, 4);
+    v_CoeffSalary_BS   decimal(18, 4);
+    v_PieceWage        decimal(18, 4);
+    v_InsSalary        decimal(18, 4);
+    v_UnitOT           decimal(18, 4);
+    
+    v_MinSalary_JW     decimal(18, 4);
+    v_RealSalary_JW    decimal(18, 4);
+    v_CoeffSalary_JW   decimal(18, 4);
+    
+    v_DepartmentCode   citext;
+    v_GroupSalCode     citext;
+    v_JobWCode         citext;
+    v_JobPosCode       citext;
+    v_EmpTypeCode      citext;
+    v_LabourType       citext;
+    v_WorkCenterCode   citext;
+    v_AssignRegionCode citext;
+    v_RouteCode        citext;
+    v_JoinDate         TIMESTAMP;
+
+	employee_cursor 	REFCURSOR;
+BEGIN
+	-- Lấy kỳ tính lương
+    SELECT 
+        "T"."ToDate"   AS v_fEndDate,
+        "T"."FromDate" AS v_fBeginDate
+    INTO v_fEndDate, v_fBeginDate
+    FROM public."HR_ConfigTSEmpStandardWD" AS "T"
+         --INNER JOIN public."HR_FNSplitString"(p_strEmps, ',') AS "T1" ON "T"."EmployeeID" = "T1"."data"
+		 INNER JOIN UNNEST(STRING_TO_ARRAY(p_strEmps, ',')) AS "T1"("data") ON "T"."EmployeeID" = "T1"."data"
+    WHERE "T"."DowCode" = p_DowCode
+    LIMIT 1;
+
+	-- init
+    v_EmployeeCodeOld := '';
+
+    CREATE TEMP TABLE "tmp_tbl_Emps"
+	(
+        "EmployeeCode"      citext,
+        "DepartmentCode"    citext,
+        "GroupSalCode"      citext,
+        "JobWCode"          citext,
+        "JobPosCode"        citext,
+        "EmpTypeCode"       citext,
+        "LabourType"        citext,
+        "JoinDate"          TIMESTAMP,
+        "FromTime"          TIMESTAMP,
+        "ToTime"            TIMESTAMP,
+        "WorkCenterCode"    citext,
+        "AssignRegionCode"  citext,
+        "RouteCode"         citext
+    ) ON COMMIT DROP;
+
+    CREATE TEMP TABLE "tmp_tbl_mFields"
+	(
+        "data" citext
+    ) ON COMMIT DROP;
+
+	-- Dùng trong trường hợp tách phiếu lương theo bộ phận làm việc thực tế (không thực hiện nghiệp vụ điều chuyển) theo khoảng thời gian [A, B]
+    CREATE TEMP TABLE "tmp_tblEmpTrackingException"
+	(
+        "EmployeeCode"  citext,
+        "TableName"     citext,
+        "FieldName"     citext,
+        "EffectDate"    TIMESTAMP,
+        "Value"         citext,
+        "ValueOld"      citext,
+        "GenDate"       TIMESTAMP
+    ) ON COMMIT DROP;
+
+	-- Table chứa danh sách nhân viên cần xét.
+    INSERT INTO "tmp_tbl_Emps"
+	(
+        "EmployeeCode",
+        "DepartmentCode",
+        "GroupSalCode",
+        "JobWCode",
+        "JobPosCode",
+        "EmpTypeCode",
+        "LabourType",
+        "JoinDate",
+        "FromTime",
+        "ToTime",
+        "WorkCenterCode",
+        "AssignRegionCode",
+        "RouteCode"
+	)
+    SELECT
+        "A"."EmployeeCode",
+        "E"."OrgUnitID"         AS "DepartmentCode",
+        "E"."GroupSalCode"      AS "GroupSalCode",
+        "E"."PositionID"        AS "JobWCode",
+        "E"."JobLevel"          AS "JobPosCode",
+        "E"."EmployeeTypeID"    AS "EmpTypeCode",
+        "E"."LabourType"        AS "LabourType",
+        "E"."JoinedOn"          AS "JoinDate",
+        "A"."FromTime",
+        "A"."ToTime",
+        "E"."WorkCenterCode"    AS "WorkCenterCode",
+        "E"."AssignRegionCode"  AS "AssignRegionCode",
+        NULL::citext            AS "RouteCode"
+    FROM (
+        SELECT 
+            "data"	AS "EmployeeCode",
+            v_fBeginDate              AS "FromTime",
+            v_fEndDate                AS "ToTime"
+        --FROM public."HR_FNSplitString"(p_strEmps, ',')
+		FROM UNNEST(STRING_TO_ARRAY(p_strEmps, ',')) AS data 
+    ) AS "A"
+    LEFT JOIN public."HR_vwEmployees" AS "E" ON "A"."EmployeeCode" = "E"."EmployeeID";
+
+	-- Table chứa danh sách các fields cần xét.
+    INSERT INTO "tmp_tbl_mFields"("data")
+    SELECT "data"
+ --    FROM public."HR_FNSplitString"
+	-- (
+ --    	'DepartmentCode,GroupSalCode,JobWCode,JobPosCode,EmpTypeCode,LabourType,WorkCenterCode,AssignRegionCode,RouteCode', ','
+ --    );
+	FROM UNNEST(STRING_TO_ARRAY(
+		'DepartmentCode,GroupSalCode,JobWCode,JobPosCode,EmpTypeCode,LabourType,WorkCenterCode,AssignRegionCode,RouteCode', ','
+	)) AS data;
+
+	-- Nếu App_IsSolar_CalSalaryLevel = 1 --> lấy theo dương lịch, ngược lại, lấy theo kỳ tính lương
+	OPEN employee_cursor FOR 
+		WITH "mBasicSalaries" AS (
+		    SELECT
+		        "z"."EffectDate",
+		        "z"."EmployeeID",
+		        "z"."MinSalary",
+		        "z"."CoeffSalary",
+		        "z"."RealSalary",
+		        "z"."PieceWage",
+		        "z"."InsSalary",
+		        "z"."UnitOT",
+		        "z"."FromTime",
+		        "z"."ToTime",
+		        ROW_NUMBER() OVER (PARTITION BY "z"."EmployeeID", "z"."EffectDate" ORDER BY "z"."rowOnEffectDate" DESC) AS "RowID"
+		    FROM (
+		        SELECT
+		            CASE
+		                WHEN "BS"."EffectDate" < "E"."JoinDate" THEN "E"."JoinDate"
+		                ELSE "BS"."EffectDate"
+		            END AS "EffectDate",
+		            "BS"."EmployeeID",
+		            "BS"."MinSalary",
+		            "BS"."CoeffSalary",
+		            "BS"."RealSalary",
+		            "BS"."PieceWage",
+		            "BS"."InsSalary",
+		            "BS"."UnitOT",
+		            "E"."FromTime",
+		            "E"."ToTime",
+		            "BS"."EffectDate" AS "rowOnEffectDate"
+		        FROM public."HR_EmpBasicSalary" AS "BS"
+		        INNER JOIN "tmp_tbl_Emps" AS "E" ON "BS"."EmployeeID" = "E"."EmployeeCode"
+		        WHERE ("BS"."EndDate" IS NULL OR "BS"."EndDate" >= v_fBeginDate)
+		    ) AS "z"
+		),
+		"mJWSalaries" AS (
+		    SELECT
+		        "z"."EffectDate",
+		        "z"."EmployeeID",
+		        "z"."MinSalary",
+		        "z"."CoeffSalary",
+		        "z"."RealSalary",
+		        "z"."FromTime",
+		        "z"."ToTime",
+		        ROW_NUMBER() OVER (PARTITION BY "z"."EmployeeID", "z"."EffectDate" ORDER BY "z"."rowOnEffectDate" DESC) AS "RowID"
+		    FROM (
+		        SELECT
+		            CASE
+		                WHEN "JW"."EffectDate" < "TE"."JoinDate" THEN "TE"."JoinDate"
+		                ELSE "JW"."EffectDate"
+		            END AS "EffectDate",
+		            "JW"."EmployeeID",
+		            "JW"."MinSalary",
+		            "JW"."CoeffSalary",
+		            "JW"."RealSalary",
+		            "TE"."FromTime",
+		            "TE"."ToTime",
+		            "JW"."EffectDate" AS "rowOnEffectDate"
+		        FROM public."HR_EmpJWSalary" AS "JW"
+		        INNER JOIN "tmp_tbl_Emps" AS "TE" ON "JW"."EmployeeID" = "TE"."EmployeeCode"
+		        WHERE ("JW"."EndDate" IS NULL OR "JW"."EndDate" >= v_fBeginDate)
+		    ) AS "z"
+		),
+		"tblTrackingInFuture" AS (
+		    SELECT
+		        "TableName",
+		        "FieldName",
+		        "ValueOld" AS "Value",
+		        "ValueOld",
+		        "EffectDate",
+		        "EmployeeID",
+		        "FromTime",
+		        "ToTime"
+		    FROM (
+		        SELECT
+		            "T"."TableName",
+		            "T"."FieldName",
+		            "T"."Value",
+		            "T"."ValueOld",
+		            CASE WHEN v_fBeginDate < "E"."JoinDate" THEN "E"."JoinDate" ELSE v_fBeginDate END AS "EffectDate",
+		            "T"."EmployeeID",
+		            v_fBeginDate AS "FromTime",
+		            v_fEndDate AS "ToTime",
+		            "T"."EffectDate" AS "mEffectDate",
+		            ROW_NUMBER() OVER (
+		                PARTITION BY "T"."EmployeeID", "T"."TableName", "T"."FieldName", "EffectDate"
+		                ORDER BY "EffectDate" ASC, "T"."CreatedOn" ASC
+		            ) AS "Row_ID"
+		        FROM public."HR_EmpTracking" AS "T"
+		        INNER JOIN "tmp_tbl_Emps" AS "E" ON "T"."EmployeeID" = "E"."EmployeeCode"
+		    ) AS "X"
+		    WHERE "Row_ID" = 1
+		      AND "mEffectDate" > v_fEndDate
+		),
+		"ETracking" AS (
+		    SELECT
+		        "T"."TableName",
+		        "T"."FieldName",
+		        "T"."Value",
+		        "T"."ValueOld",
+		        "EffectDate",
+		        "T"."EmployeeID",
+		        v_fBeginDate AS "FromTime",
+		        v_fEndDate AS "ToTime",
+		        "T"."CreatedOn"
+		    FROM public."HR_EmpTracking" AS "T"
+		    INNER JOIN "tmp_tbl_Emps" AS "E" ON "T"."EmployeeID" = "E"."EmployeeCode"
+		    WHERE "T"."EffectDate" <= v_fEndDate
+			-- SPC
+		    UNION --ALL
+		    SELECT
+		        "T"."TableName",
+		        "T"."FieldName",
+		        "T"."Value",
+		        "T"."ValueOld",
+		        "EffectDate",
+		        "T"."EmployeeCode",
+		        v_fBeginDate AS "FromTime",
+		        v_fEndDate AS "ToTime",
+		        "GenDate" AS "CreatedOn"
+		    FROM "tmp_tblEmpTrackingException" AS "T"
+		    WHERE "T"."EffectDate" <= v_fEndDate
+		),
+		"tblResult" AS (
+		    SELECT
+		        "ETracking"."TableName",
+		        "ETracking"."EmployeeID",
+		        "ETracking"."FieldName",
+		        "Value",
+		        "ValueOld",
+		        "tmp_EffectDate",
+		        "EffectDate",
+		        "FromTime",
+		        "ToTime"
+		    FROM
+		    (
+		        -- Danh sách column có dữ liệu thay đổi trong khoảng thời gian @FromTime to @ToTime
+		        SELECT
+		            "TableName",
+		            "FieldName",
+		            "Value",
+		            "ValueOld",
+		            "tmp_EffectDate",
+		            "EffectDate",
+		            "EmployeeID",
+		            "FromTime",
+		            "ToTime"
+		        FROM (
+		            SELECT
+		                "TableName",
+		                "FieldName",
+		                "Value",
+		                "ValueOld",
+		                "EffectDate" AS "tmp_EffectDate",
+		                "EmployeeID",
+		                ROW_NUMBER() OVER (
+		                    PARTITION BY "EmployeeID", "TableName", "FieldName", "EffectDate"
+		                    ORDER BY "EffectDate" DESC, "ETracking"."CreatedOn" DESC
+		                ) AS "Row_ID",
+		                CASE
+		                    WHEN "EffectDate" <= "FromTime" THEN "FromTime"
+		                    ELSE "EffectDate"
+		                END AS "EffectDate",
+		                "FromTime",
+		                "ToTime"
+		            FROM "ETracking"
+		            WHERE "EffectDate" BETWEEN "FromTime" AND "ToTime"
+		        ) AS "R"
+		        WHERE "Row_ID" = 1
+		        UNION --ALL
+		        -- Danh sach column co dữ liệu thay đổi trong khoảng thời gian trước @FromTime.
+		        SELECT
+		            "TableName",
+		            "FieldName",
+		            "Value",
+		            "ValueOld",
+		            "tmp_EffectDate",
+		            "EffectDate",
+		            "EmployeeID",
+		            "FromTime",
+		            "ToTime"
+		        FROM (
+		            SELECT
+		                "TableName",
+		                "FieldName",
+		                "Value",
+		                "ValueOld",
+		                "EffectDate" AS "tmp_EffectDate",
+		                "EmployeeID",
+		                ROW_NUMBER() OVER (
+		                    PARTITION BY "EmployeeID", "TableName", "FieldName"
+		                    ORDER BY "EffectDate" DESC, "ETracking"."CreatedOn" DESC
+		                ) AS "Row_ID",
+		                CASE
+		                    WHEN "EffectDate" <= "FromTime" THEN "FromTime"
+		                    ELSE "EffectDate"
+		                END AS "EffectDate",
+		                "FromTime",
+		                "ToTime"
+		            FROM "ETracking"
+		            WHERE "EffectDate" < "FromTime"
+		        ) AS "R"
+		        WHERE "Row_ID" = 1
+		        UNION --ALL
+		        SELECT
+		            "TableName",
+		            "FieldName",
+		            "Value",
+		            "ValueOld",
+		            "EffectDate" AS "tmp_EffectDate",
+		            "EffectDate",
+		            "EmployeeID",
+		            "FromTime",
+		            "ToTime"
+		        FROM "tblTrackingInFuture"
+		    ) AS "ETracking"
+		),
+
+		"tblEmployeeTrackingNotData" AS (
+			SELECT 
+			    "PT"."EmployeeCode",
+			    "R"."DepartmentCode",
+			    "R"."GroupSalCode",
+			    "R"."JobWCode",
+			    "R"."JobPosCode",
+			    "R"."EmpTypeCode",
+			    "R"."LabourType",
+			    CASE 
+			        WHEN "R"."JoinDate" < v_fBeginDate THEN v_fBeginDate 
+			        ELSE "R"."JoinDate" 
+			    END AS "EffectDate",
+			    CASE 
+			        WHEN "R"."JoinDate" < v_fBeginDate THEN v_fBeginDate 
+			        ELSE "R"."JoinDate" 
+			    END AS "FromTime",
+			    v_fEndDate AS "ToTime",
+			    "R"."WorkCenterCode",
+			    "R"."AssignRegionCode",
+			    "R"."RouteCode"
+			FROM
+			(
+			    SELECT 
+			        "X"."EmployeeCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'DepartmentCode'    THEN "X"."Value" END) AS "DepartmentCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'GroupSalCode'      THEN "X"."Value" END) AS "GroupSalCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'JobWCode'          THEN "X"."Value" END) AS "JobWCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'JobPosCode'        THEN "X"."Value" END) AS "JobPosCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'EmpTypeCode'       THEN "X"."Value" END) AS "EmpTypeCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'LabourType'        THEN "X"."Value" END) AS "LabourType",
+			        MAX(CASE WHEN "X"."FieldName" = 'WorkCenterCode'    THEN "X"."Value" END) AS "WorkCenterCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'AssignRegionCode'  THEN "X"."Value" END) AS "AssignRegionCode",
+			        MAX(CASE WHEN "X"."FieldName" = 'RouteCode'         THEN "X"."Value" END) AS "RouteCode"
+			    FROM
+			    (
+			        SELECT 
+			            "F"."EmployeeCode",
+			            "F"."FieldName",
+			            null::citext AS "Value"
+			        FROM
+			        (
+			            SELECT 
+			                "E"."EmployeeCode", 
+			                "M"."data" AS "FieldName"
+			            FROM "tmp_tbl_Emps" AS "E"
+			            CROSS JOIN "tmp_tbl_mFields" AS "M"
+			        ) AS "F"
+			        LEFT JOIN "ETracking" AS "ET"
+			               ON "F"."EmployeeCode" = "ET"."EmployeeID"
+			              AND "F"."FieldName"    = "ET"."FieldName"
+			        WHERE "ET"."FieldName" IS NULL
+			    ) AS "X"
+			    GROUP BY "X"."EmployeeCode"
+			) AS "PT"
+			LEFT JOIN "tmp_tbl_Emps" AS "R" ON "PT"."EmployeeCode" = "R"."EmployeeCode"
+		)
+
+		-- Lay ve danh sach nhan vien co luong lcb va lcd theo yc
+		SELECT 
+		    "RE"."EmployeeCode",
+		    "RE"."EffectDate",
+		    "RE"."MinSalary_BS" * "R"."RateMainSal"    AS "MinSalary_BS",
+		    "RE"."RealSalary_BS" * "R"."RateMainSal"   AS "RealSalary_BS",
+		    "RE"."CompaRatio_BS" * "R"."RateMainSal"   AS "CompaRatio_BS",
+		    "RE"."PieceWage"     * "R"."RateMainSal"   AS "PieceWage",
+		    "RE"."InsSalary"     * "R"."RateMainSal"   AS "InsSalary",
+		    "RE"."UnitOT"        * "R"."RateMainSal"   AS "UnitOT",
+		    "RE"."MinSalary_JW"  * "R"."RateSoftSal"   AS "MinSalary_JW",
+		    "RE"."RealSalary_JW" * "R"."RateSoftSal"   AS "RealSalary_JW",
+		    "RE"."CompaRatio_JW" * "R"."RateSoftSal"   AS "CompaRatio_JW",
+		    "RE"."FromTime",
+		    "RE"."ToTime",
+		    "RE"."DepartmentCode",
+		    "RE"."GroupSalCode",
+		    "RE"."JobWCode",
+		    "RE"."JobPosCode",
+		    "RE"."EmpTypeCode",
+		    "RE"."LabourType",
+		    "R"."JoinDate",
+		    "RE"."WorkCenterCode",
+		    "RE"."AssignRegionCode",
+		    "RE"."RouteCode"
+		FROM
+		( --A1
+		    SELECT 
+		        COALESCE("ESalInfo"."EmployeeCode", "ETrackingInfo"."EmployeeCode") AS "EmployeeCode",
+		        COALESCE("ESalInfo"."EffectDate", "ETrackingInfo"."EffectDate")     AS "EffectDate",
+		        COALESCE("ESalInfo"."tmp_EffectDate","ETrackingInfo"."tmp_EffectDate") AS "tmp_EffectDate",
+		        "ESalInfo"."MinSalary_BS",
+		        "ESalInfo"."RealSalary_BS",
+		        "ESalInfo"."CompaRatio_BS",
+		        "ESalInfo"."PieceWage",
+		        "ESalInfo"."InsSalary",
+		        "ESalInfo"."UnitOT",
+		        "ESalInfo"."MinSalary_JW",
+		        "ESalInfo"."RealSalary_JW",
+		        "ESalInfo"."CompaRatio_JW",
+		        COALESCE("ESalInfo"."FromTime", "ETrackingInfo"."FromTime") AS "FromTime",
+		        COALESCE("ESalInfo"."ToTime",   "ETrackingInfo"."ToTime")   AS "ToTime",
+		        "ETrackingInfo"."DepartmentCode",
+		        "ETrackingInfo"."GroupSalCode",
+		        "ETrackingInfo"."JobWCode",
+		        "ETrackingInfo"."JobPosCode",
+		        "ETrackingInfo"."EmpTypeCode",
+		        "ETrackingInfo"."LabourType",
+		        "ETrackingInfo"."WorkCenterCode",
+		        "ETrackingInfo"."AssignRegionCode",
+		        "ETrackingInfo"."RouteCode"
+		    FROM
+		    ( --A2
+		        SELECT 
+		            COALESCE("A"."EmployeeID", "B"."EmployeeID") AS "EmployeeCode",
+		            COALESCE("A"."EffectDate", "B"."EffectDate") AS "EffectDate",
+		            COALESCE("A"."tmp_EffectDate","B"."tmp_EffectDate") AS "tmp_EffectDate",
+		            "A"."MinSalary" as "MinSalary_BS",
+		            "A"."RealSalary" as "RealSalary_BS",
+		            "A"."CoeffSalary" as "CompaRatio_BS",
+		            "A"."PieceWage",
+		            "A"."InsSalary",
+		            "A"."UnitOT",
+		            "B"."MinSalary" as "MinSalary_JW",
+		            "B"."RealSalary" as "RealSalary_JW",
+		            "B"."CoeffSalary" as "CompaRatio_JW",
+		            COALESCE("A"."FromTime","B"."FromTime") AS "FromTime",
+		            COALESCE("A"."ToTime","B"."ToTime")     AS "ToTime"
+		        FROM
+		        ( --A3
+		
+					SELECT "EffectDate" as "tmp_EffectDate",
+						case when "BS"."EffectDate" <= "FromTime" then "FromTime" else "BS"."EffectDate" end "EffectDate",
+						"BS"."EmployeeID", "BS"."MinSalary", "BS"."CoeffSalary", "BS"."RealSalary", "BS"."PieceWage",
+						"BS"."InsSalary", "BS"."UnitOT", "ToTime", "FromTime"
+					FROM "mBasicSalaries" as "BS"
+					WHERE "BS"."RowID" = 1 and "BS"."EffectDate" between "BS"."FromTime" and "BS"."ToTime"
+					UNION --ALL
+					select "EffectDate" as "tmp_EffectDate", 
+						case when "EffectDate" <= "FromTime" then "FromTime" else "EffectDate" end as "EffectDate",
+						"BS"."EmployeeID", "BS"."MinSalary", "BS"."CoeffSalary", "BS"."RealSalary", "BS"."PieceWage",
+						"BS"."InsSalary", "BS"."UnitOT", "ToTime", "FromTime"
+					from
+					( --A4
+						SELECT "Bs"."FromTime", "Bs"."EffectDate",
+							"Bs"."EmployeeID", "Bs"."MinSalary", "Bs"."CoeffSalary", "Bs"."RealSalary", "Bs"."PieceWage",
+							"Bs"."InsSalary", "Bs"."UnitOT",
+							ROW_NUMBER() OVER (PARTITION BY "Bs"."EmployeeID" ORDER BY "EmployeeID", "EffectDate" desc) AS "Row",
+							"ToTime"
+						FROM "mBasicSalaries" as "Bs"
+						Where "Bs"."RowID" = 1 and "EffectDate" < "Bs"."FromTime"
+					) as "BS" where "Row" = 1
+		        ) AS "A"
+		
+		        FULL OUTER JOIN
+		        (
+					SELECT "EffectDate" as "tmp_EffectDate",
+						case when "JW"."EffectDate" <= "FromTime" then "FromTime" else "JW"."EffectDate" end as "EffectDate",
+						"JW"."EmployeeID", "JW"."MinSalary", "JW"."CoeffSalary", "JW"."RealSalary", "FromTime", "ToTime"
+					FROM "mJWSalaries" as "JW"
+					Where "JW"."RowID" = 1 and "JW"."EffectDate" between "JW"."FromTime" and "JW"."ToTime"
+					UNION --ALL
+					select "EffectDate" as "tmp_EffectDate", 
+						case when "EffectDate" <= "FromTime" then "FromTime" else "EffectDate" end as "EffectDate",
+						"JW"."EmployeeID", "JW"."MinSalary", "JW"."CoeffSalary", "JW"."RealSalary", "FromTime", "ToTime"
+					from (
+						SELECT "JW"."FromTime", "JW"."EffectDate", "JW"."EmployeeID", "JW"."MinSalary", "JW"."CoeffSalary", "JW"."RealSalary",
+							ROW_NUMBER() OVER (PARTITION BY "JW"."EmployeeID" ORDER BY "EmployeeID", "EffectDate" desc) AS "Row",
+							"ToTime"
+						FROM "mJWSalaries" as "JW"
+						Where "JW"."RowID" = 1 and "EffectDate" < "JW"."FromTime"
+					) as "JW" where "Row" = 1
+					
+		        ) AS "B"
+		        ON "A"."EmployeeID" = "B"."EmployeeID" AND "A"."EffectDate" = "B"."EffectDate"
+		    ) AS "ESalInfo"
+		
+		
+		    FULL OUTER JOIN
+		    (
+		        SELECT
+		            COALESCE("R1"."EmployeeID",        "R2"."EmployeeCode")       AS "EmployeeCode",
+		            COALESCE("R1"."tmp_EffectDate",    "R2"."tmp_EffectDate")     AS "tmp_EffectDate",
+		            COALESCE("R1"."EffectDate",        "R2"."EffectDate")         AS "EffectDate",
+		            COALESCE("R1"."DepartmentCode",    "R2"."DepartmentCode")     AS "DepartmentCode",
+		            COALESCE("R1"."GroupSalCode",      "R2"."GroupSalCode")       AS "GroupSalCode",
+		            COALESCE("R1"."JobWCode",          "R2"."JobWCode")           AS "JobWCode",
+		            COALESCE("R1"."JobPosCode",        "R2"."JobPosCode")         AS "JobPosCode",
+		            COALESCE("R1"."EmpTypeCode",       "R2"."EmpTypeCode")        AS "EmpTypeCode",
+		            COALESCE("R1"."LabourType",        "R2"."LabourType")         AS "LabourType",
+		            COALESCE("R1"."FromTime",          "R2"."FromTime")           AS "FromTime",
+		            COALESCE("R1"."ToTime",            "R2"."ToTime")             AS "ToTime",
+		            COALESCE("R1"."WorkCenterCode",    "R2"."WorkCenterCode")     AS "WorkCenterCode",
+		            COALESCE("R1"."AssignRegionCode",  "R2"."AssignRegionCode")   AS "AssignRegionCode",
+		            COALESCE("R1"."RouteCode",         "R2"."RouteCode")          AS "RouteCode"
+		        FROM
+		        ( --ok
+					SELECT
+					    "R"."EmployeeID",
+					    "R"."tmp_EffectDate" AS "tmp_EffectDate",
+					    "R"."EffectDate",
+					    MAX(CASE WHEN "R"."FieldName" = 'DepartmentCode' THEN "R"."Value" END) AS "DepartmentCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'GroupSalCode'   THEN "R"."Value" END) AS "GroupSalCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'JobWCode'       THEN "R"."Value" END) AS "JobWCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'JobPosCode'     THEN "R"."Value" END) AS "JobPosCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'EmpTypeCode'    THEN "R"."Value" END) AS "EmpTypeCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'LabourType'     THEN "R"."Value" END) AS "LabourType",
+					    MAX(CASE WHEN "R"."FieldName" = 'WorkCenterCode' THEN "R"."Value" END) AS "WorkCenterCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'AssignRegionCode' THEN "R"."Value" END) AS "AssignRegionCode",
+					    MAX(CASE WHEN "R"."FieldName" = 'RouteCode'      THEN "R"."Value" END) AS "RouteCode",
+					    "R"."FromTime",
+					    "R"."ToTime"
+					FROM
+					( --S1
+					
+					    SELECT 
+					        "RR"."EmployeeID",
+					        "RR"."FieldName",
+					        "RR"."Value",
+					        "RR"."EffectDate",
+					        "RR"."tmp_EffectDate",
+					        "RR"."FromTime",
+					        "RR"."ToTime",
+					        ROW_NUMBER() OVER (
+					            PARTITION BY "RR"."EmployeeID", "RR"."FieldName", "RR"."EffectDate"
+					            ORDER BY "RR"."tmp_EffectDate" DESC
+					        ) AS "RowID"
+					    FROM ( --S2
+					        SELECT
+					            "ETracking"."EmployeeID",
+					            "ETracking"."FieldName",
+					            "ETracking"."Value",
+					            "ETracking"."tmp_EffectDate",
+					            "ETracking"."EffectDate",
+					            "ETracking"."FromTime",
+					            "ETracking"."ToTime"
+					        FROM "tblResult" AS "ETracking"
+					        UNION --ALL
+					        SELECT
+					            "T"."EmployeeID",
+					            "T"."FieldName",
+					            "T"."ValueOld" AS "Value",
+					            v_fBeginDate AS "EffectDate",
+					            "T"."tmp_EffectDate",
+					            "T"."FromTime",
+					            "T"."ToTime"
+					        FROM ( --S3
+					            SELECT
+					                "r"."EmployeeID",
+					                "r"."FieldName",
+					                "r"."ValueOld",
+					                "r"."EffectDate",
+					                "r"."tmp_EffectDate",
+					                "r"."FromTime",
+					                "r"."ToTime",
+					                ROW_NUMBER() OVER (
+					                    PARTITION BY "r"."EmployeeID", "r"."TableName", "r"."FieldName"
+					                    ORDER BY "r"."EffectDate" ASC
+					                ) AS "Row_ID"
+					            FROM "tblResult" as "r"
+					        ) AS "T"
+					        WHERE "T"."Row_ID" = 1
+					          AND "T"."EffectDate" > v_fBeginDate
+					    ) AS "RR"
+					) as "R"
+					WHERE "R"."RowID" = 1
+					GROUP BY "R"."EmployeeID", "R"."tmp_EffectDate", "R"."EffectDate", "R"."FromTime", "R"."ToTime"
+		
+		        ) AS "R1"
+		
+		        FULL OUTER JOIN
+		        (
+				
+		            SELECT 
+		                "ND"."EmployeeCode",
+		                "ND"."EffectDate" AS "tmp_EffectDate",
+		                "ND"."EffectDate",
+		                "ND"."DepartmentCode",
+		                "ND"."GroupSalCode",
+		                "ND"."JobWCode",
+		                "ND"."JobPosCode",
+		                "ND"."EmpTypeCode",
+		                "ND"."LabourType",
+		                "ND"."FromTime",
+		                "ND"."ToTime",
+		                "ND"."WorkCenterCode",
+		                "ND"."AssignRegionCode",
+		                "ND"."RouteCode"
+		            FROM "tblEmployeeTrackingNotData" as "ND"
+					
+		        ) AS "R2"
+		        ON 
+		            "R1"."EmpTypeCode" = "R2"."EmployeeCode"
+		            AND "R1"."EffectDate" = "R2"."EffectDate"
+		
+					
+		    ) AS "ETrackingInfo" ON "ESalInfo"."EmployeeCode" = "ETrackingInfo"."EmployeeCode"
+		        AND "ESalInfo"."EffectDate" = "ETrackingInfo"."EffectDate"
+		) AS "RE"
+		
+		INNER JOIN
+		(
+			select "K"."EmployeeCode", "K"."RateMainSal", "K"."RateSoftSal", "K"."JoinDate"
+			from (
+				select "SS"."EmployeeCode", 1.0 as "RateMainSal", 1.0 as "RateSoftSal", "SS"."JoinDate"
+				from "tmp_tbl_Emps" as "SS"
+				INNER JOIN public."HR_LSEmployeeType" as "ET" ON "SS"."EmpTypeCode" = "ET"."EmpTypeCode"
+			) as "K"
+		) AS "R" ON "RE"."EmployeeCode" = "R"."EmployeeCode"
+		ORDER BY 
+		    "RE"."EmployeeCode",
+		    "RE"."EffectDate" DESC,
+		    "RE"."tmp_EffectDate" DESC;
+			
+
+	LOOP
+		FETCH NEXT FROM employee_cursor INTO v_EmployeeCode, v_EffectDate, v_MinSalary_BS, v_RealSalary_BS,
+			v_CoeffSalary_BS, v_PieceWage, v_InsSalary, v_UnitOT, v_MinSalary_JW, v_RealSalary_JW, v_CoeffSalary_JW,
+			v_mFromTime, v_mToTime, v_DepartmentCode, v_GroupSalCode, v_JobWCode, v_JobPosCode, v_EmpTypeCode, 
+			v_LabourType, v_JoinDate, v_WorkCenterCode, v_AssignRegionCode, v_RouteCode;
+		EXIT WHEN NOT FOUND;
+
+		IF v_EmployeeCodeOld <> v_EmployeeCode
+		THEN
+			v_EmployeeCodeOld := v_EmployeeCode;
+			v_idx := 0;
+			v_maxCurrDate := v_mToTime;
+		ELSE
+			v_idx := v_idx + 1;
+		END IF;
+
+		IF EXTRACT(DAY FROM DATE_TRUNC('DAY', v_EffectDate) - DATE_TRUNC('DAY', v_mFromTime)) >= 0
+			AND EXTRACT(DAY FROM DATE_TRUNC('DAY', v_maxCurrDate) - DATE_TRUNC('DAY', v_EffectDate)) >= 0
+			AND (v_EffectDate >= v_JoinDate)
+		THEN
+			--INSERT INTO "public"."t"
+			--VALUES (
+			RETURN QUERY SELECT
+				v_EmployeeCode,
+				v_EffectDate,
+				v_maxCurrDate,
+				v_MinSalary_BS,
+				v_RealSalary_BS,
+				v_CoeffSalary_BS,
+				v_PieceWage,
+				v_InsSalary,
+				v_UnitOT,
+				v_MinSalary_JW,
+				v_RealSalary_JW,
+				v_CoeffSalary_JW,
+				v_mFromTime,
+				v_mToTime,
+				v_DepartmentCode,
+				v_GroupSalCode,
+				v_JobWCode,
+				v_JobPosCode,
+				v_EmpTypeCode,
+				v_LabourType,
+				v_WorkCenterCode,
+				v_AssignRegionCode,
+				v_RouteCode;
+			--);
+	
+			v_maxCurrDate := v_EffectDate - INTERVAL '1 day';
+		ELSE
+			IF (v_idx > 0)
+				AND EXTRACT(DAY FROM DATE_TRUNC('DAY', v_maxCurrDate) - DATE_TRUNC('DAY', v_mFromTime)) >= 0
+				AND (v_EffectDate >= v_JoinDate)
+			THEN
+				--INSERT INTO "public"."t"
+				--VALUES (
+				RETURN QUERY SELECT
+					v_EmployeeCode,
+					v_mFromTime,
+					v_maxCurrDate,
+					v_MinSalary_BS,
+					v_RealSalary_BS,
+					v_CoeffSalary_BS,
+					v_PieceWage,
+					v_InsSalary,
+					v_UnitOT,
+					v_MinSalary_JW,
+					v_RealSalary_JW,
+					v_CoeffSalary_JW,
+					v_mFromTime,
+					v_mToTime,
+					v_DepartmentCode,
+					v_GroupSalCode,
+					v_JobWCode,
+					v_JobPosCode,
+					v_EmpTypeCode,
+					v_LabourType,
+					v_WorkCenterCode,
+					v_AssignRegionCode,
+					v_RouteCode;
+				--);
+			END IF;
+
+			IF (v_idx = 0) AND (v_EffectDate >= v_JoinDate)
+			THEN
+				--INSERT INTO "public"."t"
+				--VALUES (
+				RETURN QUERY SELECT
+					v_EmployeeCode,
+					v_mFromTime,
+					v_maxCurrDate,
+					v_MinSalary_BS,
+					v_RealSalary_BS,
+					v_CoeffSalary_BS,
+					v_PieceWage,
+					v_InsSalary,
+					v_UnitOT,
+					v_MinSalary_JW,
+					v_RealSalary_JW,
+					v_CoeffSalary_JW,
+					v_mFromTime,
+					v_mToTime,
+					v_DepartmentCode,
+					v_GroupSalCode,
+					v_JobWCode,
+					v_JobPosCode,
+					v_EmpTypeCode,
+					v_LabourType,
+					v_WorkCenterCode,
+					v_AssignRegionCode,
+					v_RouteCode;
+				--);
+			END IF;
+		END IF;
+	END LOOP;
+	CLOSE employee_cursor;
+    RETURN;
+END;
+$BODY$;
+
+ALTER FUNCTION public."HR_fnCreateDatetimeListOfEmp"(citext, citext)
+    OWNER TO us_codx_hr;
